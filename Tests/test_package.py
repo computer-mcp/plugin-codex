@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 
 spec = importlib.util.spec_from_file_location("plugin_package", Path(__file__).resolve().parents[1] / "Scripts/package.py")
@@ -22,6 +23,9 @@ class PackageOwnershipTests(unittest.TestCase):
         (built / "codex-mcp-adapter").write_bytes(b"fixture executable")
         for name in ("computer-mcp-plugin.toml", "README.md", "CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
             (repo / name).write_text("fixture content\n")
+        (repo / "computer-mcp-plugin.toml").write_text(
+            "id = 'codex'\nversion = '1.2.3'\n\n[compatibility]\narchitectures = ['arm64']\n"
+        )
         (repo / "Package.resolved").write_text(json.dumps({"pins": [{"identity": "swift-codex"}]}))
         documentation = repo / "Documentation"
         documentation.mkdir()
@@ -33,6 +37,73 @@ class PackageOwnershipTests(unittest.TestCase):
         for name in ("LICENSE", "NOTICE"):
             (schema / name).write_text("fixture schema notice")
         return repo, built
+
+    def test_package_preserves_manifest_bytes_in_archive_and_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, built = self.make_repository(root)
+            manifest = (repo / "computer-mcp-plugin.toml").read_bytes()
+
+            def command(arguments, cwd):
+                if "--show-bin-path" in arguments:
+                    return str(built)
+                if "-archs" in arguments:
+                    return "arm64"
+                return ""
+
+            with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(
+                package, "command", side_effect=command
+            ):
+                result = package.package(root / "output", "debug")
+            with zipfile.ZipFile(result["archive"]) as archive:
+                self.assertEqual(archive.read("computer-mcp-plugin.toml"), manifest)
+            receipt = json.loads(Path(result["receipt"]).read_text())
+            self.assertEqual(receipt["architectures"], ["arm64"])
+            self.assertEqual(receipt["files"]["computer-mcp-plugin.toml"], package.hashlib.sha256(manifest).hexdigest())
+
+    def test_architecture_declaration_is_explicit_and_matches_all_slices(self):
+        declarations = [
+            "", "compatibility = 'arm64'", "[compatibility]\narchitectures = 'arm64'",
+            "[compatibility]\narchitectures = []", "[compatibility]\narchitectures = [1]",
+            "[compatibility]\narchitectures = ['arm64', 'arm64']",
+            "[compatibility]\narchitectures = ['arm64', 'x86_64']",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.toml"
+            for declaration in declarations:
+                with self.subTest(declaration=declaration):
+                    manifest.write_text(declaration)
+                    with self.assertRaisesRegex(ValueError, "architectures"):
+                        package.validate_architectures(manifest, ["arm64"])
+            manifest.write_text("[compatibility]\narchitectures = ['x86_64', 'arm64']")
+            package.validate_architectures(manifest, ["arm64", "x86_64"])
+
+    def test_package_rejects_slice_mismatch_and_manifest_mutation_before_publication(self):
+        for failure in ("slice_mismatch", "manifest_mutation"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                repo, built = self.make_repository(root)
+                original = (repo / "computer-mcp-plugin.toml").read_bytes()
+
+                def command(arguments, cwd):
+                    if "--show-bin-path" in arguments:
+                        return str(built)
+                    if "-archs" in arguments:
+                        return "x86_64" if failure == "slice_mismatch" else "arm64"
+                    if "--help" in arguments:
+                        self.assertNotEqual(failure, "slice_mismatch")
+                        manifest = Path(cwd) / "package/computer-mcp-plugin.toml"
+                        manifest.write_bytes(original + b"\n# changed declaration bytes\n")
+                    return ""
+
+                with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(
+                    package, "command", side_effect=command
+                ):
+                    with self.assertRaises(ValueError):
+                        package.package(root / "output", "debug")
+                self.assertFalse((root / "output").exists())
+                self.assertEqual(list(root.glob("codex-package-*")), [])
+                self.assertEqual((repo / "computer-mcp-plugin.toml").read_bytes(), original)
 
     def test_package_rejects_links_before_signing_or_running_payload(self):
         for relative in ("README.md", "Documentation/link", ".build/debug/codex-plugin_CodexAdapter.bundle/link"):

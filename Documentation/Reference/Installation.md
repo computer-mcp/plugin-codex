@@ -7,7 +7,8 @@ PATH, or grants a profile access to tools.
 
 ## Produce a local artifact
 
-From this independent repository, with its dependencies already resolved:
+From this independent repository, with Python 3.11 or newer and its Swift
+dependencies already resolved:
 
 ```sh
 python3 Scripts/package.py --output /absolute/new/artifact-directory
@@ -20,6 +21,12 @@ and notice files, applies an ad-hoc signature, and emits `codex-plugin.zip` and
 `receipt.json`. The receipt records each file and archive SHA-256, architecture,
 and build configuration. It is not an official-source or Developer ID signature.
 No artifact is uploaded or installed automatically.
+
+The repository manifest declares the archive's supported architectures. Packaging
+requires the built adapter's slices to match that declaration and preserves the
+manifest bytes exactly. Official GitHub installation verifies the archive's
+manifest against the declaration at its release tag. The published archive
+targets arm64.
 
 Package inputs must be regular files and directories. Symbolic links and special
 files are rejected before signing or running the staged adapter. The output is
@@ -41,7 +48,7 @@ the current revision from `computer-mcp plugins list`, then supply the digest
 from the artifact receipt:
 
 ```sh
-computer-mcp plugins install /absolute/path/codex-plugin.zip --id codex --version 0.1.0 --sha256 DIGEST --expected-revision REVISION
+computer-mcp plugins install /absolute/path/codex-plugin.zip --id codex --version 0.1.1 --sha256 DIGEST --expected-revision REVISION
 ```
 
 The new package is disabled and exposes no tools. In its settings, choose the

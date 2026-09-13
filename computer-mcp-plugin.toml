@@ -1,6 +1,6 @@
 id = 'codex'
 name = 'Codex'
-version = '0.1.0'
+version = '0.1.1'
 description = 'Codex execution and protocol inspection through standard MCP.'
 
 [[mcp]]
@@ -8,3 +8,6 @@ id = 'app-server'
 transport = 'stdio'
 executable = { path = 'bin/codex-mcp-adapter' }
 capabilities = ['tools']
+
+[compatibility]
+architectures = ['arm64']

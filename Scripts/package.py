@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import tomllib
 import zipfile
 
 
@@ -37,6 +38,17 @@ def validate_payload(root):
         mode = entry.lstat().st_mode
         if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
             raise ValueError(f"Package contains a link or special file: {entry.relative_to(root)}")
+
+
+def validate_architectures(manifest, architectures):
+    declaration = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    compatibility = declaration.get("compatibility", {})
+    declared = compatibility.get("architectures") if isinstance(compatibility, dict) else None
+    if (not isinstance(declared, list) or not declared
+            or not all(isinstance(value, str) and value for value in declared)
+            or len(set(declared)) != len(declared)
+            or set(declared) != set(architectures)):
+        raise ValueError("Manifest compatibility.architectures must exactly match the built adapter slices")
 
 
 def publish_directory(source, destination):
@@ -102,10 +114,11 @@ def package(output, configuration):
         command(["/usr/bin/codesign", "--verify", "--strict", str(binary)], stage)
         architectures = command(["/usr/bin/lipo", "-archs", str(binary)], stage).split()
         manifest = payload / "computer-mcp-plugin.toml"
-        with manifest.open("a") as handle:
-            handle.write("\n[compatibility]\narchitectures = " + json.dumps(architectures) + "\n")
+        validate_architectures(manifest, architectures)
         # Basic relocation check; the separate MCP workflow validates resource lookup and execution.
         command([str(binary), "--help"], stage)
+        if manifest.read_bytes() != (repo / manifest.name).read_bytes():
+            raise ValueError("Archive manifest must be byte-identical to the repository declaration")
         inventory = {}
         for entry in sorted(payload.rglob("*")):
             if entry.is_symlink():

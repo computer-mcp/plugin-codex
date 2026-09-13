@@ -120,8 +120,11 @@ The repository validation workflow resolves and verifies the checked-in dependen
 lock, lints and tests the Swift package, verifies package input ownership and
 exclusive output publication, then invokes `Scripts/package.py` for a
 relocatable release-configuration archive. It retains the ZIP and file/digest
-receipt with read-only repository permissions. Artifact architecture is derived
-from the built adapter; one runner's output does not establish Universal 2 support.
+receipt with read-only repository permissions. The version-controlled manifest
+owns archive compatibility; packaging verifies the built adapter's slices against
+it and preserves its exact bytes for GitHub provenance verification. The packager
+uses Python 3.11's standard TOML parser. One runner's output does not establish
+Universal 2 support.
 The package job neither installs vendor executables nor exercises real accounts.
 An authorized publisher must separately review provenance, signing and runtime
 acceptance before promoting an artifact to a public release.
