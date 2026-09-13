@@ -68,16 +68,29 @@ struct MCPInheritedSocketTransportTests {
   }
 
   @Test
-  func peerEOFCompletesStreamAndRepeatedCloseIsSafe() async throws {
+  func peerEOFFailsConnectionAndRepeatedCloseIsSafe() async throws {
     let pair = try MCPInheritedSocketTransport.makePair()
     let transport = try MCPInheritedSocketTransport(takingOwnershipOf: pair.0)
     try await transport.connect()
     try pair.1.close()
     var stream = await transport.receive().makeAsyncIterator()
-    #expect(try await stream.next() == nil)
+    await #expect(throws: MCPError.connectionClosed) { _ = try await stream.next() }
     async let first: Void = transport.disconnect()
     async let second: Void = transport.disconnect()
     _ = await (first, second)
+  }
+
+  @Test
+  func peerEOFDeliversBufferedFrameBeforeClosingConnection() async throws {
+    let pair = try MCPInheritedSocketTransport.makePair()
+    let transport = try MCPInheritedSocketTransport(takingOwnershipOf: pair.0)
+    try await transport.connect()
+    try pair.1.write(contentsOf: Data("{}\n".utf8))
+    try pair.1.close()
+    var stream = await transport.receive().makeAsyncIterator()
+    #expect(try await stream.next() == Data("{}".utf8))
+    await #expect(throws: MCPError.connectionClosed) { _ = try await stream.next() }
+    await transport.disconnect()
   }
 
   @Test

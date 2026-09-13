@@ -114,8 +114,8 @@ actor CodexHostMCPClient: CodexHostTools, CodexElevationAuthority, CodexManagedW
     decisions.removeAll()
     let startup = startup
     startup?.cancel()
-    await transport.disconnect()
     await client.disconnect()
+    await transport.disconnect()
     _ = await startup?.result
   }
 

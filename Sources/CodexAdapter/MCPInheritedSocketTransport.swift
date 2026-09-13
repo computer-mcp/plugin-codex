@@ -173,7 +173,7 @@ actor MCPInheritedSocketTransport: Transport {
     let count = recv(handle.fileDescriptor, &buffer, buffer.count, 0)
     if count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) { return true }
     guard count > 0 else {
-      finish(throwing: count == 0 && pending.isEmpty ? nil : MCPError.connectionClosed)
+      finish()
       return false
     }
     pending.append(contentsOf: buffer.prefix(count))
@@ -203,12 +203,13 @@ actor MCPInheritedSocketTransport: Transport {
     return true
   }
 
-  private func finish(throwing error: Error? = nil) {
+  private func finish(throwing error: Error = MCPError.connectionClosed) {
     guard !closed else { return }
     connected = false
     closed = true
     pending.removeAll(keepingCapacity: false)
-    if let error { continuation.finish(throwing: error) } else { continuation.finish() }
+    // EOF retires this connection; it is not an invitation to receive another stream.
+    continuation.finish(throwing: error)
     _ = Darwin.shutdown(handle.fileDescriptor, SHUT_RDWR)
     try? handle.close()
   }
