@@ -25,7 +25,28 @@ jobs:
           /usr/bin/swift package resolve
           git diff --exit-code -- Package.resolved
           /usr/bin/swift format lint --strict --recursive Package.swift Sources Tests
-          /usr/bin/swift test --disable-automatic-resolution
+          /usr/bin/swift build --build-tests --disable-automatic-resolution
+      - name: Run Swift tests
+        timeout-minutes: 10
+        run: |
+          /usr/bin/sw_vers
+          /usr/sbin/sysctl -n hw.logicalcpu
+          /usr/bin/swift test --skip-build --disable-automatic-resolution &
+          test_pid=$!
+          for ((elapsed = 0; elapsed < 60; elapsed++)); do
+            if ! /bin/kill -0 "$test_pid" 2>/dev/null; then break; fi
+            /bin/sleep 1
+          done
+          if /bin/kill -0 "$test_pid" 2>/dev/null; then
+            /bin/ps -p "$test_pid" -o pid=,ppid=,etime=,comm= || true
+            for process_id in $(/usr/bin/pgrep -P "$test_pid" || true); do
+              process_command=$(/bin/ps -p "$process_id" -o comm= || true)
+              case "$process_command" in
+                *swiftpm-testing*) /usr/bin/sample "$process_id" 1 || true ;;
+              esac
+            done
+          fi
+          wait "$test_pid"
       - name: Validate package ownership and publication
         run: python3 -m unittest discover -s Tests -p 'test_package.py' -v
       - name: Build relocatable adapter and receipt
