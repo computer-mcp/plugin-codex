@@ -1,0 +1,40 @@
+name: Validate and package
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  package:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Validate Swift package
+        run: |
+          /usr/bin/swift --version
+          /usr/bin/swift package resolve
+          git diff --exit-code -- Package.resolved
+          /usr/bin/swift format lint --strict --recursive Package.swift Sources Tests
+          /usr/bin/swift test --disable-automatic-resolution
+      - name: Validate package ownership and publication
+        run: python3 -m unittest discover -s Tests -p 'test_package.py' -v
+      - name: Build relocatable adapter and receipt
+        run: python3 Scripts/package.py --output dist --configuration release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: codex-plugin-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            dist/codex-plugin.zip
+            dist/receipt.json
+          if-no-files-found: error
+          retention-days: 14

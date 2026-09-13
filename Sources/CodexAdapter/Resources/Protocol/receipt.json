@@ -1,0 +1,37 @@
+{
+  "codexVersion": "0.153.4",
+  "files": {
+    "stable/ClientRequest.json": {
+      "sha256": "25bc001b5dfe3b35785597b8f9ad9e5aaf7e437331fa9921f041c9e0e03fc9f3",
+      "messages": 99
+    },
+    "stable/ClientNotification.json": {
+      "sha256": "706cf248d75027c84a3c63348d0ed507182e8eba40069dd17541793de029145a",
+      "messages": 1
+    },
+    "stable/ServerRequest.json": {
+      "sha256": "31f580ad468fbd18766eb7adb12744be4e3790e3357b58bd4413c0108c4f65d0",
+      "messages": 10
+    },
+    "stable/ServerNotification.json": {
+      "sha256": "b3e76cf11842f3e8b3270c05e000212b56eabafb0152fc38e8f920e2ef902991",
+      "messages": 81
+    },
+    "experimental/ClientRequest.json": {
+      "sha256": "05c82ead1a820c765c23d3a1d262e4ae54889785276ee1acf7c494141fd94d70",
+      "messages": 155
+    },
+    "experimental/ClientNotification.json": {
+      "sha256": "706cf248d75027c84a3c63348d0ed507182e8eba40069dd17541793de029145a",
+      "messages": 1
+    },
+    "experimental/ServerRequest.json": {
+      "sha256": "38bb1c9dbb1dda2a688a7c8712b04319fe6ee2ed28b54acd2f5fd341d25567ff",
+      "messages": 11
+    },
+    "experimental/ServerNotification.json": {
+      "sha256": "1a59e2cecb8e7930c4358f7a92245d9d52c96adb0e02b210fc39772ed10610fc",
+      "messages": 81
+    }
+  }
+}
