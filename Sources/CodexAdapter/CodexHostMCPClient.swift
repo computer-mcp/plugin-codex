@@ -10,7 +10,7 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
   static let descriptorEnvironmentKey = "COMPUTER_MCP_HOST_FD"
   private let owner: CodexRuntimeOwner
   private let workspaceID: String
-  private let client = MCP.Client(name: "codex-host-tools", version: "0.1.0")
+  private let client = MCP.Client(name: "codex-host-tools", version: CodexAdapterBuildInfo.version)
   private let transport: MCPInheritedSocketTransport
   private let requestTimeout: Duration
   private var startup: Task<Void, Error>?

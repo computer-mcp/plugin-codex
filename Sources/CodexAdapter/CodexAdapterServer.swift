@@ -45,7 +45,7 @@ package enum CodexAdapterServer {
   ) async throws {
     let tools = ProtocolTools(inventory: try .bundled())
     let server = MCP.Server(
-      name: "codex-mcp-adapter", version: "0.1.0",
+      name: "codex-mcp-adapter", version: CodexAdapterBuildInfo.version,
       instructions:
         "Execution tools retain their Codex session and call identifiers. Protocol declarations describe schemas, not execution support.",
       capabilities: .init(tools: .init()))

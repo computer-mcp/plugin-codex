@@ -1283,7 +1283,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
           clientInfo: .init(
             name: "codex_mcp_adapter",
             title: "Codex MCP Adapter",
-            version: "0.1.0"
+            version: CodexAdapterBuildInfo.version
           ),
           experimentalApi: configuration.experimentalAPI,
           optOutNotificationMethods: [

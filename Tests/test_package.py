@@ -49,6 +49,8 @@ class PackageOwnershipTests(unittest.TestCase):
                     return str(built)
                 if "-archs" in arguments:
                     return "arm64"
+                if "--version" in arguments:
+                    return "1.2.3"
                 return ""
 
             with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(
@@ -79,7 +81,7 @@ class PackageOwnershipTests(unittest.TestCase):
             package.validate_architectures(manifest, ["arm64", "x86_64"])
 
     def test_package_rejects_slice_mismatch_and_manifest_mutation_before_publication(self):
-        for failure in ("slice_mismatch", "manifest_mutation"):
+        for failure in ("slice_mismatch", "manifest_mutation", "version_mismatch"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 repo, built = self.make_repository(root)
@@ -90,10 +92,13 @@ class PackageOwnershipTests(unittest.TestCase):
                         return str(built)
                     if "-archs" in arguments:
                         return "x86_64" if failure == "slice_mismatch" else "arm64"
+                    if "--version" in arguments:
+                        return "9.9.9" if failure == "version_mismatch" else "1.2.3"
                     if "--help" in arguments:
                         self.assertNotEqual(failure, "slice_mismatch")
-                        manifest = Path(cwd) / "package/computer-mcp-plugin.toml"
-                        manifest.write_bytes(original + b"\n# changed declaration bytes\n")
+                        if failure == "manifest_mutation":
+                            manifest = Path(cwd) / "package/computer-mcp-plugin.toml"
+                            manifest.write_bytes(original + b"\n# changed declaration bytes\n")
                     return ""
 
                 with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(
@@ -138,6 +143,8 @@ class PackageOwnershipTests(unittest.TestCase):
                     return str(built)
                 if "-archs" in arguments:
                     return "arm64"
+                if "--version" in arguments:
+                    return "1.2.3"
                 return ""
 
             with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(
