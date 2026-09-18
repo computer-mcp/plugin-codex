@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.13'
+      - name: Install dependency gate tooling
+        run: brew install jq ripgrep
       - name: Validate Swift package
         run: |
           /usr/bin/swift --version
