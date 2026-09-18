@@ -10,7 +10,7 @@ The host starts the adapter with a connected Unix descriptor and immutable
 scope. `CodexHostMCPClient` uses standard MCP to call the host; it does not
 open the control socket, read the host database or start another service.
 Standalone launches without that descriptor retain ordinary configured Codex
-execution but cannot perform host-owned registration or grant operations.
+execution but cannot perform host-owned registration operations.
 
 `codex.app.ownership.reconcile.perform` is a local-control operation. A
 remote-bound adapter omits it from its MCP tool catalog and rejects attempts
@@ -23,13 +23,16 @@ executed with a fresh check. Destructive operations retain host-issued
 prepare/commit tickets. A changed classification requires a new approval rather
 than converting an earlier read-only decision into a mutation.
 
-Temporary full access consumes only a matching, already locally approved host
-grant. The host supplies time and identity and matches the active outer start
-request. Claims cannot be replayed by another runtime or later invocation.
-Pending, expired or revoked grants do not confer full access. Next-turn grants
-are single-use. Disconnect invalidates this connection's owned claims/grants;
-failed cleanup is not treated as confirmed retirement. The adapter cannot issue
-local approval, mint grants, or use a dynamic `host.*` tool to bypass the boundary.
+Native Codex Full Access follows the user's Codex configuration or explicit
+native request. The host decides whether the caller may invoke Codex; it does
+not replace Codex's sandbox or approval policy. Codex callbacks into host tools
+remain subject to current host authorization and confirmation.
+
+Native approval responses use official response objects, including session
+scope, amendments, refusal and cancellation. Responses bind to their original
+SDK server request and can be consumed only once. Host destructive operations
+use explicit `operations.prepare`, local confirmation and `operations.commit`;
+the adapter never manufactures approval by automatically consuming a ticket.
 
 ## Managed workspaces
 
@@ -37,8 +40,14 @@ The host supplies the managed root beside its file-backed state. The plugin
 plans and executes Git operations; the host validates exact repository/path
 identity before transactionally adding its registration and profile grant.
 The plugin's database holds the plan, lease and lifecycle receipt, not host
-workspace authority. A new child connection must resolve the newly registered
-workspace before releasing its child lease.
+workspace authority. Each receipt binds the verified principal, profile and
+source workspace; channel names are audit metadata. Unbound historical receipts
+remain inspectable but cannot authorize mutations. A new child connection must resolve the newly registered
+workspace before releasing its child lease. Lease revisions are shared across
+that subject's profile-bound workspace connections and survive adapter restart;
+the source observes the child's release before approving removal. Lease tools
+cannot read or mutate a different workspace's lease, and unrelated workspaces
+cannot claim managed parent lineage.
 
 Use the existing `provision.plan` / `provision.perform` and `remove.plan` /
 `remove.perform` workflows. Removal requires a released lease, no live owner,
@@ -63,10 +72,11 @@ changed content.
 
 `codex.diagnostics.snapshot` combines adapter state with host records only when
 this callback service is available. The host filters records by workspace,
-profile, caller and exact connection before limiting the result. It exposes
-receipt IDs and digests rather than command bodies or secrets. In-flight
-activation handles are redacted. The configured sandbox and actual availability
-remain distinct: unknown host data is never reported as an empty grant set.
+verified subject and profile before limiting the result. Connection and channel
+identifiers remain audit metadata, not new authorization subjects. It exposes
+receipt IDs and digests rather than command bodies or secrets. Native configuration overrides and actual resolved configuration remain
+distinct. Use `config/read` through `codex.app.methods.call` for the vendor
+configuration; diagnostics do not infer effective Full Access from host grants.
 
 The host permits 1–1000 requested records and bounds the complete service result.
 Reduce `limit` when the response would exceed the byte limit. Inspection does not

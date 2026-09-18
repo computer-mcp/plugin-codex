@@ -20,22 +20,36 @@ final class CodexManagedWorktreeTests {
     try Data("baseline\n".utf8).write(to: repository.appendingPathComponent("README.md"))
     try runGit(["add", "README.md"], in: repository)
     try runGit(["commit", "-q", "-m", "test: baseline"], in: repository)
-    let database = try CodexDatabase(path: directory.appendingPathComponent("adapter.sqlite").path)
     let host = RecordingManagedWorkspaceHost()
-    func provider(workspaceID: String, path: URL, hostConnected: Bool = true)
-      -> CodexAppServerProvider
-    {
-      CodexAppServerProvider(
+    func provider(
+      workspaceID: String, path: URL, hostConnected: Bool = true,
+      principalID: String = "fixture-principal", profileID: String = "local-admin"
+    ) throws -> CodexAppServerProvider {
+      let launch: [String: Any] = [
+        "formatVersion": 1, "runtimeID": UUID().uuidString, "caller": "local-mcp",
+        "principalID": principalID, "profileID": profileID,
+        "workspace": ["id": workspaceID, "rootPath": path.path],
+      ]
+      let context = try CodexLaunchContext(
+        environment: [
+          "COMPUTER_MCP_HOST_CONTEXT": String(
+            decoding: JSONSerialization.data(withJSONObject: launch), as: UTF8.self)
+        ],
+        currentDirectory: path)
+      let scoped = try #require(
+        try context.appServerProvider(
+          configuration: .init(enabled: true, executable: "/missing/codex"),
+          stateDirectory: directory.appendingPathComponent("state")))
+      return CodexAppServerProvider(
         appServer: FakeAppServerRuntime(),
-        owner: CodexRuntimeOwner(
-          workspaceID: workspaceID, profileID: "local-admin", caller: "local-mcp",
-          transport: "fixture", socketConnectionID: nil,
-          tunnelInstanceID: nil, tunnelProfileID: nil),
-        database: database, workspaceURL: path, recentThreadReader: nil,
-        readOnly: false, localControlAllowed: true,
+        owner: context.owner,
+        database: scoped.database, workspaceURL: path, recentThreadReader: nil,
+        localControlAllowed: true,
         workspaceHost: hostConnected ? host : nil, managedWorktreeRoot: managedRoot)
     }
-    try await withMCPClient(provider: provider(workspaceID: "source-workspace", path: repository)) {
+    let source = try provider(workspaceID: "source-workspace", path: repository)
+    let database = try #require(source.database)
+    try await withMCPClient(provider: source) {
       client in
       let parent = try await invoke(
         client, "codex.worktree.leases.acquire",
@@ -104,6 +118,43 @@ final class CodexManagedWorktreeTests {
           "managed_worktree_id": .string(worktreeID)
         ])
       #expect(busy.isError == true)
+      for (workspace, principal, profile) in [
+        ("unrelated-workspace", "fixture-principal", "local-admin"),
+        (record.workspaceID, "foreign-principal", "local-admin"),
+        (record.workspaceID, "fixture-principal", "foreign-profile"),
+      ] {
+        try await withMCPClient(
+          provider: provider(
+            workspaceID: workspace, path: URL(fileURLWithPath: record.path),
+            principalID: principal, profileID: profile)
+        ) { unauthorized in
+          for name in [
+            "codex.worktree.leases.read", "codex.worktree.leases.heartbeat",
+            "codex.worktree.leases.release",
+          ] {
+            let arguments: [String: MCP.Value]
+            if name.hasSuffix(".read") {
+              arguments = ["lease_id": .string(leaseID)]
+            } else if name.hasSuffix(".heartbeat") {
+              arguments = ["lease_id": .string(leaseID), "expected_revision": .int(lease.revision)]
+            } else {
+              arguments = releaseArguments
+            }
+            #expect(
+              try await unauthorized.callTool(name: name, arguments: arguments).isError == true)
+          }
+          let hidden = try await invoke(unauthorized, "codex.worktree.leases.list")
+          #expect(hidden.objectValue?["leases"]?.arrayValue?.isEmpty == true)
+          let invalidLineage = try await unauthorized.callTool(
+            name: "codex.worktree.leases.acquire",
+            arguments: [
+              "agent_id": .string("unrelated"), "mode": .string("isolated_worktree"),
+              "parent_lease_id": try #require(parent.objectValue?["id"]),
+            ])
+          #expect(invalidLineage.isError == true)
+        }
+      }
+      #expect(try database.codexWorktreeLease(id: leaseID)?.state == .active)
       try await withMCPClient(
         provider: provider(workspaceID: record.workspaceID, path: URL(fileURLWithPath: record.path))
       ) { child in
@@ -115,14 +166,27 @@ final class CodexManagedWorktreeTests {
         #expect(hidden.isError == true)
         let childDiagnostic = try await invoke(child, "codex.diagnostics.snapshot")
         #expect(
-          childDiagnostic.objectValue?["managed_worktrees"]?.arrayValue?.first?.objectValue?["id"]
+          childDiagnostic.objectValue?["active_worktree_leases"]?.arrayValue?.first?.objectValue?[
+            "managedWorktreeID"]
             == .string(worktreeID))
         #expect(
           childDiagnostic.objectValue?["summary"]?.objectValue?["active_worktree_lease_count"]
             == .int(1))
-        _ = try await invoke(child, "codex.worktree.leases.release", releaseArguments)
+        let childLease = try await invoke(
+          child, "codex.worktree.leases.read", ["lease_id": .string(leaseID)])
+        #expect(childLease.objectValue?["managedWorktreeID"] == .string(worktreeID))
+        let renewed = try await invoke(
+          child, "codex.worktree.leases.heartbeat",
+          ["lease_id": .string(leaseID), "expected_revision": .int(lease.revision)])
+        var currentRelease = releaseArguments
+        currentRelease["expected_revision"] = try #require(renewed.objectValue?["revision"])
+        _ = try await invoke(child, "codex.worktree.leases.release", currentRelease)
       }
       #expect(try database.codexWorktreeLease(id: leaseID)?.state == .released)
+      let restartedChild = try provider(
+        workspaceID: record.workspaceID, path: URL(fileURLWithPath: record.path))
+      #expect(restartedChild.database?.fileURL != database.fileURL)
+      #expect(try restartedChild.database?.codexWorktreeLease(id: leaseID)?.state == .released)
       let dirty = URL(fileURLWithPath: record.path).appendingPathComponent("unaccepted.txt")
       try Data("keep until reviewed\n".utf8).write(to: dirty)
       let dirtyRemoval = try await client.callTool(
@@ -163,8 +227,8 @@ final class CodexManagedWorktreeTests {
       #expect(
         removedDiagnostic.objectValue?["summary"]?.objectValue?["active_managed_worktree_count"]
           == .int(0))
-      let reopened = try CodexDatabase(
-        path: directory.appendingPathComponent("adapter.sqlite").path)
+      let reopened = try #require(
+        try provider(workspaceID: "source-workspace", path: repository).database)
       #expect(try reopened.codexManagedWorktree(id: worktreeID)?.state == .removed)
       #expect(try reopened.codexWorktreeLease(id: leaseID)?.state == .released)
       #expect(

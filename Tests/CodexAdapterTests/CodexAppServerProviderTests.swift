@@ -18,7 +18,7 @@ struct CodexAppServerProviderTests {
       database: database, workspaceID: fixture.directory.lastPathComponent)
     let provider = CodexAppServerProvider(
       appServer: runtime, owner: runtime.owner, database: database, workspaceURL: fixture.directory,
-      recentThreadReader: nil, readOnly: false, localControlAllowed: true)
+      recentThreadReader: nil, localControlAllowed: true)
     let pair = await InMemoryTransport.createConnectedPair()
     try await pair.server.connect()
     let serving = Task {
@@ -76,7 +76,7 @@ struct CodexAppServerProviderTests {
       _ = try await invoke(
         "codex.app.approvals.respond",
         [
-          "approval_id": .string(id), "decision": .string("deny"),
+          "approval_id": .string(id), "response": .object(["decision": .string("decline")]),
         ])
       _ = try await fixture.waitForApprovalResponse()
       #expect(try database.codexApproval(id: id)?.state == .denied)
@@ -102,32 +102,11 @@ struct CodexAppServerProviderTests {
   }
 
   @Test
-  func readOnlyAndRemoteBoundariesRejectBeforeDispatch() async throws {
-    let provider = CodexAppServerProvider(
-      appServer: FakeAppServerRuntime(), owner: nil, database: nil,
-      workspaceURL: URL(fileURLWithPath: "/tmp/workspace-1"), recentThreadReader: nil,
-      readOnly: true, localControlAllowed: false)
-    for name in [
-      "codex.app.thread.start", "codex.app.approvals.respond", "codex.run.create",
-      "codex.worktree.leases.acquire", "codex.app.runtimes.stop",
-    ] {
-      await #expect(throws: CodexToolError.self) {
-        try await provider.call(name: name, arguments: .object([:]))
-      }
-    }
-    await #expect(throws: CodexToolError.self) {
-      try await provider.call(
-        name: "codex.app.methods.call",
-        arguments: .object(["method": .string("thread/goal/set")]))
-    }
-    _ = try await provider.call(
-      name: "codex.app.methods.call",
-      arguments: .object(["method": .string("model/list")]))
-    _ = try await provider.call(name: "codex.diagnostics.snapshot", arguments: .object([:]))
+  func remoteControlBoundaryRejectsBeforeDispatch() async throws {
     let remote = CodexAppServerProvider(
       appServer: FakeAppServerRuntime(), owner: nil, database: nil,
       workspaceURL: URL(fileURLWithPath: "/tmp/workspace-1"), recentThreadReader: nil,
-      readOnly: false, localControlAllowed: false)
+      localControlAllowed: false)
     #expect(!remote.tools.contains { $0.name == "codex.app.ownership.reconcile.perform" })
     #expect(makeProvider().tools.contains { $0.name == "codex.app.ownership.reconcile.perform" })
     await #expect(throws: CodexToolError.self) {
@@ -157,9 +136,9 @@ struct CodexAppServerProviderTests {
         $0.objectValue?["method"]?.stringValue == "account/usage/read"
       }) == true)
     #expect(
-      !(methodRows?.contains(where: {
+      methodRows?.contains(where: {
         $0.objectValue?["method"]?.stringValue == "thread/turns/list"
-      }) == true))
+      }) == true)
 
     let call = try await provider.callToolAsync(
       name: "codex.app.thread.start",
@@ -334,7 +313,7 @@ struct CodexAppServerProviderTests {
         tunnelProfileID: nil
       ),
       database: database, workspaceURL: URL(fileURLWithPath: "/tmp/workspace-1"),
-      recentThreadReader: nil, readOnly: false, localControlAllowed: true
+      recentThreadReader: nil, localControlAllowed: true
     )
 
     let created = try await provider.callToolAsync(
@@ -424,7 +403,7 @@ struct CodexAppServerProviderTests {
         tunnelProfileID: nil
       ),
       database: database, workspaceURL: URL(fileURLWithPath: "/tmp/workspace-1"),
-      recentThreadReader: nil, readOnly: false, localControlAllowed: true
+      recentThreadReader: nil, localControlAllowed: true
     )
 
     var run = try providerResult(
@@ -604,7 +583,7 @@ struct CodexAppServerProviderTests {
     .init(
       appServer: FakeAppServerRuntime(), owner: nil, database: nil,
       workspaceURL: URL(fileURLWithPath: "/tmp/workspace-1"),
-      recentThreadReader: nil, readOnly: false, localControlAllowed: true)
+      recentThreadReader: nil, localControlAllowed: true)
   }
 }
 

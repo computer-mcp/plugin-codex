@@ -51,7 +51,6 @@ struct CodexRecentThreadLimits: Equatable, Sendable {
 enum CodexRecentThreadReaderError: Error, LocalizedError, Equatable {
   case stateDatabaseUnavailable(String)
   case unknownThread(String)
-  case outsideWorkspace
   case rolloutOutsideCodexHome
   case rolloutUnavailable
   case invalidCursor
@@ -62,8 +61,6 @@ enum CodexRecentThreadReaderError: Error, LocalizedError, Equatable {
       return "Codex state database is unavailable at '\(path)'."
     case .unknownThread(let id):
       return "Unknown persisted Codex thread '\(id)'."
-    case .outsideWorkspace:
-      return "The persisted thread belongs to a different canonical workspace."
     case .rolloutOutsideCodexHome:
       return "The persisted rollout path is outside the configured Codex home."
     case .rolloutUnavailable:
@@ -75,34 +72,29 @@ enum CodexRecentThreadReaderError: Error, LocalizedError, Equatable {
 }
 
 struct CodexRecentThreadReader: Sendable {
-  private let workspaceURL: URL
   private let stateDatabaseURL: URL?
   private let allowedRolloutRoot: URL
   private let fixedMetadata: CodexPersistedThreadMetadata?
 
   init(
-    workspaceURL: URL,
     stateDatabaseURL: URL,
     allowedRolloutRoot: URL
   ) {
-    self.workspaceURL = workspaceURL.standardizedFileURL.resolvingSymlinksInPath()
     self.stateDatabaseURL = stateDatabaseURL.standardizedFileURL
     self.allowedRolloutRoot = allowedRolloutRoot.standardizedFileURL.resolvingSymlinksInPath()
     fixedMetadata = nil
   }
 
   init(
-    workspaceURL: URL,
     metadata: CodexPersistedThreadMetadata,
     allowedRolloutRoot: URL
   ) {
-    self.workspaceURL = workspaceURL.standardizedFileURL.resolvingSymlinksInPath()
     stateDatabaseURL = nil
     self.allowedRolloutRoot = allowedRolloutRoot.standardizedFileURL.resolvingSymlinksInPath()
     fixedMetadata = metadata
   }
 
-  static func live(workspaceURL: URL) -> CodexRecentThreadReader {
+  static func live() -> CodexRecentThreadReader {
     let environment = ProcessInfo.processInfo.environment
     let codexHome =
       environment["CODEX_HOME"].map {
@@ -113,7 +105,6 @@ struct CodexRecentThreadReader: Sendable {
         isDirectory: true
       )
     return CodexRecentThreadReader(
-      workspaceURL: workspaceURL,
       stateDatabaseURL: newestStateDatabase(in: codexHome),
       allowedRolloutRoot: codexHome
     )
@@ -284,11 +275,6 @@ struct CodexRecentThreadReader: Sendable {
   }
 
   private func validatedRolloutURL(metadata: CodexPersistedThreadMetadata) throws -> URL {
-    let recordedWorkspace = URL(fileURLWithPath: metadata.cwd, isDirectory: true)
-      .standardizedFileURL.resolvingSymlinksInPath()
-    guard recordedWorkspace == workspaceURL else {
-      throw CodexRecentThreadReaderError.outsideWorkspace
-    }
     let rollout = metadata.rolloutURL.standardizedFileURL.resolvingSymlinksInPath()
     let rootPath =
       allowedRolloutRoot.path.hasSuffix("/")

@@ -16,6 +16,7 @@ struct CodexThreadOwnershipRecord: Codable, Equatable, Sendable, Identifiable {
   var state: CodexThreadOwnershipState
   let createdAt: Date
   var updatedAt: Date
+  var owner: CodexRuntimeOwner? = nil
 
   private enum CodingKeys: String, CodingKey {
     case threadID = "thread_id"
@@ -25,6 +26,7 @@ struct CodexThreadOwnershipRecord: Codable, Equatable, Sendable, Identifiable {
     case state
     case createdAt = "created_at"
     case updatedAt = "updated_at"
+    case owner
   }
 
   var json: JSONValue {

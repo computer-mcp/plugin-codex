@@ -25,7 +25,8 @@ package enum CodexAdapterServer {
     let host = try CodexHostMCPClient.inherited(
       environment: ProcessInfo.processInfo.environment, context: context)
     do {
-      let execution = try context.executionProvider(configuration: configuration)
+      let execution = try context.executionProvider(
+        configuration: configuration, stateDirectory: stateDirectory)
       let appServer = try context.appServerProvider(
         configuration: configuration, stateDirectory: stateDirectory, hostTools: host,
         hostServices: host)
@@ -39,7 +40,7 @@ package enum CodexAdapterServer {
 
   static func serve(
     transport: any MCP.Transport,
-    execution: CodexExecutionProvider = .init(exec: nil, mcp: nil, readOnly: false),
+    execution: CodexExecutionProvider = .init(exec: nil),
     appServer: CodexAppServerProvider? = nil
   ) async throws {
     let tools = ProtocolTools(inventory: try .bundled())

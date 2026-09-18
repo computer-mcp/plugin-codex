@@ -13,6 +13,7 @@ enum CodexApprovalState: String, Codable, Equatable, Sendable {
   case pending
   case approved
   case denied
+  case cancelled
   case timedOut = "timed_out"
   case interrupted
   case failed
@@ -20,12 +21,6 @@ enum CodexApprovalState: String, Codable, Equatable, Sendable {
   var isTerminal: Bool {
     self != .pending
   }
-}
-
-enum CodexApprovalDecision: String, Codable, Equatable, Sendable {
-  case approveOnce = "approve_once"
-  case approveSession = "approve_session"
-  case deny
 }
 
 struct CodexApprovalRecord: Codable, Equatable, Sendable, Identifiable {
@@ -48,9 +43,11 @@ struct CodexApprovalRecord: Codable, Equatable, Sendable, Identifiable {
   let createdAt: Date
   let expiresAt: Date
   var resolvedAt: Date?
-  var decision: CodexApprovalDecision?
+  var decision: JSONValue?
   var scope: String?
   var resolutionReason: String?
+  var owner: CodexRuntimeOwner? = nil
+  var response: JSONValue? = nil
 
   private enum CodingKeys: String, CodingKey {
     case id
@@ -75,6 +72,8 @@ struct CodexApprovalRecord: Codable, Equatable, Sendable, Identifiable {
     case decision
     case scope
     case resolutionReason = "resolution_reason"
+    case owner
+    case response
   }
 
   var json: JSONValue {
@@ -85,9 +84,6 @@ struct CodexApprovalRecord: Codable, Equatable, Sendable, Identifiable {
 enum CodexApprovalBrokerError: Error, LocalizedError, Sendable {
   case unknown(String)
   case alreadyResolved(String)
-  case invalidDecision(String)
-  case outsideWorkspace(String)
-  case unsupportedScope(String)
   case unavailableAfterRestart(String)
 
   var errorDescription: String? {
@@ -96,12 +92,6 @@ enum CodexApprovalBrokerError: Error, LocalizedError, Sendable {
       return "Unknown Codex approval '\(id)'."
     case .alreadyResolved(let id):
       return "Codex approval '\(id)' is already resolved."
-    case .invalidDecision(let decision):
-      return "Unsupported Codex approval decision '\(decision)'."
-    case .outsideWorkspace(let detail):
-      return "Codex approval exceeds the registered workspace: \(detail)"
-    case .unsupportedScope(let detail):
-      return "Codex approval scope is not supported: \(detail)"
     case .unavailableAfterRestart(let id):
       return
         "Codex approval '\(id)' survived for audit, but its App Server request is no longer live."

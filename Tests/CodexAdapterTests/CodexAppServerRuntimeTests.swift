@@ -8,6 +8,27 @@ import Testing
 
 @Suite(.serialized)
 final class CodexAppServerRuntimeTests {
+  @Test(arguments: [false, true])
+  func testUnavailableExecutableReportsFailedStartup(missingInterpreter: Bool) async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let executable = root.appendingPathComponent("configured-codex")
+    if missingInterpreter {
+      try Data("#!\(root.path)/missing-interpreter\n".utf8).write(to: executable)
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o700], ofItemAtPath: executable.path)
+    }
+    let runtime = LiveCodexAppServerRuntime(
+      configuration: CodexConfig(enabled: true, executable: executable.path), workspaceURL: root)
+    await assertThrowsErrorAsync(
+      try await runtime.call(method: "thread/loaded/list", params: .object([:])))
+    let status = await runtime.status()
+    await runtime.shutdown()
+    #expect(status.objectValue?["connection_state"] == .string("failed"))
+    #expect(status.objectValue?["last_error"]?.stringValue?.isEmpty == false)
+  }
+
   @Test
   func testReleaseForHandoffVerifiesLoadedStateAndReapsEmptyRuntime() async throws {
     let fixture = try AppServerProcessFixture()
@@ -158,7 +179,7 @@ final class CodexAppServerRuntimeTests {
     try database.saveCodexRuntimeLease(
       CodexRuntimeLeaseRecord(
         id: "runtime-receipted-live",
-        owner: elevationRequesterOwner(workspaceID: "fixture-workspace"),
+        owner: runtimeOwner(workspaceID: "fixture-workspace"),
         workspacePath: "/tmp/fixture-workspace",
         state: "running",
         process: CodexAppServerProcessSnapshot(
@@ -473,7 +494,7 @@ final class CodexAppServerRuntimeTests {
     )
     let response = try await runtime.respondToApproval(
       id: pending.id,
-      decision: CodexApprovalDecision.approveOnce.rawValue
+      response: .object(["decision": .string("accept")])
     )
     #expect(
       response.objectValue?["approval"]?.objectValue?["state"] == .string("approved")
@@ -499,7 +520,8 @@ final class CodexAppServerRuntimeTests {
     let pending = try await waitForPendingApproval(runtime)
 
     await assertThrowsErrorAsync(
-      try await runtime.respondToApproval(id: pending.id, decision: "allow_forever")
+      try await runtime.respondToApproval(
+        id: pending.id, response: .object(["decision": .string("allow_forever")]))
     )
 
     let timedOut = try await waitForApprovalState(
@@ -542,7 +564,7 @@ final class CodexAppServerRuntimeTests {
       approvalID: pending.id,
       state: .failed
     )
-    #expect(failed.decision == .deny)
+    #expect(failed.decision == .string("cancel"))
     #expect(failed.resolutionReason?.contains("could not be delivered") == true)
     #expect(try database.codexApproval(id: pending.id)?.state == .failed)
     #expect(
@@ -555,35 +577,20 @@ final class CodexAppServerRuntimeTests {
   }
 
   @Test
-  func testApprovalBrokerRejectsOutOfScopeAndCanAutoApproveBoundedWrite() async throws {
-    let deniedFixture = try AppServerProcessFixture()
-    defer { deniedFixture.remove() }
-    try deniedFixture.configureFileApproval(grantRoot: "/tmp/outside-computer-mcp")
-    let database = try CodexDatabase(inMemory: ())
-    let deniedRuntime = deniedFixture.makeRuntime(database: database)
-    _ = try await deniedRuntime.call(method: "thread/loaded/list", params: .object([:]))
-    let denied = try await waitForLatestApproval(deniedRuntime)
-    #expect(denied.state == .denied)
-    #expect(denied.resolutionReason?.contains("exceeds the registered workspace") == true)
-    #expect(try await deniedFixture.waitForApprovalResponse().contains("error"))
-    await deniedRuntime.shutdown()
-
-    let approvedFixture = try AppServerProcessFixture()
-    defer { approvedFixture.remove() }
-    try approvedFixture.configureFileApproval(grantRoot: approvedFixture.directory.path)
-    let approvedDatabase = try CodexDatabase(inMemory: ())
-    let approvedRuntime = approvedFixture.makeRuntime(
-      database: approvedDatabase,
-      autoApproveWorkspaceWrites: true
-    )
-    _ = try await approvedRuntime.call(method: "thread/loaded/list", params: .object([:]))
-    let approved = try await waitForApprovalState(
-      approvedRuntime,
-      state: .approved
-    )
-    #expect(approved.decision == .approveOnce)
-    #expect(try await approvedFixture.waitForApprovalResponse().contains("accept"))
-    await approvedRuntime.shutdown()
+  func testNativeApprovalCanAuthorizeOutsideInitialDirectory() async throws {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    try fixture.configureFileApproval(grantRoot: "/tmp/explicit-native-grant")
+    let runtime = fixture.makeRuntime(database: try CodexDatabase(inMemory: ()))
+    _ = try await runtime.call(method: "thread/loaded/list", params: .object([:]))
+    let pending = try await waitForPendingApproval(runtime)
+    #expect(pending.state == .pending)
+    let result = try await runtime.respondToApproval(
+      id: pending.id,
+      response: .object(["decision": .string("acceptForSession")]))
+    #expect(result.objectValue?["approval"]?.objectValue?["state"] == .string("approved"))
+    #expect(try await fixture.waitForApprovalResponse().contains("acceptForSession"))
+    await runtime.shutdown()
   }
 
   @Test
@@ -609,7 +616,8 @@ final class CodexAppServerRuntimeTests {
     #expect(isolatedList.objectValue?["approvals"] == .array([]))
     await assertThrowsErrorAsync(try await isolatedRuntime.approval(id: pending.id))
     await assertThrowsErrorAsync(
-      try await isolatedRuntime.respondToApproval(id: pending.id, decision: "approve_once")
+      try await isolatedRuntime.respondToApproval(
+        id: pending.id, response: .object(["decision": .string("accept")]))
     )
 
     let routingFixture = try AppServerProcessFixture()
@@ -620,7 +628,7 @@ final class CodexAppServerRuntimeTests {
     )
     let routed = try await routingRuntime.respondToApproval(
       id: pending.id,
-      decision: "approve_once"
+      response: .object(["decision": .string("accept")])
     )
     #expect(routed.objectValue?["approval"]?.objectValue?["state"] == .string("approved"))
     #expect(try await owningFixture.waitForApprovalResponse().contains("accept"))
@@ -632,7 +640,7 @@ final class CodexAppServerRuntimeTests {
 
   @Test
   func testApprovalBrokerHandlesEverySupportedNativeApprovalKind() async throws {
-    let cases: [(CodexApprovalKind, String, JSONValue, CodexApprovalDecision)] = [
+    let cases: [(CodexApprovalKind, String, JSONValue, JSONValue)] = [
       (
         .commandExecution,
         "item/commandExecution/requestApproval",
@@ -645,7 +653,7 @@ final class CodexAppServerRuntimeTests {
           "threadId": .string("thread_fixture"),
           "turnId": .string("turn-command"),
         ]),
-        .approveOnce
+        .object(["decision": .string("accept")])
       ),
       (
         .fileChange,
@@ -658,7 +666,7 @@ final class CodexAppServerRuntimeTests {
           "threadId": .string("thread_fixture"),
           "turnId": .string("turn-file"),
         ]),
-        .approveSession
+        .object(["decision": .string("acceptForSession")])
       ),
       (
         .permissions,
@@ -677,7 +685,7 @@ final class CodexAppServerRuntimeTests {
           "threadId": .string("thread_fixture"),
           "turnId": .string("turn-permissions"),
         ]),
-        .approveSession
+        .object(["decision": .string("acceptForSession")])
       ),
       (
         .applyPatch,
@@ -694,7 +702,7 @@ final class CodexAppServerRuntimeTests {
           "grantRoot": .string("__WORKSPACE__"),
           "reason": .string("Apply a reviewed patch."),
         ]),
-        .approveOnce
+        .object(["decision": .string("accept")])
       ),
       (
         .execCommand,
@@ -712,11 +720,11 @@ final class CodexAppServerRuntimeTests {
           ]),
           "reason": .string("Inspect repository status."),
         ]),
-        .approveOnce
+        .object(["decision": .string("accept")])
       ),
     ]
 
-    for (kind, method, template, decision) in cases {
+    for (kind, method, template, responseTemplate) in cases {
       let fixture = try AppServerProcessFixture()
       do {
         let params = replaceWorkspacePlaceholder(template, with: fixture.directory.path)
@@ -727,16 +735,21 @@ final class CodexAppServerRuntimeTests {
 
         let pending = try await waitForPendingApproval(runtime)
         #expect(pending.kind == kind)
-        let response = try await runtime.respondToApproval(
-          id: pending.id,
-          decision: decision.rawValue
-        )
+        let nativeResponse: JSONValue
+        switch kind {
+        case .permissions:
+          nativeResponse = .object([
+            "permissions": .object(["network": .object(["enabled": .bool(true)])]),
+            "scope": .string("session"),
+          ])
+        case .applyPatch, .execCommand:
+          nativeResponse = .object(["decision": .string("approved")])
+        default: nativeResponse = responseTemplate
+        }
+        let response = try await runtime.respondToApproval(id: pending.id, response: nativeResponse)
         let approval = response.objectValue?["approval"]?.objectValue
         #expect(approval?["state"] == .string("approved"))
-        #expect(
-          approval?["scope"]
-            == .string(decision == .approveSession ? "session" : "once")
-        )
+        #expect(approval?["response"] == nativeResponse)
         let upstream = try await fixture.waitForApprovalResponse()
         #expect(upstream.contains("\"id\":900"))
         await runtime.shutdown()
@@ -771,7 +784,7 @@ final class CodexAppServerRuntimeTests {
     await assertThrowsErrorAsync(
       try await replacement.respondToApproval(
         id: pending.id,
-        decision: CodexApprovalDecision.approveOnce.rawValue
+        response: .object(["decision": .string("accept")])
       )
     )
     await replacement.shutdown()
@@ -801,7 +814,8 @@ final class CodexAppServerRuntimeTests {
         let visible = try await observer.approval(id: pending.id)
         #expect(visible.objectValue?["approval"]?.objectValue?["state"] == .string("pending"))
         await assertThrowsErrorAsync(
-          try await observer.respondToApproval(id: pending.id, decision: "approve_once"))
+          try await observer.respondToApproval(
+            id: pending.id, response: .object(["decision": .string("accept")])))
         #expect(try reopened.codexApproval(id: pending.id)?.state == .pending)
         #expect(!FileManager.default.fileExists(atPath: fixture.approvalResponseLog.path))
         await observer.shutdown()
@@ -811,7 +825,8 @@ final class CodexAppServerRuntimeTests {
         CodexRuntimeDirectory.shared.register(owning, id: owning.runtimeID)
         throw error
       }
-      _ = try await owning.respondToApproval(id: pending.id, decision: "deny")
+      _ = try await owning.respondToApproval(
+        id: pending.id, response: .object(["decision": .string("decline")]))
       _ = try await fixture.waitForApprovalResponse()
       #expect(try reopened.codexApproval(id: pending.id)?.state == .denied)
       await owning.shutdown()
@@ -823,7 +838,7 @@ final class CodexAppServerRuntimeTests {
   }
 
   @Test
-  func testMalformedApprovalRequestFailsClosedWithoutCreatingConsentRecord() async throws {
+  func testMalformedNativeApprovalIsRecordedAndRejectedBeforeConsent() async throws {
     let fixture = try AppServerProcessFixture()
     defer { fixture.remove() }
     try fixture.configureApproval(
@@ -845,12 +860,15 @@ final class CodexAppServerRuntimeTests {
           $0.objectValue?["kind"]?.stringValue
         }
       )
-      if eventKinds.contains("server_request_stream_failed") { break }
+      if eventKinds.contains("approval_denied") { break }
       try await Task.sleep(for: .milliseconds(10))
     }
 
-    #expect(eventKinds.contains("server_request_stream_failed"))
-    #expect(try database.codexApprovals(workspaceID: "fixture-workspace").isEmpty)
+    #expect(eventKinds.contains("approval_denied"))
+    #expect(
+      try database.codexApprovals(workspaceID: "fixture-workspace").allSatisfy {
+        $0.state == .denied
+      })
     let encodedEvents = try String(
       decoding: JSONEncoder().encode(await runtime.events(afterCursor: 0, maxResults: 100)),
       as: UTF8.self
@@ -1070,88 +1088,143 @@ final class CodexAppServerRuntimeTests {
       ) == nil)
   }
 
-  @Test
-  func testNormalizePinsThreadListAndSkillsToBoundWorkspace() async throws {
-    let workspace = URL(fileURLWithPath: "/tmp/computer-mcp-workspace")
-    let runtime = LiveCodexAppServerRuntime(
-      configuration: CodexConfig(enabled: true),
-      workspaceURL: workspace
-    )
-
-    let threadList = try await runtime.normalize(
+  @Test(arguments: [
+    JSONValue.string("accept"), .string("acceptForSession"), .string("decline"), .string("cancel"),
+    .object([
+      "acceptWithExecpolicyAmendment": .object([
+        "execpolicy_amendment": .array([.string("git"), .string("status")])
+      ])
+    ]),
+    .object([
+      "applyNetworkPolicyAmendment": .object([
+        "network_policy_amendment": .object([
+          "action": .string("deny"), "host": .string("fixture.invalid"),
+        ])
+      ])
+    ]),
+  ])
+  func nativeApprovalDecisionsAndUnknownResponseFieldsRoundTrip(_ decision: JSONValue) async throws
+  {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    try fixture.configureApproval(
+      method: "item/commandExecution/requestApproval",
       params: .object([
-        "cwd": .string(workspace.path),
-        "searchTerm": .string("gateway"),
-      ]),
-      for: try method("thread/list")
-    )
-    #expect((threadList?.objectValue?["cwd"]) == (.string(workspace.path)))
-    #expect((threadList?.objectValue?["searchTerm"]) == (.string("gateway")))
-
-    let skillsList = try await runtime.normalize(
-      params: .object([
-        "perCwdExtraUserRoots": .object([workspace.path: .array([.string("/tmp/escape")])])
-      ]),
-      for: try method("skills/list")
-    )
-    #expect((skillsList?.objectValue?["cwds"]) == (.array([.string(workspace.path)])))
-    #expect((skillsList?.objectValue?["perCwdExtraUserRoots"]) == nil)
+        "command": .string("git status"), "cwd": .string(fixture.directory.path),
+        "itemId": .string("item"), "startedAtMs": .number(1),
+        "threadId": .string("thread_fixture"), "turnId": .string("turn"),
+      ]))
+    let database = try CodexDatabase(inMemory: ())
+    let runtime = fixture.makeRuntime(database: database)
+    do {
+      _ = try await runtime.call(method: "thread/loaded/list", params: .object([:]))
+      let pending = try await waitForPendingApproval(runtime)
+      await #expect(throws: (any Error).self) {
+        try await runtime.respondToApproval(
+          id: pending.id, response: .object(["decision": .string("invalid")]))
+      }
+      let response: JSONValue = .object([
+        "decision": decision, "futureResponseField": .array([.number(42)]),
+      ])
+      _ = try await runtime.respondToApproval(id: pending.id, response: response)
+      let wire = try JSONDecoder().decode(
+        JSONValue.self, from: Data(try await fixture.waitForApprovalResponse().utf8))
+      #expect(wire.objectValue?["result"] == response)
+      #expect(try database.codexApproval(id: pending.id)?.response == response)
+      await #expect(throws: (any Error).self) {
+        try await runtime.respondToApproval(id: pending.id, response: response)
+      }
+      await runtime.shutdown()
+    } catch {
+      await runtime.shutdown()
+      throw error
+    }
   }
 
   @Test
-  func testNormalizePinsSandboxAndRejectsAuthorityOverrides() async throws {
+  func rawRPCPreservesUnknownRequestResponseAndEventFields() async throws {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    let notification: JSONValue = .object([
+      "method": .string("fixture/future"),
+      "params": .object(["nested": .object(["future": .number(42)])]),
+      "futureEnvelope": .string("retained"),
+    ])
+    try JSONEncoder().encode(notification).write(to: fixture.activeTurnOnStartFile)
+    let runtime = fixture.makeRuntime()
+    do {
+      let params: JSONValue = .object([
+        "sandbox": .string("danger-full-access"), "approvalPolicy": .string("never"),
+        "futureInput": .object(["nested": .array([.number(7)])]),
+      ])
+      let response = try await runtime.call(method: "thread/start", params: params)
+      #expect(response.objectValue?["futureResponse"] == .object(["preserved": .bool(true)]))
+      let requests = try fixture.requests().map {
+        try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+      }
+      let request = try #require(
+        requests.first { $0.objectValue?["method"] == .string("thread/start") })
+      #expect(
+        request.objectValue?["params"]?.objectValue?["futureInput"]
+          == params.objectValue?["futureInput"])
+      #expect(
+        request.objectValue?["params"]?.objectValue?["sandbox"] == .string("danger-full-access"))
+      for _ in 0..<100 {
+        let events = await runtime.events(afterCursor: 0, maxResults: 100)
+        if events.objectValue?["events"]?.arrayValue?.contains(where: {
+          $0.objectValue?["payload"] == notification
+        }) == true {
+          await runtime.shutdown()
+          return
+        }
+        try await Task.sleep(for: .milliseconds(5))
+      }
+      Issue.record("Unknown notification fields were not preserved.")
+      await runtime.shutdown()
+    } catch {
+      await runtime.shutdown()
+      throw error
+    }
+  }
+
+  @Test
+  func testNativeParametersAndConfigurationDefaultsArePreserved() async throws {
     let workspace = URL(fileURLWithPath: "/tmp/computer-mcp-workspace")
     let runtime = LiveCodexAppServerRuntime(
-      configuration: CodexConfig(
-        enabled: true,
-        sandbox: .workspaceWrite,
-        approvalPolicy: .never
-      ),
-      workspaceURL: workspace
-    )
-
-    let normalized = try await runtime.normalize(
-      params: .object([
-        "threadId": .string("thread-1"),
-        "input": .array([]),
-      ]),
-      for: try method("turn/start")
-    )
-    #expect((normalized?.objectValue?["cwd"]) == (.string(workspace.path)))
-    #expect((normalized?.objectValue?["approvalPolicy"]) == (.string("never")))
+      configuration: .init(enabled: true), workspaceURL: workspace)
+    let initial = try await runtime.normalize(params: .object([:]), for: method("thread/start"))
+    #expect(initial == .object(["cwd": .string(workspace.path)]))
+    let explicit: JSONValue = .object([
+      "cwd": .string("/tmp/other-directory"),
+      "sandbox": .string("danger-full-access"),
+      "approvalPolicy": .string("never"),
+      "config": .object(["model_provider": .string("personal")]),
+      "developerInstructions": .string("Use the project conventions."),
+    ])
+    #expect(try await runtime.normalize(params: explicit, for: method("thread/start")) == explicit)
+    let skills: JSONValue = .object([
+      "cwds": .array([.string("/tmp/skills")]),
+      "perCwdExtraUserRoots": .object(["/tmp/skills": .array([.string("/tmp/extra")])]),
+    ])
+    #expect(try await runtime.normalize(params: skills, for: method("skills/list")) == skills)
     #expect(
-      (normalized?.objectValue?["sandboxPolicy"]?.objectValue?["type"])
-        == (.string("workspaceWrite")))
-
-    await assertThrowsErrorAsync(
+      try await runtime.normalize(params: .object([:]), for: method("thread/resume"))
+        == .object([:]))
+    await #expect(throws: CodexToolError.self) {
       try await runtime.normalize(
-        params: .object(["config": .object([:])]),
-        for: try method("thread/start")
-      ),
-      expectedCode: "codex.app.override_denied"
-    )
-    await assertThrowsErrorAsync(
-      try await runtime.normalize(
-        params: .object(["sandbox": .string("danger-full-access")]),
-        for: try method("thread/start")
-      ),
-      expectedCode: "codex.app.danger_full_access_denied"
-    )
-    for alias in ["DangerFullAccess", "danger_full_access", "danger full-access"] {
-      await assertThrowsErrorAsync(
-        try await runtime.normalize(
-          params: .object([
-            "metadata": .object([
-              "nested": .array([
-                .object(["sandbox_policy": .string(alias)])
-              ])
-            ])
-          ]),
-          for: try method("thread/start")
-        ),
-        expectedCode: "codex.app.danger_full_access_denied"
-      )
+        params: .object(["ignored": .bool(true)]), for: method("configRequirements/read"))
     }
+    await runtime.shutdown()
+
+    let configured = LiveCodexAppServerRuntime(
+      configuration: .init(enabled: true, sandbox: .dangerFullAccess, approvalPolicy: .onRequest),
+      workspaceURL: workspace)
+    let turn = try await configured.normalize(
+      params: .object(["threadId": .string("native")]), for: method("turn/start"))
+    #expect(turn?.objectValue?["sandboxPolicy"] == .object(["type": .string("dangerFullAccess")]))
+    #expect(turn?.objectValue?["approvalPolicy"] == .string("on-request"))
+    #expect(turn?.objectValue?["cwd"] == nil)
+    await configured.shutdown()
   }
 
   @Test
@@ -1225,70 +1298,15 @@ final class CodexAppServerRuntimeTests {
   }
 
   @Test
-  func testThreadWorkspaceValidationAllowsDescendantsAndRejectsOtherRoots() throws {
-    let workspace = URL(fileURLWithPath: "/tmp/computer-mcp-workspace")
-
-    expectNoThrow(
-      try LiveCodexAppServerRuntime.validateThreadWorkspace(
-        threadID: "thread-1",
-        response: threadResponse(cwd: workspace.appendingPathComponent("nested").path),
-        workspaceURL: workspace
-      )
-    )
+  func testNativeThreadIdentityIsIndependentOfInitialDirectory() throws {
+    let response = createdThreadResponse(id: "thread-created", cwd: "/tmp/other-directory")
+    #expect(try LiveCodexAppServerRuntime.createdThreadID(response: response) == "thread-created")
+    try LiveCodexAppServerRuntime.validateThreadResponse(
+      threadID: "thread-created", response: response)
     expectThrows(
-      try LiveCodexAppServerRuntime.validateThreadWorkspace(
-        threadID: "thread-2",
-        response: threadResponse(cwd: "/tmp/other-workspace"),
-        workspaceURL: workspace
-      )
-    )
+      try LiveCodexAppServerRuntime.validateThreadResponse(threadID: "other", response: response))
     expectThrows(
-      try LiveCodexAppServerRuntime.validateThreadWorkspace(
-        threadID: "thread-3",
-        response: .object(["thread": .object([:])]),
-        workspaceURL: workspace
-      )
-    )
-    expectNoThrow(
-      try LiveCodexAppServerRuntime.validatePersistedThreadWorkspace(
-        threadID: "thread-4",
-        threadCWD: workspace.appendingPathComponent("nested").path,
-        workspaceURL: workspace
-      )
-    )
-    expectThrows(
-      try LiveCodexAppServerRuntime.validatePersistedThreadWorkspace(
-        threadID: "thread-5",
-        threadCWD: "/tmp/other-workspace",
-        workspaceURL: workspace
-      )
-    )
-  }
-
-  @Test
-  func testCreatedThreadWorkspaceValidationAcceptsBoundThreadAndRejectsEscapes() throws {
-    let workspace = URL(fileURLWithPath: "/tmp/computer-mcp-workspace")
-
-    #expect(
-      (try LiveCodexAppServerRuntime.createdWorkspaceScopedThreadID(
-        response: createdThreadResponse(id: "thread-created", cwd: workspace.path),
-        workspaceURL: workspace
-      )) == ("thread-created"))
-    expectThrows(
-      try LiveCodexAppServerRuntime.createdWorkspaceScopedThreadID(
-        response: createdThreadResponse(
-          id: "thread-created-outside",
-          cwd: "/tmp/outside-workspace"
-        ),
-        workspaceURL: workspace
-      )
-    )
-    expectThrows(
-      try LiveCodexAppServerRuntime.createdWorkspaceScopedThreadID(
-        response: threadResponse(cwd: workspace.path),
-        workspaceURL: workspace
-      )
-    )
+      try LiveCodexAppServerRuntime.createdThreadID(response: .object(["thread": .object([:])])))
   }
 
   private func method(_ name: String) throws -> CodexAppServerMethod {
@@ -1313,7 +1331,7 @@ final class CodexAppServerRuntimeTests {
   }
 }
 
-private func elevationRequesterOwner(workspaceID: String) -> CodexRuntimeOwner {
+private func runtimeOwner(workspaceID: String) -> CodexRuntimeOwner {
   CodexRuntimeOwner(
     workspaceID: workspaceID,
     profileID: "fixture-profile",
@@ -1442,7 +1460,7 @@ struct AppServerProcessFixture {
             printf '{"id":%s,"result":{"status":"unsubscribed"}}\n' "$id"
             ;;
           *thread*start*)
-            printf '{"id":%s,"result":{"approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"%s","model":"gpt-test","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"cliVersion":"fixture","createdAt":1,"cwd":"%s","ephemeral":false,"id":"thread_elevated","modelProvider":"openai","preview":"","sessionId":"session_elevated","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":1}}}\n' "$id" "$workspace_dir" "$workspace_dir"
+            printf '{"id":%s,"result":{"futureResponse":{"preserved":true},"approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"%s","model":"gpt-test","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"cliVersion":"fixture","createdAt":1,"cwd":"%s","ephemeral":false,"id":"thread_native","modelProvider":"openai","preview":"","sessionId":"session_native","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":1}}}\n' "$id" "$workspace_dir" "$workspace_dir"
             ;;
           *turn*interrupt*)
             printf '{"id":%s,"result":{}}\n' "$id"
@@ -1451,7 +1469,7 @@ struct AppServerProcessFixture {
             if [ -f "$fixture_dir/hang-turn-start" ]; then
               continue
             fi
-            printf '{"id":%s,"result":{"turn":{"id":"turn_elevated","items":[],"status":"inProgress"}}}\n' "$id"
+            printf '{"id":%s,"result":{"turn":{"id":"turn_native","items":[],"status":"inProgress"}}}\n' "$id"
             ;;
           *thread*goal*set*)
             printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"active","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":50000,"tokensUsed":1250,"updatedAt":2}}}\n' "$id"
@@ -1482,7 +1500,6 @@ struct AppServerProcessFixture {
     requestTimeoutSeconds: Int = CodexConfig().appServerRequestTimeoutSeconds,
     approvalTimeoutSeconds: Int = 300,
     database: CodexDatabase? = nil,
-    autoApproveWorkspaceWrites: Bool = false,
     workspaceID: String? = "fixture-workspace"
   ) -> LiveCodexAppServerRuntime {
     LiveCodexAppServerRuntime(
@@ -1490,12 +1507,10 @@ struct AppServerProcessFixture {
         enabled: true,
         executable: executable.path,
         execEnabled: false,
-        mcpEnabled: false,
         appServerRequestTimeoutSeconds: requestTimeoutSeconds,
         appServerTerminationGraceMilliseconds: 200,
         appServerKillGraceMilliseconds: 1_000,
         appServerApprovalTimeoutSeconds: approvalTimeoutSeconds,
-        appServerAutoApproveWorkspaceWrites: autoApproveWorkspaceWrites,
         approvalPolicy: .onRequest
       ),
       workspaceURL: directory,

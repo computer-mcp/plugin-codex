@@ -6,10 +6,9 @@ import Testing
 
 struct CodexExecutionProviderTests {
   @Test(.timeLimit(.minutes(1)))
-  func existingExecutionContractsRoundTripOverMCPAndCloseIndependently() async throws {
+  func execContractsRoundTripOverMCPAndClose() async throws {
     let exec = ExecutionSpy()
-    let mcp = ExecutionSpy()
-    let execution = CodexExecutionProvider(exec: exec, mcp: mcp, readOnly: false)
+    let execution = CodexExecutionProvider(exec: exec)
     let pair = await InMemoryTransport.createConnectedPair()
     // The SDK drops messages delivered before its peer transport is connected.
     try await pair.server.connect()
@@ -36,7 +35,7 @@ struct CodexExecutionProviderTests {
               "operation": .string(item.operation), "arguments": .object(item.expected),
             ]))
         guard case .text(let text, _, _) = result.content.first else {
-          Issue.record("Missing legacy text result for \(item.name)")
+          Issue.record("Missing text result for \(item.name)")
           continue
         }
         #expect(
@@ -55,21 +54,12 @@ struct CodexExecutionProviderTests {
       throw error
     }
     #expect(await exec.operations.count == 6)
-    #expect(await mcp.operations.count == 10)
     #expect(await exec.shutdowns == 1)
-    #expect(await mcp.shutdowns == 1)
   }
 
-  @Test func readOnlyAndInvalidArgumentsNeverReachExecution() async throws {
+  @Test func invalidArgumentsNeverReachExecution() async throws {
     let spy = ExecutionSpy()
-    let provider = CodexExecutionProvider(exec: spy, mcp: spy, readOnly: true)
-    for item in cases where item.write {
-      let args = try JSONDecoder().decode(
-        JSONValue.self, from: JSONEncoder().encode(item.arguments))
-      await #expect(throws: CodexToolError.self) {
-        try await provider.call(name: item.name, arguments: args)
-      }
-    }
+    let provider = CodexExecutionProvider(exec: spy)
     await #expect(throws: CodexToolError.self) {
       try await provider.call(
         name: "codex.exec.list", arguments: .object(["cwd": .string("/outside")]))
@@ -114,40 +104,24 @@ struct CodexExecutionProviderTests {
         ]),
       .init("exec.result", ["session_id": .string("session")]),
       .init("exec.cancel", ["session_id": .string("session")], write: true),
-      .init("mcp.status"), .init("mcp.tools.list"),
-      .init(
-        "mcp.run", ["prompt": .string("hello")],
-        expected: ["prompt": .string("hello"), "model": .null], write: true),
-      .init(
-        "mcp.reply", ["thread_id": .string("thread"), "prompt": .string("continue")], write: true),
-      .init("mcp.calls.list"),
-      .init(
-        "mcp.events", ["call_id": .string("call"), "after_cursor": .int(3), "max_results": .int(7)]),
-      .init("mcp.result", ["call_id": .string("call")]),
-      .init("mcp.approvals.list", ["call_id": .string("call")]),
-      .init(
-        "mcp.approval.respond",
-        [
-          "call_id": .string("call"), "approval_id": .string("approval"),
-          "decision": .string("approved"),
-        ], write: true),
-      .init("mcp.cancel", ["call_id": .string("call")], write: true),
     ]
   }
 }
 
-private actor ExecutionSpy: CodexExecRuntimeProtocol, CodexMCPRuntimeProtocol {
+private actor ExecutionSpy: CodexExecRuntimeProtocol {
   var operations: [String] = []
   var shutdowns = 0
   func record(_ operation: String, _ arguments: [String: JSONValue] = [:]) -> JSONValue {
     operations.append(operation)
     return .object(["operation": .string(operation), "arguments": .object(arguments)])
   }
-  func start(prompt: String, model: String?) -> JSONValue {
+  func start(prompt: String, model: String?, options: JSONValue?) -> JSONValue {
     record(
       "exec.start", ["prompt": .string(prompt), "model": model.map(JSONValue.string) ?? .null])
   }
-  func resume(upstreamSessionID: String, prompt: String?) -> JSONValue {
+  func resume(upstreamSessionID: String, prompt: String?, model: String?, options: JSONValue?)
+    -> JSONValue
+  {
     record(
       "exec.resume",
       [
@@ -170,35 +144,5 @@ private actor ExecutionSpy: CodexExecRuntimeProtocol, CodexMCPRuntimeProtocol {
   func cancel(sessionID: String) -> JSONValue {
     record("exec.cancel", ["session_id": .string(sessionID)])
   }
-  func status() -> JSONValue { record("mcp.status") }
-  func tools() -> JSONValue { record("mcp.tools.list") }
-  func run(prompt: String, model: String?) -> JSONValue {
-    record("mcp.run", ["prompt": .string(prompt), "model": model.map(JSONValue.string) ?? .null])
-  }
-  func reply(threadID: String, prompt: String) -> JSONValue {
-    record("mcp.reply", ["thread_id": .string(threadID), "prompt": .string(prompt)])
-  }
-  func calls() -> JSONValue { record("mcp.calls.list") }
-  func events(callID: String, afterCursor: Int, maxResults: Int) -> JSONValue {
-    record(
-      "mcp.events",
-      [
-        "call_id": .string(callID), "after_cursor": .number(Double(afterCursor)),
-        "max_results": .number(Double(maxResults)),
-      ])
-  }
-  func result(callID: String) -> JSONValue { record("mcp.result", ["call_id": .string(callID)]) }
-  func pendingApprovals(callID: String) -> JSONValue {
-    record("mcp.approvals.list", ["call_id": .string(callID)])
-  }
-  func respondToApproval(callID: String, approvalID: String, decision: String) -> JSONValue {
-    record(
-      "mcp.approval.respond",
-      [
-        "call_id": .string(callID), "approval_id": .string(approvalID),
-        "decision": .string(decision),
-      ])
-  }
-  func cancel(callID: String) -> JSONValue { record("mcp.cancel", ["call_id": .string(callID)]) }
   func shutdown() { shutdowns += 1 }
 }

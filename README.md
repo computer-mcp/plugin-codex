@@ -7,9 +7,8 @@ The plugin does not link Computer MCP Core or install the vendor Codex binary.
 
 ## Current capabilities
 
-The configured server exposes the existing six `codex.exec.*` tools and ten
-`codex.mcp.*` tools, preserving their names, parameters, session identifiers,
-bounded events, result envelopes and independent lifecycles.
+The configured server exposes six `codex.exec.*` tools for sessions, bounded
+events, results and cancellation, alongside the App Server tools below.
 
 `codex.protocol.methods.list` and `codex.protocol.methods.describe` inspect bundled,
 version-specific protocol declarations. Schema presence does not prove
@@ -38,10 +37,7 @@ as a local JSON file:
   "enabled": true,
   "executable": "/absolute/path/to/codex",
   "app_server_enabled": false,
-  "exec_enabled": true,
-  "mcp_enabled": true,
-  "sandbox": "workspace-write",
-  "approval_policy": "never"
+  "exec_enabled": true
 }
 ```
 
@@ -49,21 +45,25 @@ Launch with `codex-mcp-adapter --config /absolute/path/codex.json`.
 For App Server execution, set `app_server_enabled` to `true` and supply
 `--state-directory /absolute/path/adapter-state`. This directory holds the
 adapter's `codex.sqlite` records; it is separate from the vendor's `CODEX_HOME`
-and the Computer MCP host database. Keep it across restarts and updates.
-All existing configuration defaults and validation limits remain in
-`CodexConfig`; the configuration file is bounded to 64 KiB. No executable
-is started for catalog discovery. Choose a policy appropriate to the intended
-workspace before executing tools.
+and the Computer MCP host database. Host-bound Exec also requires this directory
+for shared native thread ownership. Keep it across restarts and updates.
+The configuration file is bounded to 64 KiB. No executable is started for
+catalog discovery. Omitted sandbox and approval settings follow native Codex
+configuration, including a user-selected Full Access default. Optional adapter
+settings and explicit tool parameters are native overrides, not host grants.
 
-Computer MCP supplies immutable workspace/read-only launch metadata. A
-standalone MCP client uses its process working directory and the local
-configuration. Tool arguments cannot override those launch settings.
+Computer MCP supplies the initial directory and stable authorization subject.
+The host admits each invocation using its current permissions; Codex controls
+its own sandbox and approvals. Explicit native directories and Full Access
+selections are preserved. The initial directory is task ownership metadata,
+not an operating-system sandbox. Standalone clients use their process working
+directory as the initial directory.
 `CODEX_HOME` remains the vendor's environment setting; do not put credentials
 in arguments. Host metadata and parent session identity are not propagated to
 the vendor process. Neither launch mode grants host administration.
 
 A host that explicitly enables `hostServices` supplies the scoped MCP callback
-connection for dynamic tools, existing grant consumption, managed-workspace
+connection for dynamic tools, managed-workspace
 registration and diagnostics. See [host integration](Documentation/Reference/HostIntegration.md)
 for approval ownership, recovery and availability boundaries.
 
@@ -75,10 +75,10 @@ The [documentation index](Documentation/README.md) and
 
 ## Protocol inputs
 
-The bundled inventory was exported by Codex 0.153.4. Reproduce it using that
+The bundled inventory was exported by Codex 0.154.0. Reproduce it using that
 version's `app-server generate-json-schema --out EXPORT_ROOT/stable` and
 `app-server generate-json-schema --experimental --out EXPORT_ROOT/experimental`.
-Run `node Scripts/import-schema.mjs EXPORT_ROOT 0.153.4`, or add `--check`
+Run `node Scripts/import-schema.mjs EXPORT_ROOT 0.154.0`, or add `--check`
 to verify byte-for-byte drift. Do not edit generated JSON by hand.
 Schema receipt integrity is not publisher signature verification.
 
@@ -86,8 +86,9 @@ Schema receipt integrity is not publisher signature verification.
 reports all four message directions, source digests, method and schema changes,
 JSON Pointers, and required-parameter differences. It does not run Codex.
 
-The installed schema and swift-codex's pinned schema are separate version
-authorities. Declaration coverage does not establish runtime support.
+The adapter and swift-codex use the same vendor schema baseline. The installed
+Codex executable can differ; declaration coverage does not establish runtime
+support. Unsupported vendor methods fail explicitly.
 
 ### Offline domain-state migration
 

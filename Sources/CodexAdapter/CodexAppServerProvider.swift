@@ -7,35 +7,35 @@ struct CodexAppServerProvider: Sendable {
   let database: CodexDatabase?
   let workspaceURL: URL
   let recentThreadReader: CodexRecentThreadReader?
-  let readOnly: Bool
   let localControlAllowed: Bool
   let workspaceHost: (any CodexManagedWorkspaceHost)?
   let managedWorktreeRoot: URL?
-  let configuredSandbox: CodexSandboxMode
+  let configuredSandbox: CodexSandboxMode?
   let hostDiagnostics: (any CodexHostDiagnostics)?
-  let elevationAuthority: (any CodexElevationAuthority)?
+  let unboundStateAvailable: Bool
+  let threadOwnerIndex: CodexThreadOwnerIndex?
 
   init(
     appServer: any CodexAppServerRuntimeProtocol, owner: CodexRuntimeOwner?,
     database: CodexDatabase?, workspaceURL: URL, recentThreadReader: CodexRecentThreadReader?,
-    readOnly: Bool, localControlAllowed: Bool,
+    localControlAllowed: Bool,
     workspaceHost: (any CodexManagedWorkspaceHost)? = nil, managedWorktreeRoot: URL? = nil,
-    configuredSandbox: CodexSandboxMode = CodexConfig().sandbox,
+    configuredSandbox: CodexSandboxMode? = CodexConfig().sandbox,
     hostDiagnostics: (any CodexHostDiagnostics)? = nil,
-    elevationAuthority: (any CodexElevationAuthority)? = nil
+    unboundStateAvailable: Bool = false, threadOwnerIndex: CodexThreadOwnerIndex? = nil
   ) {
     self.appServer = appServer
     self.owner = owner
     self.database = database
     self.workspaceURL = workspaceURL
     self.recentThreadReader = recentThreadReader
-    self.readOnly = readOnly
     self.localControlAllowed = localControlAllowed
     self.workspaceHost = workspaceHost
     self.managedWorktreeRoot = managedWorktreeRoot
     self.configuredSandbox = configuredSandbox
     self.hostDiagnostics = hostDiagnostics
-    self.elevationAuthority = elevationAuthority
+    self.unboundStateAvailable = unboundStateAvailable
+    self.threadOwnerIndex = threadOwnerIndex
   }
 
   var tools: [MCP.Tool] {
@@ -56,14 +56,6 @@ struct CodexAppServerProvider: Sendable {
       throw CodexToolError.invalidArguments(
         "Arguments must match the tool's declared object schema.")
     }
-    let safeRead =
-      name == "codex.app.methods.call"
-      ? CodexAppServerMethodCatalog.method(named: object["method"]?.stringValue ?? "")?.risk
-        == .readOnly
-      : Self.readOnlyToolNames.contains(name)
-    guard !readOnly || safeRead else {
-      throw CodexToolError.disabled("The bound host profile does not permit this operation.")
-    }
     guard localControlAllowed || name != "codex.app.ownership.reconcile.perform" else {
       throw CodexToolError.disabled("Ownership reconciliation requires a local caller.")
     }
@@ -75,7 +67,8 @@ struct CodexAppServerProvider: Sendable {
       let hostSnapshot = try await hostDiagnostics?.snapshot(limit: limit, now: now)
       result = try await CodexOperationalDiagnostics.snapshot(
         database: database, owner: owner, configuredSandbox: configuredSandbox,
-        limit: limit, hostSnapshot: hostSnapshot, now: now)
+        limit: limit, hostSnapshot: hostSnapshot, unboundStateAvailable: unboundStateAvailable,
+        now: now)
     case "codex.app.status":
       result = try await tryAppServer().status()
     case "codex.app.runtimes.list":
@@ -202,6 +195,7 @@ struct CodexAppServerProvider: Sendable {
         )
       }
       let threadID = try Self.requiredIdentifier("thread_id", in: object)
+      try threadOwnerIndex?.check(threadID: threadID)
       let recentLimits = CodexRecentThreadLimits(
         maxTurns: try Self.boundedInt("max_turns", in: object, default: 10, range: 1...50),
         maxMessages: try Self.boundedInt(
@@ -252,8 +246,7 @@ struct CodexAppServerProvider: Sendable {
         workspaceID: owner?.workspaceID,
         mode: mode,
         interruptActiveTurn: try Self.optionalBool("interrupt_active_turn", in: object) ?? false,
-        database: database,
-        elevationAuthority: elevationAuthority
+        database: database
       )
     case "codex.app.handoff.diagnose":
       result = await CodexThreadHandoffDiagnostics.diagnose(
@@ -345,7 +338,7 @@ struct CodexAppServerProvider: Sendable {
     case "codex.app.approvals.respond":
       result = try await tryAppServer().respondToApproval(
         id: Self.requiredIdentifier("approval_id", in: object),
-        decision: Self.requiredString("decision", in: object)
+        response: try Self.requiredValue("response", in: object)
       )
 
     case "codex.run.create":
@@ -525,6 +518,7 @@ struct CodexAppServerProvider: Sendable {
         sourceWorkspaceURL: workspaceURL,
         profileID: owner?.profileID,
         caller: owner?.caller,
+        principalID: owner?.principalID,
         agentID: Self.requiredString("agent_id", in: object),
         threadID: try Self.optionalString("thread_id", in: object),
         runID: try Self.optionalString("run_id", in: object),
@@ -537,6 +531,8 @@ struct CodexAppServerProvider: Sendable {
         managedRoot: managedWorktreeRoot
       ).json
     case "codex.worktree.provision.perform":
+      _ = try selectedManagedWorktree(
+        id: Self.requiredString("plan_id", in: object), requiresOwnership: true)
       result = try await CodexManagedWorktreeManager.performProvision(
         database: database,
         sourceWorkspaceID: owner?.workspaceID,
@@ -548,7 +544,7 @@ struct CodexAppServerProvider: Sendable {
       ).json
     case "codex.worktree.remove.plan":
       let managed = try selectedManagedWorktree(
-        id: Self.requiredString("managed_worktree_id", in: object)
+        id: Self.requiredString("managed_worktree_id", in: object), requiresOwnership: true
       )
       result = try CodexManagedWorktreeManager.planRemoval(
         database: database,
@@ -561,7 +557,7 @@ struct CodexAppServerProvider: Sendable {
       ).json
     case "codex.worktree.remove.perform":
       let managed = try selectedManagedWorktree(
-        id: Self.requiredString("managed_worktree_id", in: object)
+        id: Self.requiredString("managed_worktree_id", in: object), requiresOwnership: true
       )
       result = try await CodexManagedWorktreeManager.performRemoval(
         database: database,
@@ -600,11 +596,21 @@ struct CodexAppServerProvider: Sendable {
     return workspaceHost
   }
 
-  private func selectedManagedWorktree(id: String) throws -> CodexManagedWorktree {
+  private func selectedManagedWorktree(id: String, requiresOwnership: Bool = false) throws
+    -> CodexManagedWorktree
+  {
     guard let worktree = try database?.codexManagedWorktree(id: id),
       worktree.sourceWorkspaceID == owner?.workspaceID
     else {
       throw CodexManagedWorktreeError.unknown(id)
+    }
+    if requiresOwnership {
+      guard let principalID = owner?.principalID, worktree.principalID == principalID,
+        worktree.profileID == owner?.profileID
+      else {
+        throw CodexManagedWorktreeError.invalid(
+          "Managed worktree ownership is unbound or belongs to another authorization subject.")
+      }
     }
     return worktree
   }
@@ -1092,6 +1098,15 @@ struct CodexAppServerProvider: Sendable {
     result[targetKey] = .array(values)
   }
 
+  private static func requiredValue(_ key: String, in object: [String: JSONValue]) throws
+    -> JSONValue
+  {
+    guard let value = object[key], value.objectValue != nil else {
+      throw CodexToolError.invalidArguments("'\(key)' must be a response object.")
+    }
+    return value
+  }
+
   private static func requiredString(
     _ key: String,
     in object: [String: JSONValue]
@@ -1215,37 +1230,6 @@ struct CodexAppServerProvider: Sendable {
     return value
   }
 
-  private static let readOnlyToolNames: Set<String> = [
-    "codex.diagnostics.snapshot",
-    "codex.worktree.managed.list",
-    "codex.worktree.managed.read",
-    "codex.app.status",
-    "codex.app.runtimes.list",
-    "codex.app.runtimes.history",
-    "codex.app.runtimes.cleanup.preview",
-    "codex.app.ownership.reconcile.preview",
-    "codex.app.runtimes.inspect",
-    "codex.app.methods.list",
-    "codex.app.methods.describe",
-    "codex.app.thread.list",
-    "codex.app.thread.loaded.list",
-    "codex.app.thread.read",
-    "codex.app.thread.recent",
-    "codex.app.handoff.diagnose",
-    "codex.app.goal.get",
-    "codex.app.models.list",
-    "codex.app.skills.list",
-    "codex.app.apps.list",
-    "codex.app.events.read",
-    "codex.app.requests.list",
-    "codex.app.approvals.list",
-    "codex.app.approvals.read",
-    "codex.run.list",
-    "codex.run.read",
-    "codex.worktree.leases.list",
-    "codex.worktree.leases.read",
-    "codex.worktree.leases.cleanup.preview",
-  ]
   private static let emptySchema = objectSchema()
   private static let cursorSchema = objectSchema(properties: [
     "after_cursor": integerSchema(minimum: 0),
@@ -1388,7 +1372,7 @@ struct CodexAppServerProvider: Sendable {
     ),
     tool(
       "codex.app.methods.call",
-      "Call one reviewed Codex App Server RPC. The gateway fixes cwd, sandbox, and approval policy and rejects instruction/config overrides. A leased turn must use codex.app.turn.start with its lease ID.",
+      "Call one supported Codex App Server RPC with native parameters and configuration inheritance. A leased turn must use codex.app.turn.start with its lease ID.",
       objectSchema(
         properties: [
           "method": stringSchema(),
@@ -1657,7 +1641,7 @@ struct CodexAppServerProvider: Sendable {
           "state": .object([
             "type": .string("string"),
             "enum": .array(
-              ["pending", "approved", "denied", "timed_out", "interrupted", "failed"]
+              ["pending", "approved", "denied", "cancelled", "timed_out", "interrupted", "failed"]
                 .map(JSONValue.string)
             ),
           ]),
@@ -1675,18 +1659,13 @@ struct CodexAppServerProvider: Sendable {
     ),
     tool(
       "codex.app.approvals.respond",
-      "Approve once, approve for a bounded session scope when supported, or deny one live App Server request. Workspace and capability policy are revalidated before approval.",
+      "Respond to one native App Server approval with its complete official response object. Native decision and permission scope semantics are preserved.",
       objectSchema(
         properties: [
           "approval_id": stringSchema(),
-          "decision": .object([
-            "type": .string("string"),
-            "enum": .array(
-              ["approve_once", "approve_session", "deny"].map(JSONValue.string)
-            ),
-          ]),
+          "response": .object(["type": .string("object")]),
         ],
-        required: ["approval_id", "decision"]
+        required: ["approval_id", "response"]
       ),
       write: true
     ),

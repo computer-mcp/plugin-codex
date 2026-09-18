@@ -5,16 +5,14 @@ package struct CodexConfig: Codable, Equatable, Sendable {
   package var executable: String
   package var appServerEnabled: Bool
   package var execEnabled: Bool
-  package var mcpEnabled: Bool
   package var experimentalAPI: Bool
   package var appServerRequestTimeoutSeconds: Int
   package var appServerAppListTimeoutSeconds: Int
   package var appServerTerminationGraceMilliseconds: Int
   package var appServerKillGraceMilliseconds: Int
   package var appServerApprovalTimeoutSeconds: Int
-  package var appServerAutoApproveWorkspaceWrites: Bool
-  package var sandbox: CodexSandboxMode
-  package var approvalPolicy: CodexApprovalPolicy
+  package var sandbox: CodexSandboxMode?
+  package var approvalPolicy: CodexApprovalPolicy?
   package var maxSessions: Int
   package var maxEventsPerSession: Int
 
@@ -23,16 +21,14 @@ package struct CodexConfig: Codable, Equatable, Sendable {
     executable: String = "codex",
     appServerEnabled: Bool = true,
     execEnabled: Bool = true,
-    mcpEnabled: Bool = true,
     experimentalAPI: Bool = true,
     appServerRequestTimeoutSeconds: Int = 30,
     appServerAppListTimeoutSeconds: Int = 120,
     appServerTerminationGraceMilliseconds: Int = 1_000,
     appServerKillGraceMilliseconds: Int = 2_000,
     appServerApprovalTimeoutSeconds: Int = 300,
-    appServerAutoApproveWorkspaceWrites: Bool = false,
-    sandbox: CodexSandboxMode = .workspaceWrite,
-    approvalPolicy: CodexApprovalPolicy = .never,
+    sandbox: CodexSandboxMode? = nil,
+    approvalPolicy: CodexApprovalPolicy? = nil,
     maxSessions: Int = 8,
     maxEventsPerSession: Int = 1_024
   ) {
@@ -40,14 +36,12 @@ package struct CodexConfig: Codable, Equatable, Sendable {
     self.executable = executable
     self.appServerEnabled = appServerEnabled
     self.execEnabled = execEnabled
-    self.mcpEnabled = mcpEnabled
     self.experimentalAPI = experimentalAPI
     self.appServerRequestTimeoutSeconds = appServerRequestTimeoutSeconds
     self.appServerAppListTimeoutSeconds = appServerAppListTimeoutSeconds
     self.appServerTerminationGraceMilliseconds = appServerTerminationGraceMilliseconds
     self.appServerKillGraceMilliseconds = appServerKillGraceMilliseconds
     self.appServerApprovalTimeoutSeconds = appServerApprovalTimeoutSeconds
-    self.appServerAutoApproveWorkspaceWrites = appServerAutoApproveWorkspaceWrites
     self.sandbox = sandbox
     self.approvalPolicy = approvalPolicy
     self.maxSessions = maxSessions
@@ -59,14 +53,12 @@ package struct CodexConfig: Codable, Equatable, Sendable {
     case executable
     case appServerEnabled = "app_server_enabled"
     case execEnabled = "exec_enabled"
-    case mcpEnabled = "mcp_enabled"
     case experimentalAPI = "experimental_api"
     case appServerRequestTimeoutSeconds = "app_server_request_timeout_seconds"
     case appServerAppListTimeoutSeconds = "app_server_app_list_timeout_seconds"
     case appServerTerminationGraceMilliseconds = "app_server_termination_grace_milliseconds"
     case appServerKillGraceMilliseconds = "app_server_kill_grace_milliseconds"
     case appServerApprovalTimeoutSeconds = "app_server_approval_timeout_seconds"
-    case appServerAutoApproveWorkspaceWrites = "app_server_auto_approve_workspace_writes"
     case sandbox
     case approvalPolicy = "approval_policy"
     case maxSessions = "max_sessions"
@@ -80,7 +72,6 @@ package struct CodexConfig: Codable, Equatable, Sendable {
     appServerEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .appServerEnabled) ?? true
     execEnabled = try container.decodeIfPresent(Bool.self, forKey: .execEnabled) ?? true
-    mcpEnabled = try container.decodeIfPresent(Bool.self, forKey: .mcpEnabled) ?? true
     experimentalAPI =
       try container.decodeIfPresent(Bool.self, forKey: .experimentalAPI) ?? true
     appServerRequestTimeoutSeconds =
@@ -94,15 +85,9 @@ package struct CodexConfig: Codable, Equatable, Sendable {
       try container.decodeIfPresent(Int.self, forKey: .appServerKillGraceMilliseconds) ?? 2_000
     appServerApprovalTimeoutSeconds =
       try container.decodeIfPresent(Int.self, forKey: .appServerApprovalTimeoutSeconds) ?? 300
-    appServerAutoApproveWorkspaceWrites =
-      try container.decodeIfPresent(Bool.self, forKey: .appServerAutoApproveWorkspaceWrites)
-      ?? false
-    sandbox =
-      try container.decodeIfPresent(CodexSandboxMode.self, forKey: .sandbox)
-      ?? .workspaceWrite
-    approvalPolicy =
-      try container.decodeIfPresent(CodexApprovalPolicy.self, forKey: .approvalPolicy)
-      ?? .never
+    sandbox = try container.decodeIfPresent(CodexSandboxMode.self, forKey: .sandbox)
+    approvalPolicy = try container.decodeIfPresent(
+      CodexApprovalPolicy.self, forKey: .approvalPolicy)
     maxSessions = try container.decodeIfPresent(Int.self, forKey: .maxSessions) ?? 8
     maxEventsPerSession =
       try container.decodeIfPresent(Int.self, forKey: .maxEventsPerSession) ?? 1_024
@@ -148,20 +133,44 @@ package struct CodexConfig: Codable, Equatable, Sendable {
         "codex.max_events_per_session must be between 64 and 16384."
       )
     }
-    if enabled && !appServerEnabled && !execEnabled && !mcpEnabled {
+    if enabled && !appServerEnabled && !execEnabled {
       throw ConfigurationError.invalid(
         "At least one Codex path must be enabled when [codex].enabled is true."
       )
     }
-    guard sandbox != .dangerFullAccess else {
-      throw ConfigurationError.invalid(
-        "codex.sandbox cannot be danger-full-access."
-      )
-    }
   }
 
-  package var executableURL: URL? {
-    executable.contains("/") ? URL(fileURLWithPath: executable).standardizedFileURL : nil
+  func resolvedExecutableURL(workspaceURL: URL, environment: [String: String]) throws -> URL {
+    let candidates: [URL]
+    if executable.contains("/") {
+      candidates = [
+        executable.hasPrefix("/")
+          ? URL(fileURLWithPath: executable)
+          : workspaceURL.appendingPathComponent(executable)
+      ]
+    } else if let path = environment["PATH"] {
+      candidates = path.split(separator: ":", omittingEmptySubsequences: false).map { entry in
+        let directory =
+          entry.hasPrefix("/")
+          ? URL(fileURLWithPath: String(entry), isDirectory: true)
+          : workspaceURL.appendingPathComponent(String(entry), isDirectory: true)
+        return directory.appendingPathComponent(executable)
+      }
+    } else {
+      candidates = []
+    }
+    for candidate in candidates {
+      let url = candidate.standardizedFileURL
+      var isDirectory: ObjCBool = false
+      if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+        !isDirectory.boolValue, FileManager.default.isExecutableFile(atPath: url.path)
+      {
+        return url
+      }
+    }
+    throw ConfigurationError.invalid(
+      "Cannot resolve configured Codex executable '\(executable)' in the launch workspace and PATH."
+    )
   }
 }
 

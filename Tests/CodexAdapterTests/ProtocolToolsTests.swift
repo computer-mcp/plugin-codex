@@ -38,7 +38,7 @@ struct ProtocolToolsTests {
     let result = try tools.call(
       name: "codex.protocol.methods.describe", arguments: ["method": .string("thread/goal/set")])
     let value = try payload(result)
-    #expect(value["codex_version"] == .string("0.153.4"))
+    #expect(value["codex_version"] == .string("0.154.0"))
     #expect(value["requires_params"] == .bool(true))
     let params = try #require(value["params_schema"]?.objectValue)
     let definitions = try #require(params["definitions"]?.objectValue)
@@ -74,7 +74,7 @@ struct ProtocolToolsTests {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
-    try Data(#"{"codexVersion":"0.153.4","files":{}}"#.utf8).write(
+    try Data(#"{"codexVersion":"0.154.0","files":{}}"#.utf8).write(
       to: directory.appendingPathComponent("receipt.json"))
     #expect(throws: SchemaError.self) { try ProtocolInventory(directory: directory) }
   }

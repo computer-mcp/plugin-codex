@@ -4,7 +4,7 @@ import MCP
 
 /// Host tools use standard MCP and the existing gateway policy/ticket tool surface.
 /// Caller-provided tool arguments cannot select this connection or its authority.
-actor CodexHostMCPClient: CodexHostTools, CodexElevationAuthority, CodexManagedWorkspaceHost,
+actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
   CodexHostDiagnostics
 {
   static let descriptorEnvironmentKey = "COMPUTER_MCP_HOST_FD"
@@ -85,28 +85,8 @@ actor CodexHostMCPClient: CodexHostTools, CodexElevationAuthority, CodexManagedW
       throw CodexToolError.executionFailed(
         "Host tool classification changed; a fresh approval is required.")
     }
-    if decision.declared == .destructive {
-      let target = scoped(arguments.objectValue ?? [:])
-      let prepared = try await call(
-        name: "operations.prepare",
-        arguments: [
-          "tool": .string(name), "arguments": .object(target),
-          "workspace_id": .string(self.workspaceID),
-        ])
-      guard
-        let ticket = prepared.objectValue?["structuredContent"]?.objectValue?["result"]?
-          .objectValue?["ticket_id"]?.stringValue, !ticket.isEmpty
-      else {
-        throw CodexToolError.executionFailed("Host preparation did not return an operation ticket.")
-      }
-      return try await call(
-        name: "operations.commit",
-        arguments: [
-          "tool": .string(name), "arguments": .object(target), "ticket_id": .string(ticket),
-          "workspace_id": .string(self.workspaceID),
-        ])
-    }
-    return try await call(name: name, arguments: scoped(arguments.objectValue ?? [:]))
+    return try await call(
+      name: name, arguments: scoped(arguments.objectValue ?? [:]), preserveToolError: true)
   }
 
   func shutdown() async {
@@ -161,7 +141,9 @@ actor CodexHostMCPClient: CodexHostTools, CodexElevationAuthority, CodexManagedW
       name: name, digest: try Self.digest(arguments), declared: declared, effective: effective)
   }
 
-  private func call(name: String, arguments: [String: JSONValue]) async throws -> JSONValue {
+  private func call(
+    name: String, arguments: [String: JSONValue], preserveToolError: Bool = false
+  ) async throws -> JSONValue {
     try Task.checkCancellation()
     guard !closed else { throw MCPError.connectionClosed }
     if !connected {
@@ -197,7 +179,7 @@ actor CodexHostMCPClient: CodexHostTools, CodexElevationAuthority, CodexManagedW
       return try await request.value
     }
     let value = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(result))
-    guard result.isError != true else {
+    guard preserveToolError || result.isError != true else {
       let error = value.objectValue?["structuredContent"]?.objectValue?["error"]?.objectValue
       throw CodexToolError.executionFailed(
         CodexApprovalRedactor.redactString(
@@ -263,109 +245,17 @@ extension CodexHostMCPClient {
       let returnedOwner = object["owner"],
       try JSONDecoder().decode(CodexRuntimeOwner.self, from: JSONEncoder().encode(returnedOwner))
         == owner,
-      let audits = object["recent_tool_audits"]?.arrayValue, audits.count <= limit,
-      let grants = object["elevation_grants"]?.arrayValue, grants.count <= limit
+      let audits = object["recent_tool_audits"]?.arrayValue, audits.count <= limit
     else {
       throw CodexToolError.executionFailed(
         "Host diagnostic response differs from the connection scope or limit.")
     }
-    let records = try grants.map {
-      try JSONDecoder().decode(CodexElevationGrantRecord.self, from: JSONEncoder().encode($0))
-    }
-    guard audits.allSatisfy({ $0.objectValue?["workspace_id"] == .string(workspaceID) }),
-      records.allSatisfy({
-        $0.workspaceID == workspaceID && $0.profileID == owner.profileID
-          && $0.requestingCaller == owner.caller
-          && $0.requestingConnectionID == owner.elevationConnectionID
-      })
+    guard audits.allSatisfy({ $0.objectValue?["workspace_id"] == .string(workspaceID) })
     else {
       throw CodexToolError.executionFailed("Host diagnostics included a different owner.")
     }
     return CodexHostDiagnosticSnapshot(
-      owner: owner, recentToolAudits: audits, elevationGrants: records)
-  }
-
-  func claimCodexElevationGrant(
-    workspaceID: String, canonicalRoot: String, profileID: String,
-    requestingCaller: String, requestingConnectionID: String?, threadID: String?, runtimeID: String,
-    action: CodexElevationAction, now: Date
-  ) async throws -> CodexElevationClaim? {
-    guard workspaceID == self.workspaceID, profileID == owner.profileID,
-      requestingCaller == owner.caller, requestingConnectionID == owner.elevationConnectionID
-    else {
-      throw CodexToolError.executionFailed("Elevation request does not match the bound owner.")
-    }
-    var arguments: [String: JSONValue] = [
-      "runtime_id": .string(runtimeID), "action": .string(action.rawValue),
-    ]
-    if let threadID { arguments["thread_id"] = .string(threadID) }
-    let value = try await service("host.elevation.claim", arguments)
-    if value == .null { return nil }
-    guard let object = value.objectValue, let id = object["id"]?.stringValue,
-      object["action"] == .string(action.rawValue), let grant = object["grant"]
-    else {
-      throw CodexToolError.executionFailed("Host returned an invalid elevation claim.")
-    }
-    let record = try JSONDecoder().decode(
-      CodexElevationGrantRecord.self, from: JSONEncoder().encode(grant))
-    guard record.workspaceID == workspaceID, record.profileID == profileID,
-      record.requestingCaller == requestingCaller,
-      record.requestingConnectionID == requestingConnectionID,
-      record.canonicalRoot == canonicalRoot, record.inFlightClaimID == id,
-      record.inFlightAction == action,
-      record.state.isEffective
-    else {
-      throw CodexToolError.executionFailed(
-        "Host claim scope differs from the requested activation.")
-    }
-    return CodexElevationClaim(id: id, action: action, grant: record)
-  }
-
-  func commitCodexElevationClaim(
-    _ claim: CodexElevationClaim, runtimeID: String,
-    threadID: String, turnID: String?, now: Date
-  ) async throws -> CodexElevationGrantRecord {
-    var arguments: [String: JSONValue] = [
-      "claim_id": .string(claim.id), "runtime_id": .string(runtimeID),
-      "thread_id": .string(threadID),
-    ]
-    if let turnID { arguments["turn_id"] = .string(turnID) }
-    let value = try await service("host.elevation.commit", arguments)
-    let record = try JSONDecoder().decode(
-      CodexElevationGrantRecord.self, from: JSONEncoder().encode(value))
-    guard record.id == claim.grant.id, record.workspaceID == workspaceID,
-      record.profileID == owner.profileID, record.requestingCaller == owner.caller,
-      record.requestingConnectionID == owner.elevationConnectionID,
-      record.consumedRuntimeIDs.contains(runtimeID), record.threadID == threadID,
-      record.inFlightClaimID == nil
-    else {
-      throw CodexToolError.executionFailed("Host activation receipt does not match this claim.")
-    }
-    return record
-  }
-
-  func invalidateCodexElevationClaim(_ claim: CodexElevationClaim, reason: String, now: Date)
-    async throws
-  {
-    _ = try await service(
-      "host.elevation.invalidate_claim", ["claim_id": .string(claim.id), "reason": .string(reason)])
-  }
-
-  func invalidateCodexElevationGrants(
-    workspaceID: String?, threadID: String?,
-    consumedRuntimeIDs: Set<String>, reason: String
-  ) async throws {
-    guard workspaceID == nil || workspaceID == self.workspaceID else {
-      throw CodexToolError.executionFailed("Host invalidation scope differs.")
-    }
-    // No owned runtime/thread selector means no authority to invalidate unrelated grants.
-    guard threadID != nil || !consumedRuntimeIDs.isEmpty else { return }
-    var arguments: [String: JSONValue] = [
-      "runtime_ids": .array(consumedRuntimeIDs.sorted().map(JSONValue.string)),
-      "reason": .string(reason),
-    ]
-    if let threadID { arguments["thread_id"] = .string(threadID) }
-    _ = try await service("host.elevation.invalidate", arguments)
+      owner: owner, recentToolAudits: audits)
   }
 
   func registerDerivedWorkspace(_ worktree: CodexManagedWorktree, now: Date) async throws {
@@ -395,8 +285,8 @@ extension CodexHostMCPClient {
   }
 
   private func validateDerived(_ worktree: CodexManagedWorktree) throws {
-    guard worktree.sourceWorkspaceID == workspaceID, worktree.profileID == owner.profileID,
-      worktree.caller == owner.caller
+    guard let principalID = owner.principalID, worktree.principalID == principalID,
+      worktree.sourceWorkspaceID == workspaceID, worktree.profileID == owner.profileID
     else {
       throw CodexToolError.executionFailed(
         "Derived workspace receipt belongs to a different scope.")

@@ -18,6 +18,7 @@ struct CodexRuntimeOwner: Codable, Equatable, Sendable {
   let socketConnectionID: String?
   let tunnelInstanceID: String?
   let tunnelProfileID: String?
+  var principalID: String? = nil
 
   private enum CodingKeys: String, CodingKey {
     case workspaceID = "workspace_id"
@@ -27,17 +28,9 @@ struct CodexRuntimeOwner: Codable, Equatable, Sendable {
     case socketConnectionID = "socket_connection_id"
     case tunnelInstanceID = "tunnel_instance_id"
     case tunnelProfileID = "tunnel_profile_id"
+    case principalID = "principal_id"
   }
 
-  var elevationConnectionID: String? {
-    if let socketConnectionID, !socketConnectionID.isEmpty {
-      return socketConnectionID
-    }
-    if let tunnelInstanceID, !tunnelInstanceID.isEmpty {
-      return "tunnel:\(tunnelInstanceID)"
-    }
-    return nil
-  }
 }
 
 private final class WeakCodexRuntimeBox: @unchecked Sendable {
@@ -132,6 +125,23 @@ final class CodexRuntimeDirectory: @unchecked Sendable {
 enum CodexAppServerMethodCatalog {
   static let methods: [CodexAppServerMethod] = [
     .init(
+      method: "config/read", description: "Read effective native Codex configuration.",
+      takesParams: true, risk: .readOnly),
+    .init(
+      method: "configRequirements/read",
+      description: "Read managed native Codex configuration requirements.", takesParams: false,
+      risk: .readOnly),
+    .init(
+      method: "mcpServerStatus/list", description: "Read native MCP connection state.",
+      takesParams: true, risk: .readOnly),
+    .init(
+      method: "thread/turns/list", description: "Read a page of persisted thread turns.",
+      takesParams: true, risk: .readOnly),
+    .init(
+      method: "thread/items/list", description: "Read a page of persisted turn items.",
+      takesParams: true, risk: .readOnly),
+
+    .init(
       method: "account/rateLimits/read",
       description: "Read the current Codex account rate-limit snapshot.",
       takesParams: false,
@@ -205,13 +215,14 @@ enum CodexAppServerMethodCatalog {
     ),
     .init(
       method: "thread/start",
-      description: "Start a Codex thread in the bound workspace and sandbox.",
+      description:
+        "Start a Codex thread using native configuration and an optional initial directory.",
       takesParams: true,
       risk: .workspaceWrite
     ),
     .init(
       method: "thread/resume",
-      description: "Resume a Codex thread in the bound workspace.",
+      description: "Resume a Codex thread with native configuration.",
       takesParams: true,
       risk: .workspaceWrite
     ),
@@ -289,7 +300,7 @@ enum CodexAppServerMethodCatalog {
     ),
     .init(
       method: "turn/start",
-      description: "Start a turn in a Codex thread with gateway-owned policy.",
+      description: "Start a turn using the native Codex execution policy.",
       takesParams: true,
       risk: .workspaceWrite
     ),
@@ -326,7 +337,7 @@ protocol CodexAppServerRuntimeProtocol: Sendable {
   func respond(requestID: String, response: JSONValue) async throws -> JSONValue
   func approvals(state: String?, limit: Int) async throws -> JSONValue
   func approval(id: String) async throws -> JSONValue
-  func respondToApproval(id: String, decision: String) async throws -> JSONValue
+  func respondToApproval(id: String, response: JSONValue) async throws -> JSONValue
   func shutdown() async
 }
 
@@ -339,7 +350,7 @@ extension CodexAppServerRuntimeProtocol {
     throw CodexApprovalBrokerError.unknown(id)
   }
 
-  func respondToApproval(id: String, decision: String) async throws -> JSONValue {
+  func respondToApproval(id: String, response: JSONValue) async throws -> JSONValue {
     throw CodexApprovalBrokerError.unknown(id)
   }
 
@@ -420,72 +431,15 @@ private final class CodexTimedRequestCompletion<Value: Sendable>: @unchecked Sen
 
 actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   private typealias Stable = CodexAppServerProtocol.Stable
-  private typealias UserInputRequestHandle = CodexAppServerServerRequestHandle<
-    Stable.ToolRequestUserInputParams,
-    Stable.ToolRequestUserInputResponse
-  >
-
-  private typealias ElicitationRequestHandle = CodexAppServerServerRequestHandle<
-    Stable.McpServerElicitationRequestParams,
-    Stable.McpServerElicitationRequestResponse
-  >
-
-  private enum PendingInteractiveRequestHandle: Sendable {
-    case userInput(UserInputRequestHandle)
-    case elicitation(ElicitationRequestHandle)
-
-    var kind: String {
-      switch self {
-      case .userInput: "user_input"
-      case .elicitation: "mcp_elicitation"
-      }
-    }
-  }
-
   private struct PendingUserInputRequest: Sendable {
-    let handle: PendingInteractiveRequestHandle
+    let handle: CodexAppServerRawServerRequest
     let payload: JSONValue
     let threadID: String?
+    var kind: String {
+      handle.method == "item/tool/requestUserInput" ? "user_input" : "mcp_elicitation"
+    }
   }
-
-  private enum PendingApprovalHandle: Sendable {
-    case command(
-      CodexAppServerServerRequestHandle<
-        Stable.CommandExecutionRequestApprovalParams,
-        Stable.CommandExecutionRequestApprovalResponse
-      >
-    )
-    case fileChange(
-      CodexAppServerServerRequestHandle<
-        Stable.FileChangeRequestApprovalParams,
-        Stable.FileChangeRequestApprovalResponse
-      >
-    )
-    case permissions(
-      CodexAppServerServerRequestHandle<
-        Stable.PermissionsRequestApprovalParams,
-        Stable.PermissionsRequestApprovalResponse
-      >
-    )
-    case applyPatch(
-      CodexAppServerServerRequestHandle<
-        Stable.ApplyPatchApprovalParams,
-        Stable.ApplyPatchApprovalResponse
-      >
-    )
-    case execCommand(
-      CodexAppServerServerRequestHandle<
-        Stable.ExecCommandApprovalParams,
-        Stable.ExecCommandApprovalResponse
-      >
-    )
-    case registeredTool(
-      CodexAppServerServerRequestHandle<
-        Stable.DynamicToolCallParams,
-        Stable.DynamicToolCallResponse
-      >
-    )
-  }
+  private typealias PendingApprovalHandle = CodexAppServerRawServerRequest
 
   private struct ConnectionStartup: Sendable {
     let id: UUID
@@ -515,7 +469,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   nonisolated let owner: CodexRuntimeOwner?
   private let database: CodexDatabase?
   private let dynamicToolDispatcher: (any CodexHostTools)?
-  private let elevationAuthority: (any CodexElevationAuthority)?
   private var connection: CodexAppServerConnection?
   private var processTransport: ManagedCodexAppServerTransport?
   private var connectionStartup: ConnectionStartup?
@@ -528,6 +481,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   private var approvalRecords: [String: CodexApprovalRecord] = [:]
   private var pendingApprovalHandles: [String: PendingApprovalHandle] = [:]
   private var approvalTimeoutTasks: [String: Task<Void, Never>] = [:]
+  private let threadOwnerIndex: CodexThreadOwnerIndex?
   private var workspaceScopedThreadIDs: Set<String> = []
   private var loadedThreadIDs: Set<String> = []
   private var subscribedThreadIDs: Set<String> = []
@@ -552,7 +506,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     owner: CodexRuntimeOwner? = nil,
     database: CodexDatabase? = nil,
     dynamicToolDispatcher: (any CodexHostTools)? = nil,
-    elevationAuthority: (any CodexElevationAuthority)? = nil,
+    threadOwnerIndex: CodexThreadOwnerIndex? = nil,
     maxOutputBytes: Int = 1_048_576
   ) {
     self.configuration = configuration
@@ -560,7 +514,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     self.owner = owner
     self.database = database
     self.dynamicToolDispatcher = dynamicToolDispatcher
-    self.elevationAuthority = elevationAuthority
+    self.threadOwnerIndex = threadOwnerIndex
     self.outputBounds = CodexOutputBounds(maxOutputBytes: maxOutputBytes)
     self.eventBuffer = CodexEventBuffer(
       capacity: configuration.maxEventsPerSession,
@@ -870,7 +824,13 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         "codex.app.method_not_allowed: App Server method '\(method)' is not in the reviewed allowlist."
       )
     }
-    var normalized = try normalize(params: params, for: descriptor)
+    let normalized = try normalize(params: params, for: descriptor)
+    if let threadID = try Self.workspaceScopedThreadID(method: method, params: normalized) {
+      try threadOwnerIndex?.check(threadID: threadID)
+      if descriptor.risk != .readOnly, method != "thread/fork" {
+        try threadOwnerIndex?.claim(threadID: threadID)
+      }
+    }
     let turnStartThreadID =
       method == "turn/start" ? normalized?.objectValue?["threadId"]?.stringValue : nil
     let turnStartPriorState = turnStartThreadID.flatMap { threadStates[$0] }
@@ -911,23 +871,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       if method == "thread/start" {
         threadStartInFlight = false
       }
-    }
-    let elevationClaim: CodexElevationClaim?
-    do {
-      elevationClaim = try await claimElevationIfAvailable(
-        method: method,
-        threadID: turnStartThreadID
-      )
-    } catch {
-      restoreTurnStartState(
-        threadID: turnStartThreadID,
-        priorState: turnStartPriorState,
-        priorActiveTurnID: turnStartPriorActiveTurnID
-      )
-      throw error
-    }
-    if elevationClaim != nil {
-      normalized = Self.applyDangerFullAccess(to: normalized, method: method)
     }
     let normalizedRequest = normalized
     activeRequestCount += 1
@@ -983,20 +926,11 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         }
       )
     } catch {
-      if let elevationClaim {
-        try? await elevationAuthority?.invalidateCodexElevationClaim(
-          elevationClaim,
-          reason: "The elevated start did not produce a confirmed response.",
-          now: Date()
-        )
-        await shutdown(reason: "elevation_start_unconfirmed")
-      } else {
-        restoreTurnStartState(
-          threadID: turnStartThreadID,
-          priorState: turnStartPriorState,
-          priorActiveTurnID: turnStartPriorActiveTurnID
-        )
-      }
+      restoreTurnStartState(
+        threadID: turnStartThreadID,
+        priorState: turnStartPriorState,
+        priorActiveTurnID: turnStartPriorActiveTurnID
+      )
       if !(error is RequestTimeoutError) {
         recordRequestFailure(
           kind: "request_failed",
@@ -1022,32 +956,13 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         threadStates[turnStartThreadID] = .string("active")
       }
     }
-    if let elevationClaim {
-      do {
-        try await commitElevationClaim(
-          elevationClaim,
-          method: method,
-          normalized: normalizedRequest,
-          response: response
-        )
-      } catch {
-        try? await elevationAuthority?.invalidateCodexElevationClaim(
-          elevationClaim,
-          reason: "The elevated start completed without a durable consumption receipt.",
-          now: Date()
-        )
-        await shutdown(reason: "elevation_consumption_persistence_failed")
-        throw CodexToolError.executionFailed(
-          "codex.app.elevation_consumption_unconfirmed: The elevated start could not be bound to a durable consumption receipt, so its owned runtime was stopped."
-        )
-      }
-    }
+    let visibleResponse = try threadOwnerIndex?.filtered(response, method: method) ?? response
     try rememberWorkspaceScopedThreads(
       method: method,
       params: normalizedRequest,
-      response: response
+      response: visibleResponse
     )
-    return outputBounds.json(response)
+    return outputBounds.json(visibleResponse)
   }
 
   private func validateHandoff(
@@ -1090,76 +1005,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     } else {
       activeTurnIDs.removeValue(forKey: threadID)
     }
-  }
-
-  private func claimElevationIfAvailable(
-    method: String,
-    threadID: String?
-  ) async throws -> CodexElevationClaim? {
-    guard ["thread/start", "turn/start"].contains(method), let elevationAuthority,
-      let workspaceID = owner?.workspaceID, let profileID = owner?.profileID,
-      let caller = owner?.caller
-    else { return nil }
-    let action: CodexElevationAction = method == "thread/start" ? .threadStart : .turnStart
-    return try await elevationAuthority.claimCodexElevationGrant(
-      workspaceID: workspaceID,
-      canonicalRoot: workspaceURL.standardizedFileURL.resolvingSymlinksInPath().path,
-      profileID: profileID,
-      requestingCaller: caller,
-      requestingConnectionID: owner?.elevationConnectionID,
-      threadID: threadID,
-      runtimeID: runtimeID,
-      action: action,
-      now: Date()
-    )
-  }
-
-  private func commitElevationClaim(
-    _ claim: CodexElevationClaim,
-    method: String,
-    normalized: JSONValue?,
-    response: JSONValue
-  ) async throws {
-    guard let elevationAuthority else { throw CodexElevationGrantError.persistenceUnavailable }
-    let threadID: String
-    let turnID: String?
-    if method == "thread/start" {
-      threadID = try Self.createdWorkspaceScopedThreadID(
-        response: response,
-        workspaceURL: workspaceURL
-      )
-      turnID = nil
-    } else {
-      guard let rawThreadID = normalized?.objectValue?["threadId"]?.stringValue else {
-        throw CodexToolError.executionFailed(
-          "codex.app.elevation_thread_missing: Elevated turn response lost its thread binding."
-        )
-      }
-      threadID = try Self.validatedThreadID(rawThreadID)
-      turnID = Self.safeStoredIdentifier(
-        response.objectValue?["turn"]?.objectValue?["id"]?.stringValue
-      )
-    }
-    _ = try await elevationAuthority.commitCodexElevationClaim(
-      claim,
-      runtimeID: runtimeID,
-      threadID: threadID,
-      turnID: turnID,
-      now: Date()
-    )
-  }
-
-  private static func applyDangerFullAccess(
-    to params: JSONValue?,
-    method: String
-  ) -> JSONValue? {
-    var object = params?.objectValue ?? [:]
-    if method == "thread/start" {
-      object["sandbox"] = .string("danger-full-access")
-    } else if method == "turn/start" {
-      object["sandboxPolicy"] = .object(["type": .string("dangerFullAccess")])
-    }
-    return .object(object)
   }
 
   static func withRequestRetry<Value: Sendable>(
@@ -1237,7 +1082,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         return .object([
           "request_id": .string(id),
           "request": request.payload,
-          "kind": .string(request.handle.kind),
+          "kind": .string(request.kind),
         ])
       }
     return outputBounds.json(.object(["requests": .array(requests)]))
@@ -1251,18 +1096,12 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
     let connection = try await ensureConnection()
     do {
-      switch request.handle {
-      case .userInput(let handle):
-        try await connection.resolveServerRequest(
-          handle,
-          with: try Self.decodeUserInputResponse(response)
-        )
-      case .elicitation(let handle):
-        try await connection.resolveServerRequest(
-          handle,
-          with: try Self.decodeElicitationResponse(response)
-        )
+      switch request.handle.method {
+      case "item/tool/requestUserInput": _ = try Self.decodeUserInputResponse(response)
+      case "mcpServer/elicitation/request": _ = try Self.decodeElicitationResponse(response)
+      default: throw CodexToolError.invalidArguments("Unsupported interactive request.")
       }
+      try await connection.resolveServerRequest(request.handle, with: response)
     } catch {
       pendingUserInputRequests[requestID] = request
       throw error
@@ -1311,12 +1150,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     return outputBounds.json(.object(["approval": record.json]))
   }
 
-  func respondToApproval(id: String, decision: String) async throws -> JSONValue {
-    guard let parsedDecision = CodexApprovalDecision(rawValue: decision) else {
-      throw CodexToolError.invalidArguments(
-        "codex.app.approval_decision_invalid: Use approve_once, approve_session, or deny."
-      )
-    }
+  func respondToApproval(id: String, response: JSONValue) async throws -> JSONValue {
     do {
       try await reconcileApprovalRecords()
       let storedRecord: CodexApprovalRecord?
@@ -1331,9 +1165,9 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       if storedRecord.runtimeID != runtimeID,
         let owningRuntime = CodexRuntimeDirectory.shared.runtime(id: storedRecord.runtimeID)
       {
-        return try await owningRuntime.respondToApproval(id: id, decision: decision)
+        return try await owningRuntime.respondToApproval(id: id, response: response)
       }
-      let resolvedRecord = try await resolveApproval(id: id, decision: parsedDecision)
+      let resolvedRecord = try await resolveApproval(id: id, response: response)
       return .object(["approval": resolvedRecord.json])
     } catch let error as CodexApprovalBrokerError {
       throw CodexToolError.invalidArguments(
@@ -1427,15 +1261,23 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     if let connectionStartup {
       startup = connectionStartup
     } else {
-      let transport = try ManagedCodexAppServerTransport(
-        configuration: .init(
-          executable: configuration.executable,
-          environment: CodexProcessEnvironment.resolved(),
-          workingDirectory: workspaceURL,
-          terminationGraceMilliseconds: configuration.appServerTerminationGraceMilliseconds,
-          killGraceMilliseconds: configuration.appServerKillGraceMilliseconds
+      let environment = CodexProcessEnvironment.resolved()
+      let transport: ManagedCodexAppServerTransport
+      do {
+        transport = try ManagedCodexAppServerTransport(
+          configuration: .init(
+            executable: try configuration.resolvedExecutableURL(
+              workspaceURL: workspaceURL, environment: environment
+            ).path,
+            environment: environment,
+            workingDirectory: workspaceURL,
+            terminationGraceMilliseconds: configuration.appServerTerminationGraceMilliseconds,
+            killGraceMilliseconds: configuration.appServerKillGraceMilliseconds
+          )
         )
-      )
+      } catch {
+        throw await connectionStartupFailed(error)
+      }
       let client = CodexAppServerClient(
         sessionConfiguration: .init(
           clientInfo: .init(
@@ -1446,7 +1288,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
           experimentalApi: configuration.experimentalAPI,
           optOutNotificationMethods: [
             "remoteControl/status/changed"
-          ]
+          ],
+          inboundMessageMode: .raw
         ),
         transportFactory: { transport }
       )
@@ -1507,22 +1350,19 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         throw RequestTimeoutError(seconds: configuration.appServerRequestTimeoutSeconds)
       }
       lastProcessSnapshot = startupProcessSnapshot
-      connectionState = "failed"
-      let message = Self.errorDescription(error)
-      lastError = message
-      persistRuntimeLease(
-        state: "failed",
-        process: lastProcessSnapshot,
-        reason: "connection_start_failed"
-      )
-      await eventBuffer.append(
-        kind: "connection_failed",
-        payload: .object(["message": .string(message)])
-      )
-      throw CodexToolError.executionFailed(
-        "codex.app.start_failed: \(message)"
-      )
+      throw await connectionStartupFailed(error)
     }
+  }
+
+  private func connectionStartupFailed(_ error: any Error) async -> CodexToolError {
+    connectionState = "failed"
+    let message = Self.errorDescription(error)
+    lastError = message
+    persistRuntimeLease(
+      state: "failed", process: lastProcessSnapshot, reason: "connection_start_failed")
+    await eventBuffer.append(
+      kind: "connection_failed", payload: .object(["message": .string(message)]))
+    return .executionFailed("codex.app.start_failed: \(message)")
   }
 
   private func startConsumers(connection: CodexAppServerConnection) {
@@ -1530,7 +1370,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     requestTask?.cancel()
     notificationTask = Task { [weak self, connection] in
       do {
-        for try await notification in connection.notifications {
+        for try await notification in connection.rawNotifications {
           guard let self else { return }
           await self.recordNotification(notification)
         }
@@ -1541,7 +1381,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
     requestTask = Task { [weak self, connection] in
       do {
-        for try await request in connection.typedServerRequests {
+        for try await request in connection.rawServerRequests {
           guard let self else { return }
           await self.handleServerRequest(request, connection: connection)
         }
@@ -1554,144 +1394,86 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
   }
 
-  private func recordNotification(
-    _ notification: CodexAppServerProtocol.Stable.ServerNotification
-  ) async {
+  private func recordNotification(_ notification: CodexAppServerRawNotification) async {
     let payload = CodexApprovalRedactor.redact(
-      (try? JSONValue.encoded(notification)) ?? .null
-    )
-    switch notification {
-    case .threadStartedNotification(let value):
-      guard let threadID = try? Self.validatedThreadID(value.params.thread.id) else { break }
-      workspaceScopedThreadIDs.insert(threadID)
-      loadedThreadIDs.insert(threadID)
-      subscribedThreadIDs.insert(threadID)
-    case .threadStatusChangedNotification(let value):
-      guard let threadID = try? Self.validatedThreadID(value.params.threadId) else { break }
-      workspaceScopedThreadIDs.insert(threadID)
-      threadStates[threadID] =
-        (try? JSONValue.encoded(value.params.status)) ?? .string("unknown")
-    case .threadClosedNotification(let value):
-      guard let threadID = try? Self.validatedThreadID(value.params.threadId) else { break }
-      loadedThreadIDs.remove(threadID)
-      subscribedThreadIDs.remove(threadID)
-      activeTurnIDs.removeValue(forKey: threadID)
-      threadStates[threadID] = .string("closed")
-    case .turnStartedNotification(let value):
-      guard let threadID = try? Self.validatedThreadID(value.params.threadId),
-        let turnID = Self.safeStoredIdentifier(value.params.turn.id)
-      else { break }
-      workspaceScopedThreadIDs.insert(threadID)
-      activeTurnIDs[threadID] = turnID
-      threadStates[threadID] = .string("active")
-    case .turnCompletedNotification(let value):
-      guard let threadID = try? Self.validatedThreadID(value.params.threadId) else { break }
-      activeTurnIDs.removeValue(forKey: threadID)
-      threadStates[threadID] = .string("idle")
-    default:
-      break
+      (try? Self.gatewayJSON(notification.payload)) ?? .null)
+    let params = payload.objectValue?["params"]?.objectValue ?? [:]
+    let thread = params["thread"]?.objectValue
+    let rawThreadID = params["threadId"]?.stringValue ?? thread?["id"]?.stringValue
+    if let rawThreadID, let threadID = try? Self.validatedThreadID(rawThreadID) {
+      if let threadOwnerIndex, (try? threadOwnerIndex.isVisible(threadID: threadID)) != true {
+        return
+      }
+      switch notification.method {
+      case "thread/started":
+        workspaceScopedThreadIDs.insert(threadID)
+        loadedThreadIDs.insert(threadID)
+        subscribedThreadIDs.insert(threadID)
+      case "thread/status/changed":
+        threadStates[threadID] = params["status"] ?? .string("unknown")
+      case "thread/closed":
+        loadedThreadIDs.remove(threadID)
+        subscribedThreadIDs.remove(threadID)
+        activeTurnIDs.removeValue(forKey: threadID)
+        threadStates[threadID] = .string("closed")
+      case "turn/started":
+        if let turnID = Self.safeStoredIdentifier(params["turn"]?.objectValue?["id"]?.stringValue) {
+          activeTurnIDs[threadID] = turnID
+          threadStates[threadID] = .string("active")
+        }
+      case "turn/completed":
+        activeTurnIDs.removeValue(forKey: threadID)
+        threadStates[threadID] = .string("idle")
+      default: break
+      }
     }
     await eventBuffer.append(kind: "notification", payload: payload)
   }
 
   private func handleServerRequest(
-    _ request: CodexAppServerTypedServerRequest,
-    connection: CodexAppServerConnection
+    _ request: CodexAppServerRawServerRequest, connection: CodexAppServerConnection
   ) async {
     let id = Self.requestIDString(request.id)
-    switch request {
-    case .toolRequestUserInput(let handle):
-      let payload = CodexApprovalRedactor.redact(
-        Self.serverRequestPayload(
-          method: "item/tool/requestUserInput",
-          params: handle.params
-        )
-      )
+    let params = (try? Self.gatewayJSON(request.params)) ?? .null
+    let payload = CodexApprovalRedactor.redact((try? Self.gatewayJSON(request.payload)) ?? .null)
+    if let threadID = Self.serverRequestThreadID(params), let threadOwnerIndex,
+      (try? threadOwnerIndex.isVisible(threadID: threadID)) != true
+    {
+      await rejectServerRequest(request, method: request.method, connection: connection)
+      return
+    }
+    switch request.method {
+    case "item/tool/requestUserInput", "mcpServer/elicitation/request":
       pendingUserInputRequests[id] = .init(
-        handle: .userInput(handle),
-        payload: payload,
-        threadID: Self.serverRequestThreadID(handle.params)
-      )
+        handle: request, payload: payload, threadID: Self.serverRequestThreadID(params))
       await eventBuffer.append(
         kind: "user_input_requested",
-        payload: .object(["request_id": .string(id), "request": payload])
-      )
-    case .commandExecutionApproval(let handle):
-      await enqueueApproval(
-        handle: .command(handle),
-        kind: .commandExecution,
-        method: "item/commandExecution/requestApproval",
-        params: handle.params,
-        connection: connection
-      )
-    case .fileChangeApproval(let handle):
-      await enqueueApproval(
-        handle: .fileChange(handle),
-        kind: .fileChange,
-        method: "item/fileChange/requestApproval",
-        params: handle.params,
-        connection: connection
-      )
-    case .mcpServerElicitation(let handle):
-      let payload = CodexApprovalRedactor.redact(
-        Self.serverRequestPayload(
-          method: "mcpServer/elicitation/request",
-          params: handle.params
-        )
-      )
-      pendingUserInputRequests[id] = .init(
-        handle: .elicitation(handle),
-        payload: payload,
-        threadID: Self.serverRequestThreadID(handle.params)
-      )
-      await eventBuffer.append(
-        kind: "mcp_elicitation_requested",
-        payload: .object(["request_id": .string(id), "request": payload])
-      )
-    case .permissionsApproval(let handle):
-      await enqueueApproval(
-        handle: .permissions(handle),
-        kind: .permissions,
-        method: "item/permissions/requestApproval",
-        params: handle.params,
-        connection: connection
-      )
-    case .dynamicToolCall(let handle):
-      await handleDynamicToolCall(handle, connection: connection)
-    case .chatgptAuthTokensRefresh(let handle):
-      await rejectServerRequest(
-        handle, method: "account/chatgptAuthTokens/refresh", connection: connection)
-    case .applyPatchApproval(let handle):
-      await enqueueApproval(
-        handle: .applyPatch(handle),
-        kind: .applyPatch,
-        method: "applyPatchApproval",
-        params: handle.params,
-        connection: connection
-      )
-    case .execCommandApproval(let handle):
-      await enqueueApproval(
-        handle: .execCommand(handle),
-        kind: .execCommand,
-        method: "execCommandApproval",
-        params: handle.params,
-        connection: connection
-      )
-    case .attestationGenerate(let handle):
-      await rejectServerRequest(handle, method: "attestation/generate", connection: connection)
+        payload: .object(["request_id": .string(id), "request": payload]))
+    case "item/commandExecution/requestApproval":
+      await enqueueApproval(handle: request, kind: .commandExecution, connection: connection)
+    case "item/fileChange/requestApproval":
+      await enqueueApproval(handle: request, kind: .fileChange, connection: connection)
+    case "item/permissions/requestApproval":
+      await enqueueApproval(handle: request, kind: .permissions, connection: connection)
+    case "applyPatchApproval":
+      await enqueueApproval(handle: request, kind: .applyPatch, connection: connection)
+    case "execCommandApproval":
+      await enqueueApproval(handle: request, kind: .execCommand, connection: connection)
+    case "item/tool/call":
+      await handleDynamicToolCall(request, connection: connection)
+    default:
+      await rejectServerRequest(request, method: request.method, connection: connection)
     }
   }
 
-  private func enqueueApproval<Params: Encodable & Sendable>(
+  private func enqueueApproval(
     handle: PendingApprovalHandle,
     kind: CodexApprovalKind,
-    method: String,
-    params: Params,
-    connection: CodexAppServerConnection,
-    risk explicitRisk: CodexOperationRisk? = nil
+    connection: CodexAppServerConnection
   ) async {
-    let upstreamRequestID = Self.requestIDString(Self.requestID(for: handle))
-    let rawDetails = (try? JSONValue.encoded(params)) ?? .object([:])
+    let upstreamRequestID = Self.requestIDString(handle.id)
+    let rawDetails = (try? Self.gatewayJSON(handle.params)) ?? .object([:])
+    let method = handle.method
     let details = CodexApprovalRedactor.redact(rawDetails)
     let object = rawDetails.objectValue ?? [:]
     let rawThreadID = object["threadId"]?.stringValue ?? object["conversationId"]?.stringValue
@@ -1708,7 +1490,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       id: id,
       upstreamRequestID: upstreamRequestID,
       kind: kind,
-      risk: explicitRisk ?? Self.approvalRisk(kind: kind, details: rawDetails),
+      risk: Self.approvalRisk(kind: kind, details: rawDetails),
       state: .pending,
       workspaceID: owner?.workspaceID,
       workspacePath: workspaceURL.path,
@@ -1736,7 +1518,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       resolvedAt: nil,
       decision: nil,
       scope: nil,
-      resolutionReason: nil
+      resolutionReason: nil,
+      owner: owner
     )
 
     do {
@@ -1749,19 +1532,19 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
           "codex.app.approval_identifier_invalid: Approval identifiers must be bounded opaque values."
         )
       }
-      try Self.validateApprovalScope(kind: kind, details: rawDetails, workspaceURL: workspaceURL)
+      try Self.validateNativeApprovalRequest(method: method, params: rawDetails)
       try persistApproval(record)
     } catch {
       var denied = record
       denied.state = .denied
       denied.resolvedAt = Date()
-      denied.decision = .deny
+      denied.decision = .string("decline")
       denied.resolutionReason = Self.errorDescription(error)
       try? persistApproval(denied)
       await rejectApprovalHandle(
         handle,
         connection: connection,
-        message: "Computer MCP policy denied this out-of-scope approval request."
+        message: "The native approval request is invalid."
       )
       await eventBuffer.append(kind: "approval_denied", payload: denied.json)
       return
@@ -1769,20 +1552,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
 
     pendingApprovalHandles[id] = handle
     await eventBuffer.append(kind: "approval_requested", payload: record.json)
-
-    if configuration.appServerAutoApproveWorkspaceWrites,
-      Self.canAutomaticallyApprove(kind: kind, risk: record.risk)
-    {
-      do {
-        _ = try await resolveApproval(id: id, decision: .approveOnce)
-      } catch {
-        await recordConsumerFailure(
-          kind: "approval_auto_response_failed",
-          message: error.localizedDescription
-        )
-      }
-      return
-    }
 
     approvalTimeoutTasks[id] = Task { [weak self] in
       do {
@@ -1796,69 +1565,41 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   }
 
   private func handleDynamicToolCall(
-    _ handle: CodexAppServerServerRequestHandle<
-      Stable.DynamicToolCallParams,
-      Stable.DynamicToolCallResponse
-    >,
-    connection: CodexAppServerConnection
+    _ handle: CodexAppServerRawServerRequest, connection: CodexAppServerConnection
   ) async {
-    guard handle.params.namespace == nil || handle.params.namespace == "computer-mcp" else {
-      await rejectServerRequest(handle, method: "item/tool/call", connection: connection)
-      return
-    }
-    guard !handle.params.tool.hasPrefix("codex."), let dynamicToolDispatcher else {
-      await rejectServerRequest(handle, method: "item/tool/call", connection: connection)
-      return
-    }
-    let risk: CodexOperationRisk
     do {
-      risk = try await dynamicToolDispatcher.risk(
-        named: handle.params.tool,
-        arguments: try Self.gatewayJSON(handle.params.arguments),
-        requestID: handle.params.callId,
-        workspaceID: owner?.workspaceID
-      )
-    } catch {
-      await rejectServerRequest(handle, method: "item/tool/call", connection: connection)
-      return
-    }
-
-    if risk == .readOnly {
-      do {
-        try await resolveDynamicTool(
-          handle,
-          execute: true,
-          connection: connection
-        )
-        await eventBuffer.append(
-          kind: "registered_tool_completed",
-          payload: .object([
-            "call_id": .string(handle.params.callId),
-            "tool": .string(handle.params.tool),
-          ])
-        )
-      } catch {
-        await recordConsumerFailure(
-          kind: "registered_tool_failed",
-          message: error.localizedDescription
-        )
+      let params = try Self.decodeStableParams(
+        Stable.DynamicToolCallParams.self,
+        from: Self.gatewayJSON(handle.params))
+      guard params.namespace == nil || params.namespace == "computer-mcp",
+        !params.tool.hasPrefix("codex."), let dynamicToolDispatcher
+      else {
+        await rejectServerRequest(handle, method: handle.method, connection: connection)
+        return
       }
-      return
+      let arguments = try Self.gatewayJSON(params.arguments)
+      _ = try await dynamicToolDispatcher.risk(
+        named: params.tool, arguments: arguments,
+        requestID: params.callId, workspaceID: owner?.workspaceID)
+      let result = try await dynamicToolDispatcher.execute(
+        name: params.tool, arguments: arguments,
+        requestID: params.callId, workspaceID: owner?.workspaceID)
+      try await connection.resolveServerRequest(
+        handle,
+        with: Self.dynamicToolResponse(
+          success: result.objectValue?["isError"] != .bool(true), value: result))
+    } catch {
+      try? await connection.resolveServerRequest(
+        handle,
+        with: Self.dynamicToolResponse(
+          success: false,
+          value: .object(["error": .string(Self.errorDescription(error))])))
     }
-
-    await enqueueApproval(
-      handle: .registeredTool(handle),
-      kind: .registeredTool,
-      method: "item/tool/call",
-      params: handle.params,
-      connection: connection,
-      risk: risk
-    )
   }
 
   private func resolveApproval(
     id: String,
-    decision: CodexApprovalDecision
+    response: JSONValue
   ) async throws -> CodexApprovalRecord {
     let storedRecord: CodexApprovalRecord?
     if let cached = approvalRecords[id] {
@@ -1884,33 +1625,23 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       try persistApproval(record)
       throw CodexApprovalBrokerError.unavailableAfterRestart(id)
     }
-    if decision != .deny {
-      try Self.validateApprovalScope(
-        kind: record.kind,
-        details: Self.rawDetails(for: handle),
-        workspaceURL: workspaceURL
-      )
-      if decision == .approveSession,
-        !Self.supportsBoundedSessionApproval(record.kind)
-      {
-        throw CodexApprovalBrokerError.unsupportedScope(
-          "\(record.kind.rawValue) is limited to approve_once."
-        )
-      }
+    if record.expiresAt <= Date() {
+      await timeoutApproval(id: id)
+      throw CodexApprovalBrokerError.alreadyResolved(id)
     }
+    try Self.validateNativeApprovalResponse(method: handle.method, response: response)
 
     do {
-      try await resolve(
-        handle: handle,
-        decision: decision,
-        timedOut: false,
-        connection: connection
-      )
-      record.state = decision == .deny ? .denied : .approved
+      // Remove before suspension so concurrent responders cannot both send.
+      pendingApprovalHandles.removeValue(forKey: id)
+      try await connection.resolveServerRequest(handle, with: response)
+      let decision = response.objectValue?["decision"]
+      record.state = Self.approvalState(response)
       record.resolvedAt = Date()
       record.decision = decision
-      record.scope = decision == .approveSession ? "session" : "once"
-      record.resolutionReason = decision == .deny ? "Denied by the gateway caller." : nil
+      record.response = response
+      record.scope = response.objectValue?["scope"]?.stringValue
+      record.resolutionReason = nil
       try persistApproval(record)
       pendingApprovalHandles.removeValue(forKey: id)
       approvalTimeoutTasks.removeValue(forKey: id)?.cancel()
@@ -1937,13 +1668,12 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     do {
       try await resolve(
         handle: handle,
-        decision: .deny,
         timedOut: true,
         connection: connection
       )
       record.state = .timedOut
       record.resolvedAt = Date()
-      record.decision = .deny
+      record.decision = .string("cancel")
       record.scope = "once"
       record.resolutionReason = "Approval deadline expired."
       try persistApproval(record)
@@ -1953,7 +1683,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     } catch {
       record.state = .failed
       record.resolvedAt = Date()
-      record.decision = .deny
+      record.decision = .string("cancel")
       record.scope = "once"
       record.resolutionReason =
         "Approval deadline expired, but the App Server response could not be delivered: "
@@ -2007,13 +1737,12 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       }
       try? await resolve(
         handle: handle,
-        decision: .deny,
         timedOut: false,
         connection: connection
       )
       record.state = .interrupted
       record.resolvedAt = Date()
-      record.decision = .deny
+      record.decision = .string("cancel")
       record.resolutionReason = reason
       try? persistApproval(record)
       approvalTimeoutTasks.removeValue(forKey: id)?.cancel()
@@ -2031,10 +1760,12 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     to owner: CodexRuntimeOwner?
   ) -> Bool {
     record.workspaceID == owner?.workspaceID
+      && record.owner?.principalID == owner?.principalID
+      && (record.owner == nil || record.owner?.profileID == owner?.profileID)
   }
 
-  private func rejectServerRequest<Params: Encodable & Sendable, Response: Encodable & Sendable>(
-    _ handle: CodexAppServerServerRequestHandle<Params, Response>,
+  private func rejectServerRequest(
+    _ handle: CodexAppServerRawServerRequest,
     method: String,
     connection: CodexAppServerConnection
   ) async {
@@ -2047,7 +1778,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         handle,
         code: -32_001,
         message:
-          "Computer MCP does not permit App Server requests to expand permissions, refresh credentials, or invoke unregistered tools."
+          "This App Server request is not part of the supported coding contract."
       )
       await eventBuffer.append(
         kind: "server_request_denied",
@@ -2067,55 +1798,12 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     message: String
   ) async {
     do {
-      switch handle {
-      case .command(let value):
-        try await connection.rejectServerRequest(value, code: -32_001, message: message)
-      case .fileChange(let value):
-        try await connection.rejectServerRequest(value, code: -32_001, message: message)
-      case .permissions(let value):
-        try await connection.rejectServerRequest(value, code: -32_001, message: message)
-      case .applyPatch(let value):
-        try await connection.rejectServerRequest(value, code: -32_001, message: message)
-      case .execCommand(let value):
-        try await connection.rejectServerRequest(value, code: -32_001, message: message)
-      case .registeredTool(let value):
-        try await connection.rejectServerRequest(value, code: -32_001, message: message)
-      }
+      try await connection.rejectServerRequest(handle, code: -32_001, message: message)
     } catch {
       await recordConsumerFailure(
         kind: "approval_policy_rejection_failed",
         message: error.localizedDescription
       )
-    }
-  }
-
-  private static func requestID(
-    for handle: PendingApprovalHandle
-  ) -> CodexAppServerProtocol.Stable.RequestId {
-    switch handle {
-    case .command(let value): value.id
-    case .fileChange(let value): value.id
-    case .permissions(let value): value.id
-    case .applyPatch(let value): value.id
-    case .execCommand(let value): value.id
-    case .registeredTool(let value): value.id
-    }
-  }
-
-  private static func rawDetails(for handle: PendingApprovalHandle) -> JSONValue {
-    switch handle {
-    case .command(let value):
-      return (try? JSONValue.encoded(value.params)) ?? .object([:])
-    case .fileChange(let value):
-      return (try? JSONValue.encoded(value.params)) ?? .object([:])
-    case .permissions(let value):
-      return (try? JSONValue.encoded(value.params)) ?? .object([:])
-    case .applyPatch(let value):
-      return (try? JSONValue.encoded(value.params)) ?? .object([:])
-    case .execCommand(let value):
-      return (try? JSONValue.encoded(value.params)) ?? .object([:])
-    case .registeredTool(let value):
-      return (try? JSONValue.encoded(value.params)) ?? .object([:])
     }
   }
 
@@ -2133,196 +1821,71 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     return kind == .permissions ? .destructive : .workspaceWrite
   }
 
-  private static func canAutomaticallyApprove(
-    kind: CodexApprovalKind,
-    risk: CodexOperationRisk
-  ) -> Bool {
-    risk == .workspaceWrite && (kind == .fileChange || kind == .applyPatch)
+  private static func validateNativeApprovalRequest(method: String, params: JSONValue) throws {
+    switch method {
+    case "item/commandExecution/requestApproval":
+      _ = try decodeStableParams(Stable.CommandExecutionRequestApprovalParams.self, from: params)
+    case "item/fileChange/requestApproval":
+      _ = try decodeStableParams(Stable.FileChangeRequestApprovalParams.self, from: params)
+    case "item/permissions/requestApproval":
+      _ = try decodeStableParams(Stable.PermissionsRequestApprovalParams.self, from: params)
+    case "applyPatchApproval":
+      _ = try decodeStableParams(Stable.ApplyPatchApprovalParams.self, from: params)
+    case "execCommandApproval":
+      _ = try decodeStableParams(Stable.ExecCommandApprovalParams.self, from: params)
+    default: throw CodexToolError.invalidArguments("Unsupported native approval method.")
+    }
   }
 
-  private static func supportsBoundedSessionApproval(_ kind: CodexApprovalKind) -> Bool {
-    kind == .fileChange || kind == .applyPatch || kind == .permissions
+  private static func validateNativeApprovalResponse(method: String, response: JSONValue) throws {
+    switch method {
+    case "item/commandExecution/requestApproval":
+      _ = try decodeStableParams(
+        Stable.CommandExecutionRequestApprovalResponse.self, from: response)
+    case "item/fileChange/requestApproval":
+      _ = try decodeStableParams(Stable.FileChangeRequestApprovalResponse.self, from: response)
+    case "item/permissions/requestApproval":
+      _ = try decodeStableParams(Stable.PermissionsRequestApprovalResponse.self, from: response)
+    case "applyPatchApproval":
+      _ = try decodeStableParams(Stable.ApplyPatchApprovalResponse.self, from: response)
+    case "execCommandApproval":
+      _ = try decodeStableParams(Stable.ExecCommandApprovalResponse.self, from: response)
+    default: throw CodexToolError.invalidArguments("Unsupported native approval method.")
+    }
   }
 
-  private static func validateApprovalScope(
-    kind: CodexApprovalKind,
-    details: JSONValue,
-    workspaceURL: URL
-  ) throws {
-    let object = details.objectValue ?? [:]
-    if object["networkApprovalContext"] != nil
-      || !(object["proposedNetworkPolicyAmendments"]?.arrayValue ?? []).isEmpty
-      || object["permissions"]?.objectValue?["network"]?.objectValue?["enabled"]?.boolValue == true
+  private static func approvalState(_ response: JSONValue) -> CodexApprovalState {
+    let object = response.objectValue ?? [:]
+    if let permissions = object["permissions"]?.objectValue {
+      return permissions.isEmpty ? .denied : .approved
+    }
+    if let decision = object["decision"]?.stringValue {
+      if ["cancel", "abort", "timed_out"].contains(decision) { return .cancelled }
+      if ["decline", "denied"].contains(decision) { return .denied }
+    }
+    if object["decision"]?.objectValue?["denied"] != nil { return .denied }
+    if object["decision"]?.objectValue?["applyNetworkPolicyAmendment"]?.objectValue?[
+      "network_policy_amendment"]?.objectValue?["action"] == .string("deny")
     {
-      throw CodexApprovalBrokerError.outsideWorkspace(
-        "network permission expansion is not registered for the Codex provider"
-      )
+      return .denied
     }
-
-    var paths: [String] = []
-    for key in ["cwd", "grantRoot"] {
-      if let path = object[key]?.stringValue {
-        paths.append(path)
-      }
-    }
-    if let fileChanges = object["fileChanges"]?.objectValue {
-      paths.append(contentsOf: fileChanges.keys)
-    }
-    if let fileSystem = object["permissions"]?.objectValue?["fileSystem"]?.objectValue {
-      paths.append(contentsOf: fileSystem["read"]?.arrayValue?.compactMap(\.stringValue) ?? [])
-      paths.append(contentsOf: fileSystem["write"]?.arrayValue?.compactMap(\.stringValue) ?? [])
-      for entry in fileSystem["entries"]?.arrayValue ?? [] {
-        guard let pathObject = entry.objectValue?["path"]?.objectValue,
-          pathObject["type"]?.stringValue == "path",
-          let path = pathObject["path"]?.stringValue
-        else {
-          throw CodexApprovalBrokerError.outsideWorkspace(
-            "glob and special filesystem grants are not eligible for gateway approval"
-          )
-        }
-        paths.append(path)
-      }
-    }
-
-    for path in paths {
-      let candidate =
-        path.hasPrefix("/")
-        ? URL(fileURLWithPath: path)
-        : workspaceURL.appendingPathComponent(path)
-      guard contains(candidate, in: workspaceURL) else {
-        throw CodexApprovalBrokerError.outsideWorkspace(path)
-      }
-    }
-    if kind == .permissions, paths.isEmpty {
-      throw CodexApprovalBrokerError.unsupportedScope(
-        "an empty or unrecognized permission grant cannot be approved"
-      )
-    }
+    return .approved
   }
 
   private func resolve(
-    handle: PendingApprovalHandle,
-    decision: CodexApprovalDecision,
-    timedOut: Bool,
+    handle: PendingApprovalHandle, timedOut: Bool,
     connection: CodexAppServerConnection
   ) async throws {
-    switch handle {
-    case .command(let value):
-      let responseDecision: Stable.CommandExecutionApprovalDecision =
-        timedOut
-        ? .cancel
-        : decision == .deny
-          ? .decline
-          : decision == .approveSession ? .acceptforsession : .accept
-      try await connection.resolveServerRequest(
-        value,
-        with: Stable.CommandExecutionRequestApprovalResponse(decision: responseDecision)
-      )
-    case .fileChange(let value):
-      let responseDecision: Stable.FileChangeApprovalDecision =
-        timedOut
-        ? .cancel
-        : decision == .deny
-          ? .decline
-          : decision == .approveSession ? .acceptforsession : .accept
-      try await connection.resolveServerRequest(
-        value,
-        with: Stable.FileChangeRequestApprovalResponse(decision: responseDecision)
-      )
-    case .permissions(let value):
-      let permissions: Stable.GrantedPermissionProfile
-      if timedOut || decision == .deny {
-        permissions = .init()
-      } else {
-        let data = try JSONEncoder().encode(value.params.permissions)
-        permissions = try JSONDecoder().decode(Stable.GrantedPermissionProfile.self, from: data)
-      }
-      try await connection.resolveServerRequest(
-        value,
-        with: Stable.PermissionsRequestApprovalResponse(
-          permissions: permissions,
-          scope: decision == .approveSession ? .session : .turn,
-          strictAutoReview: true
-        )
-      )
-    case .applyPatch(let value):
-      try await connection.resolveServerRequest(
-        value,
-        with: Stable.ApplyPatchApprovalResponse(
-          decision: Self.reviewDecision(
-            decision: decision,
-            timedOut: timedOut,
-            rejection: "Denied by Computer MCP approval policy."
-          )
-        )
-      )
-    case .execCommand(let value):
-      try await connection.resolveServerRequest(
-        value,
-        with: Stable.ExecCommandApprovalResponse(
-          decision: Self.reviewDecision(
-            decision: decision,
-            timedOut: timedOut,
-            rejection: "Denied by Computer MCP approval policy."
-          )
-        )
-      )
-    case .registeredTool(let value):
-      try await resolveDynamicTool(
-        value,
-        execute: !timedOut && decision != .deny,
-        connection: connection
-      )
+    let response: JSONValue
+    switch handle.method {
+    case "item/permissions/requestApproval":
+      response = .object(["permissions": .object([:]), "scope": .string("turn")])
+    case "applyPatchApproval", "execCommandApproval":
+      response = .object(["decision": .string(timedOut ? "timed_out" : "abort")])
+    default:
+      response = .object(["decision": .string("cancel")])
     }
-  }
-
-  private func resolveDynamicTool(
-    _ handle: CodexAppServerServerRequestHandle<
-      Stable.DynamicToolCallParams,
-      Stable.DynamicToolCallResponse
-    >,
-    execute: Bool,
-    connection: CodexAppServerConnection
-  ) async throws {
-    guard execute else {
-      await dynamicToolDispatcher?.discard(requestID: handle.params.callId)
-      try await connection.resolveServerRequest(
-        handle,
-        with: Self.dynamicToolResponse(
-          success: false,
-          value: .object([
-            "error": .string("The registered Computer MCP tool call was denied or timed out.")
-          ])
-        )
-      )
-      return
-    }
-    guard let dynamicToolDispatcher else {
-      throw CodexToolError.disabled(
-        "codex.app.dynamic_tool_unavailable: The owning gateway runtime is unavailable."
-      )
-    }
-    do {
-      let result = try await dynamicToolDispatcher.execute(
-        name: handle.params.tool,
-        arguments: try Self.gatewayJSON(handle.params.arguments),
-        requestID: handle.params.callId,
-        workspaceID: owner?.workspaceID
-      )
-      try await connection.resolveServerRequest(
-        handle,
-        with: Self.dynamicToolResponse(success: true, value: result)
-      )
-    } catch {
-      let redacted = CodexApprovalRedactor.redact(
-        .object(["error": .string(error.localizedDescription)])
-      )
-      try? await connection.resolveServerRequest(
-        handle,
-        with: Self.dynamicToolResponse(success: false, value: redacted)
-      )
-      throw error
-    }
+    try await connection.resolveServerRequest(handle, with: response)
   }
 
   private static func dynamicToolResponse(
@@ -2341,26 +1904,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       ],
       success: success
     )
-  }
-
-  private static func reviewDecision(
-    decision: CodexApprovalDecision,
-    timedOut: Bool,
-    rejection: String
-  ) -> Stable.ReviewDecision {
-    if timedOut {
-      return .timedOut
-    }
-    switch decision {
-    case .approveOnce:
-      return .approved
-    case .approveSession:
-      return .approvedForSession
-    case .deny:
-      return .deniedreviewdecision(
-        .init(denied: .init(rejection: rejection))
-      )
-    }
   }
 
   private func connectionEnded(
@@ -2587,32 +2130,33 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     for method: CodexAppServerMethod
   ) throws -> JSONValue? {
     guard method.takesParams else {
+      guard params == nil || params == .null || params == .object([:]) else {
+        throw CodexToolError.invalidArguments("This App Server method does not accept params.")
+      }
       return nil
     }
     var object = params?.objectValue ?? [:]
-    try Self.rejectUnsafeOverrides(object)
-    if let suppliedCWD = object["cwd"]?.stringValue,
-      URL(fileURLWithPath: suppliedCWD).standardizedFileURL != workspaceURL
-    {
-      throw CodexToolError.invalidArguments(
-        "[codex.app.workspace_override_denied] cwd must match the bound workspace."
-      )
+    guard params == nil || params == .null || params?.objectValue != nil else {
+      throw CodexToolError.invalidArguments("App Server params must be an object.")
     }
-
     switch method.method {
-    case "thread/list":
-      object["cwd"] = .string(workspaceURL.path)
-    case "skills/list":
-      object["cwds"] = .array([.string(workspaceURL.path)])
-      object.removeValue(forKey: "perCwdExtraUserRoots")
-    case "thread/start", "thread/resume", "thread/fork":
-      object["cwd"] = .string(workspaceURL.path)
-      object["approvalPolicy"] = .string(configuration.approvalPolicy.rawValue)
-      object["sandbox"] = .string(configuration.sandbox.rawValue)
+    case "thread/start":
+      if object["cwd"] == nil { object["cwd"] = .string(workspaceURL.path) }
+      fallthrough
+    case "thread/resume", "thread/fork":
+      if object["approvalPolicy"] == nil, let approval = configuration.approvalPolicy {
+        object["approvalPolicy"] = .string(approval.rawValue)
+      }
+      if object["sandbox"] == nil, let sandbox = configuration.sandbox {
+        object["sandbox"] = .string(sandbox.rawValue)
+      }
     case "turn/start":
-      object["cwd"] = .string(workspaceURL.path)
-      object["approvalPolicy"] = .string(configuration.approvalPolicy.rawValue)
-      object["sandboxPolicy"] = Self.sandboxPolicy(configuration.sandbox)
+      if object["approvalPolicy"] == nil, let approval = configuration.approvalPolicy {
+        object["approvalPolicy"] = .string(approval.rawValue)
+      }
+      if object["sandboxPolicy"] == nil, let sandbox = configuration.sandbox {
+        object["sandboxPolicy"] = Self.sandboxPolicy(sandbox)
+      }
     default:
       break
     }
@@ -2626,6 +2170,9 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   ) async throws {
     guard let threadID = try Self.workspaceScopedThreadID(method: method, params: params) else {
       return
+    }
+    if let receipt = try database?.codexThreadOwnership(threadID: threadID) {
+      try validatePersistedOwnership(receipt)
     }
     if workspaceScopedThreadIDs.contains(threadID) {
       return
@@ -2677,10 +2224,9 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         "codex.app.thread_scope_lookup_failed: \(Self.errorDescription(error))"
       )
     }
-    try Self.validateThreadWorkspace(
+    try Self.validateThreadResponse(
       threadID: threadID,
-      response: response,
-      workspaceURL: workspaceURL
+      response: response
     )
     workspaceScopedThreadIDs.insert(threadID)
   }
@@ -2694,9 +2240,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       return
     }
 
-    let cwdFilters: [Stable.ThreadListCwdFilter?] = [
-      .threadlistcwdfilteroption1(workspaceURL.path), nil,
-    ]
+    let cwdFilters: [Stable.ThreadListCwdFilter?] = [nil]
     for cwdFilter in cwdFilters {
       for archived in [false, true] {
         var cursor: String?
@@ -2720,12 +2264,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
               "codex.app.thread_scope_list_failed: \(Self.errorDescription(error))"
             )
           }
-          if let thread = page.data.first(where: { $0.id == threadID }) {
-            try Self.validatePersistedThreadWorkspace(
-              threadID: threadID,
-              threadCWD: thread.cwd,
-              workspaceURL: workspaceURL
-            )
+          if page.data.contains(where: { $0.id == threadID }) {
             return
           }
           guard let nextCursor = page.nextCursor, !nextCursor.isEmpty else {
@@ -2751,6 +2290,12 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   }
 
   private func validatePersistedOwnership(_ ownership: CodexThreadOwnershipRecord) throws {
+    guard ownership.owner?.principalID == owner?.principalID,
+      ownership.owner == nil
+        || ownership.owner?.profileID == owner?.profileID
+    else {
+      throw CodexToolError.disabled("The thread belongs to another authorization subject.")
+    }
     if let workspaceID = owner?.workspaceID {
       guard ownership.workspaceID == workspaceID else {
         throw CodexToolError.disabled(
@@ -2774,9 +2319,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     response: JSONValue
   ) throws {
     if ["thread/start", "thread/resume", "thread/fork"].contains(method) {
-      let threadID = try Self.createdWorkspaceScopedThreadID(
-        response: response,
-        workspaceURL: workspaceURL
+      let threadID = try Self.createdThreadID(
+        response: response
       )
       try persistThreadOwnership(threadID: threadID, state: .loaded)
       workspaceScopedThreadIDs.insert(threadID)
@@ -2785,13 +2329,12 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
 
     if method == "thread/loaded/list" {
-      let loaded = Set(
-        response.objectValue?["data"]?.arrayValue?.compactMap(\.stringValue) ?? []
-      )
+      let visible = response.objectValue?["data"]?.arrayValue?.compactMap(\.stringValue) ?? []
+      let loaded = Set(try visible.filter { try threadOwnerIndex?.owns(threadID: $0) ?? true })
       workspaceScopedThreadIDs.formUnion(loaded)
       loadedThreadIDs = loaded
       subscribedThreadIDs = loaded
-      for threadID in loaded {
+      for threadID in loaded where threadOwnerIndex == nil {
         try persistThreadOwnership(threadID: threadID, state: .loaded)
       }
     }
@@ -2861,6 +2404,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     threadID: String,
     state: CodexThreadOwnershipState
   ) throws {
+    try threadOwnerIndex?.claim(threadID: threadID)
     guard let database else { return }
     let now = Date()
     let previous = try database.codexThreadOwnership(threadID: threadID)
@@ -2875,30 +2419,17 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         runtimeID: runtimeID,
         state: state,
         createdAt: previous?.createdAt ?? now,
-        updatedAt: now
+        updatedAt: now,
+        owner: owner
       )
     )
   }
 
-  static func createdWorkspaceScopedThreadID(
-    response: JSONValue,
-    workspaceURL: URL
-  ) throws -> String {
-    guard let thread = response.objectValue?["thread"]?.objectValue,
-      let rawThreadID = thread["id"]?.stringValue,
-      let cwd = thread["cwd"]?.stringValue
-    else {
-      throw CodexToolError.executionFailed(
-        "codex.app.thread_scope_unknown: App Server did not return id and cwd for the created thread."
-      )
+  static func createdThreadID(response: JSONValue) throws -> String {
+    guard let id = response.objectValue?["thread"]?.objectValue?["id"]?.stringValue else {
+      throw CodexToolError.executionFailed("App Server did not return the created thread identity.")
     }
-    let threadID = try validatedThreadID(rawThreadID)
-    guard Self.contains(URL(fileURLWithPath: cwd), in: workspaceURL) else {
-      throw CodexToolError.disabled(
-        "codex.app.thread_outside_workspace: The created thread belongs to a different workspace."
-      )
-    }
-    return threadID
+    return try validatedThreadID(id)
   }
 
   static func workspaceScopedThreadID(
@@ -2916,32 +2447,9 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     return try validatedThreadID(rawThreadID)
   }
 
-  static func validateThreadWorkspace(
-    threadID: String,
-    response: JSONValue,
-    workspaceURL: URL
-  ) throws {
-    guard let cwd = response.objectValue?["thread"]?.objectValue?["cwd"]?.stringValue else {
-      throw CodexToolError.executionFailed(
-        "codex.app.thread_scope_unknown: App Server did not return a thread cwd."
-      )
-    }
-    guard Self.contains(URL(fileURLWithPath: cwd), in: workspaceURL) else {
-      throw CodexToolError.disabled(
-        "codex.app.thread_outside_workspace: The thread belongs to a different workspace."
-      )
-    }
-  }
-
-  static func validatePersistedThreadWorkspace(
-    threadID: String,
-    threadCWD: String,
-    workspaceURL: URL
-  ) throws {
-    guard Self.contains(URL(fileURLWithPath: threadCWD), in: workspaceURL) else {
-      throw CodexToolError.disabled(
-        "codex.app.thread_outside_workspace: The thread belongs to a different workspace."
-      )
+  static func validateThreadResponse(threadID: String, response: JSONValue) throws {
+    guard response.objectValue?["thread"]?.objectValue?["id"] == .string(threadID) else {
+      throw CodexToolError.executionFailed("App Server returned a different thread identity.")
     }
   }
 
@@ -2996,44 +2504,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     .unknown,
   ]
 
-  private static func rejectUnsafeOverrides(_ object: [String: JSONValue]) throws {
-    let deniedKeys: Set<String> = [
-      "config",
-      "configOverrides",
-      "dangerouslyBypassApprovalsAndSandbox",
-      "baseInstructions",
-      "developerInstructions",
-    ]
-    if let key = object.keys.first(where: deniedKeys.contains) {
-      throw CodexToolError.invalidArguments(
-        "[codex.app.override_denied] '\(key)' is controlled by the local gateway."
-      )
-    }
-    if containsDangerFullAccess(.object(object)) {
-      throw CodexToolError.invalidArguments(
-        "[codex.app.danger_full_access_denied] Caller-supplied danger-full-access is denied; request a scoped grant for local approval."
-      )
-    }
-  }
-
-  private static func containsDangerFullAccess(_ value: JSONValue) -> Bool {
-    switch value {
-    case .string(let string):
-      let canonical = string.lowercased().unicodeScalars.compactMap { scalar -> String? in
-        let value = scalar.value
-        guard (97...122).contains(value) || (48...57).contains(value) else { return nil }
-        return String(scalar)
-      }.joined()
-      return canonical == "dangerfullaccess"
-    case .array(let values):
-      return values.contains(where: containsDangerFullAccess)
-    case .object(let object):
-      return object.values.contains(where: containsDangerFullAccess)
-    case .number, .bool, .null:
-      return false
-    }
-  }
-
   static func contains(_ candidate: URL, in root: URL) -> Bool {
     let resolvedCandidate = candidate.standardizedFileURL.resolvingSymlinksInPath()
     let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
@@ -3053,6 +2523,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     "thread/metadata/update",
     "thread/name/set",
     "thread/read",
+    "thread/turns/list",
+    "thread/items/list",
     "thread/resume",
     "thread/rollback",
     "thread/unarchive",
@@ -3075,7 +2547,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         "networkAccess": .bool(false),
       ])
     case .dangerFullAccess:
-      preconditionFailure("danger-full-access is rejected during configuration validation")
+      return .object(["type": .string("dangerFullAccess")])
     }
   }
 
@@ -3144,184 +2616,11 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     params: JSONValue?,
     connection: CodexAppServerConnection
   ) async throws -> JSONValue {
-    switch method {
-    case "account/rateLimits/read":
-      return try gatewayJSON(try await connection.accountRateLimitsRead())
-    case "account/read":
+    if let params {
       return try gatewayJSON(
-        try await connection.accountRead(
-          try decodeStableParams(Stable.GetAccountParams.self, from: params)
-        )
-      )
-    case "account/usage/read":
-      return try gatewayJSON(try await connection.accountUsageRead())
-    case "app/list":
-      return try gatewayJSON(
-        try await connection.appList(
-          try decodeStableParams(Stable.AppsListParams.self, from: params)
-        )
-      )
-    case "experimentalFeature/list":
-      return try gatewayJSON(
-        try await connection.experimentalFeatureList(
-          try decodeStableParams(Stable.ExperimentalFeatureListParams.self, from: params)
-        )
-      )
-    case "model/list":
-      return try gatewayJSON(
-        try await connection.modelList(
-          try decodeStableParams(Stable.ModelListParams.self, from: params)
-        )
-      )
-    case "plugin/list":
-      return try gatewayJSON(
-        try await connection.pluginList(
-          try decodeStableParams(Stable.PluginListParams.self, from: params)
-        )
-      )
-    case "plugin/read":
-      return try gatewayJSON(
-        try await connection.pluginRead(
-          try decodeStableParams(Stable.PluginReadParams.self, from: params)
-        )
-      )
-    case "skills/list":
-      return try gatewayJSON(
-        try await connection.skillsList(
-          try decodeStableParams(Stable.SkillsListParams.self, from: params)
-        )
-      )
-    case "thread/list":
-      return try gatewayJSON(
-        try await connection.threadList(
-          try decodeStableParams(Stable.ThreadListParams.self, from: params)
-        )
-      )
-    case "thread/loaded/list":
-      return try gatewayJSON(
-        try await connection.threadLoadedList(
-          try decodeStableParams(Stable.ThreadLoadedListParams.self, from: params)
-        )
-      )
-    case "thread/read":
-      return try gatewayJSON(
-        try await connection.threadRead(
-          try decodeStableParams(Stable.ThreadReadParams.self, from: params)
-        )
-      )
-    case "thread/start":
-      return try gatewayJSON(
-        try await connection.threadStart(
-          try decodeStableParams(Stable.ThreadStartParams.self, from: params)
-        )
-      )
-    case "thread/resume":
-      return try gatewayJSON(
-        try await connection.threadResume(
-          try decodeStableParams(Stable.ThreadResumeParams.self, from: params)
-        )
-      )
-    case "thread/fork":
-      return try gatewayJSON(
-        try await connection.threadFork(
-          try decodeStableParams(Stable.ThreadForkParams.self, from: params)
-        )
-      )
-    case "thread/goal/get":
-      return try gatewayJSON(
-        try await connection.threadGoalGet(
-          try decodeStableParams(Stable.ThreadGoalGetParams.self, from: params)
-        )
-      )
-    case "thread/goal/set":
-      return try gatewayJSON(
-        try await connection.threadGoalSet(
-          try decodeStableParams(Stable.ThreadGoalSetParams.self, from: params)
-        )
-      )
-    case "thread/goal/clear":
-      return try gatewayJSON(
-        try await connection.threadGoalClear(
-          try decodeStableParams(Stable.ThreadGoalClearParams.self, from: params)
-        )
-      )
-    case "thread/compact/start":
-      return try gatewayJSON(
-        try await connection.threadCompactStart(
-          try decodeStableParams(Stable.ThreadCompactStartParams.self, from: params)
-        )
-      )
-    case "thread/inject_items":
-      return try gatewayJSON(
-        try await connection.threadInjectItems(
-          try decodeStableParams(Stable.ThreadInjectItemsParams.self, from: params)
-        )
-      )
-    case "thread/metadata/update":
-      return try gatewayJSON(
-        try await connection.threadMetadataUpdate(
-          try decodeStableParams(Stable.ThreadMetadataUpdateParams.self, from: params)
-        )
-      )
-    case "thread/name/set":
-      return try gatewayJSON(
-        try await connection.threadNameSet(
-          try decodeStableParams(Stable.ThreadSetNameParams.self, from: params)
-        )
-      )
-    case "thread/rollback":
-      return try gatewayJSON(
-        try await connection.threadRollback(
-          try decodeStableParams(Stable.ThreadRollbackParams.self, from: params)
-        )
-      )
-    case "thread/archive":
-      return try gatewayJSON(
-        try await connection.threadArchive(
-          try decodeStableParams(Stable.ThreadArchiveParams.self, from: params)
-        )
-      )
-    case "thread/unarchive":
-      return try gatewayJSON(
-        try await connection.threadUnarchive(
-          try decodeStableParams(Stable.ThreadUnarchiveParams.self, from: params)
-        )
-      )
-    case "thread/unsubscribe":
-      return try gatewayJSON(
-        try await connection.threadUnsubscribe(
-          try decodeStableParams(Stable.ThreadUnsubscribeParams.self, from: params)
-        )
-      )
-    case "turn/start":
-      return try gatewayJSON(
-        try await connection.turnStart(
-          try decodeStableParams(Stable.TurnStartParams.self, from: params)
-        )
-      )
-    case "turn/steer":
-      return try gatewayJSON(
-        try await connection.turnSteer(
-          try decodeStableParams(Stable.TurnSteerParams.self, from: params)
-        )
-      )
-    case "turn/interrupt":
-      return try gatewayJSON(
-        try await connection.turnInterrupt(
-          try decodeStableParams(Stable.TurnInterruptParams.self, from: params)
-        )
-      )
-    case "review/start":
-      return try gatewayJSON(
-        try await connection.reviewStart(
-          try decodeStableParams(Stable.ReviewStartParams.self, from: params)
-        )
-      )
-    default:
-      throw CodexToolError.disabled(
-        "codex.app.typed_method_unavailable: App Server method '\(method)' has no reviewed swift-codex binding."
-      )
+        try await connection.sendRawRequest(method: method, params: stableJSON(params)))
     }
+    return try gatewayJSON(try await connection.sendRawRequest(method: method))
   }
 
   private static func requestIDString(
@@ -3353,6 +2652,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       return error.localizedDescription
     }
     switch error {
+    case .foreignServerRequest:
+      return "The App Server request belongs to another connection."
     case .closed:
       return "The App Server connection is closed."
     case .peerClosed:

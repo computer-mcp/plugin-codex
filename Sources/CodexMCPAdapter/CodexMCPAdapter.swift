@@ -15,7 +15,8 @@ struct CodexMCPAdapter: AsyncParsableCommand {
   var configurationPath: String?
 
   @Option(
-    name: .customLong("state-directory"), help: "Directory for adapter-owned App Server records.")
+    name: .customLong("state-directory"),
+    help: "Directory for adapter-owned records and native thread ownership.")
   var stateDirectoryPath: String?
 
   mutating func validate() throws {

@@ -229,7 +229,6 @@ private struct ValidationRuntimeFixture {
         enabled: true,
         executable: executable.path,
         execEnabled: false,
-        mcpEnabled: false,
         appServerRequestTimeoutSeconds: 2,
         appServerTerminationGraceMilliseconds: 200,
         appServerKillGraceMilliseconds: 1_000,

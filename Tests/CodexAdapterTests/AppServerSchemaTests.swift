@@ -7,9 +7,9 @@ import Testing
 struct AppServerSchemaTests {
   @Test func inventoryMatchesVersionSpecificExports() throws {
     let inventory = try ProtocolInventory.bundled()
-    #expect(inventory.receipt.codexVersion == "0.153.4")
+    #expect(inventory.receipt.codexVersion == "0.154.0")
     for (channel, counts) in [
-      (ProtocolInventory.Channel.stable, [99, 1, 10, 81]), (.experimental, [155, 1, 11, 81]),
+      (ProtocolInventory.Channel.stable, [99, 1, 10, 81]), (.experimental, [159, 1, 11, 81]),
     ] {
       for (direction, count) in zip(ProtocolInventory.Direction.allCases, counts) {
         let schema = inventory.schema(channel: channel, direction: direction)

@@ -2,8 +2,9 @@ import CodexExec
 import Foundation
 
 protocol CodexExecRuntimeProtocol: Sendable {
-  func start(prompt: String, model: String?) async throws -> JSONValue
-  func resume(upstreamSessionID: String, prompt: String?) async throws -> JSONValue
+  func start(prompt: String, model: String?, options: JSONValue?) async throws -> JSONValue
+  func resume(upstreamSessionID: String, prompt: String?, model: String?, options: JSONValue?)
+    async throws -> JSONValue
   func list() async -> JSONValue
   func events(sessionID: String, afterCursor: Int, maxResults: Int) async throws -> JSONValue
   func result(sessionID: String) async throws -> JSONValue
@@ -38,18 +39,29 @@ protocol CodexExecClientAdapter: Sendable {
 extension CodexExecProcessHandle: CodexExecProcessHandleAdapter {}
 
 private struct LiveCodexExecClientAdapter: CodexExecClientAdapter {
-  let client: CodexExecClient
+  let configuration: CodexConfig
+  let workspaceURL: URL
+
+  private func makeClient() throws -> CodexExecClient {
+    let environment = CodexProcessEnvironment.resolved()
+    return CodexExecClient(
+      configuration: .init(
+        executableURL: try configuration.resolvedExecutableURL(
+          workspaceURL: workspaceURL, environment: environment),
+        environmentOverride: environment,
+        defaultWorkingDirectory: workspaceURL))
+  }
 
   func run(_ request: CodexExecRunRequest) async throws
     -> any CodexExecProcessHandleAdapter
   {
-    try await client.run(request)
+    try await makeClient().run(request)
   }
 
   func resume(_ request: CodexExecResumeRequest) async throws
     -> any CodexExecProcessHandleAdapter
   {
-    try await client.resume(request)
+    try await makeClient().resume(request)
   }
 }
 
@@ -61,12 +73,13 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
 
   private enum State: String, Sendable {
     case running
+    case cancellationRequested = "cancellation_requested"
     case completed
     case failed
     case cancelled
 
     var isTerminal: Bool {
-      self != .running
+      self != .running && self != .cancellationRequested
     }
   }
 
@@ -79,9 +92,12 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     let model: String?
     var updatedAt: Date
     var state: State
+    var cancellationRequested = false
+    var cleanupConfirmed = false
     var upstreamSessionID: String?
     var finalMessage: String?
     var termination: CodexExecTermination?
+    var partialObservation: CodexExecPartialObservation?
     var failure: CodexExecRuntimeError?
     var streamTask: Task<Void, Never>?
     var waitTask: Task<Void, Never>?
@@ -91,26 +107,22 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   private let workspaceURL: URL
   private let outputBounds: CodexOutputBounds
   private let client: any CodexExecClientAdapter
+  private let threadOwnerIndex: CodexThreadOwnerIndex?
   private var sessions: [String: Session] = [:]
   private var pendingLaunches = 0
 
   init(
     configuration: CodexConfig,
     workspaceURL: URL,
-    maxOutputBytes: Int = 1_048_576
+    maxOutputBytes: Int = 1_048_576, threadOwnerIndex: CodexThreadOwnerIndex? = nil
   ) {
     let standardizedWorkspace = workspaceURL.standardizedFileURL
+    self.threadOwnerIndex = threadOwnerIndex
     self.configuration = configuration
     self.workspaceURL = standardizedWorkspace
     self.outputBounds = CodexOutputBounds(maxOutputBytes: maxOutputBytes)
     self.client = LiveCodexExecClientAdapter(
-      client: CodexExecClient(
-        configuration: CodexExecLaunchConfiguration(
-          executableURL: configuration.executableURL,
-          environmentOverride: CodexProcessEnvironment.resolved(),
-          defaultWorkingDirectory: standardizedWorkspace
-        )
-      )
+      configuration: configuration, workspaceURL: standardizedWorkspace
     )
   }
 
@@ -118,23 +130,31 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     configuration: CodexConfig,
     workspaceURL: URL,
     maxOutputBytes: Int = 1_048_576,
-    client: any CodexExecClientAdapter
+    client: any CodexExecClientAdapter, threadOwnerIndex: CodexThreadOwnerIndex? = nil
   ) {
+    self.threadOwnerIndex = threadOwnerIndex
     self.configuration = configuration
     self.workspaceURL = workspaceURL.standardizedFileURL
     self.outputBounds = CodexOutputBounds(maxOutputBytes: maxOutputBytes)
     self.client = client
   }
 
-  func start(prompt: String, model: String?) async throws -> JSONValue {
+  func start(prompt: String, model: String? = nil, options: JSONValue? = nil) async throws
+    -> JSONValue
+  {
     let validatedPrompt = try Self.validatedPrompt(prompt, required: true)
     let validatedModel = try Self.validatedModel(model)
+    let native = try CodexExecOptions(
+      options, model: validatedModel, configuration: configuration, workspaceURL: workspaceURL)
     try reserveSessionSlot()
 
     let request = CodexExecRunRequest(
-      promptInput: .text(validatedPrompt),
+      promptInput: native.stdin.map { .textWithStdinContext(prompt: validatedPrompt, stdin: $0) }
+        ?? .text(validatedPrompt),
       outputMode: .jsonl,
-      options: requestOptions(model: validatedModel)
+      options: native.request,
+      outputSchemaFile: native.outputSchemaFile,
+      outputLastMessageFile: native.outputLastMessageFile
     )
     let handle: any CodexExecProcessHandleAdapter
     do {
@@ -153,16 +173,26 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     )
   }
 
-  func resume(upstreamSessionID: String, prompt: String?) async throws -> JSONValue {
+  func resume(
+    upstreamSessionID: String, prompt: String?, model: String? = nil, options: JSONValue? = nil
+  ) async throws -> JSONValue {
     let validatedSessionID = try Self.validatedUpstreamSessionID(upstreamSessionID)
+    try threadOwnerIndex?.check(threadID: validatedSessionID)
     let validatedPrompt = try Self.validatedPrompt(prompt, required: false)
+    let native = try CodexExecOptions(
+      options, model: Self.validatedModel(model), configuration: configuration,
+      workspaceURL: workspaceURL)
+    try threadOwnerIndex?.claim(threadID: validatedSessionID)
     try reserveSessionSlot()
-
     let request = CodexExecResumeRequest(
       selector: .sessionID(validatedSessionID),
-      promptInput: validatedPrompt.map(CodexExecPromptInput.text),
+      promptInput: native.stdin.map { input in
+        validatedPrompt.map { .textWithStdinContext(prompt: $0, stdin: input) } ?? .stdin(input)
+      } ?? validatedPrompt.map(CodexExecPromptInput.text),
       outputMode: .jsonl,
-      options: requestOptions(model: nil)
+      options: native.request,
+      outputSchemaFile: native.outputSchemaFile,
+      outputLastMessageFile: native.outputLastMessageFile
     )
     let handle: any CodexExecProcessHandleAdapter
     do {
@@ -177,7 +207,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
       handle: handle,
       operation: .resume,
       requestedUpstreamSessionID: validatedSessionID,
-      model: nil
+      model: native.request.model
     )
   }
 
@@ -231,6 +261,9 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     }
     result["termination"] = session.termination.map { terminationJSON($0) } ?? .null
     result["error"] = session.failure.map { errorJSON($0) } ?? .null
+    result["output_capture"] =
+      (session.termination?.outputCapture ?? session.partialObservation?.outputCapture)
+      .map(Self.outputCaptureJSON) ?? .null
     return .object(result)
   }
 
@@ -243,43 +276,27 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
       )
     }
 
-    session.state = .cancelled
+    session.state = .cancellationRequested
+    session.cancellationRequested = true
     session.updatedAt = Date()
-    session.failure = CodexExecRuntimeError(
-      code: "codex.exec.cancelled",
-      message: "Exec session was cancelled by the caller."
-    )
     sessions[sessionID] = session
     await session.eventBuffer.append(
-      kind: "session.cancelled",
-      payload: .object(["session_id": .string(sessionID)])
-    )
+      kind: "session.cancellation_requested",
+      payload: .object(["session_id": .string(sessionID)]))
     session.streamTask?.cancel()
     session.waitTask?.cancel()
     return .object([
       "session_id": .string(sessionID),
-      "state": .string(State.cancelled.rawValue),
-      "cancelled": .bool(true),
+      "state": .string(State.cancellationRequested.rawValue),
+      "cancellation_requested": .bool(true),
+      "cleanup_confirmed": .bool(false),
     ])
   }
 
   func shutdown() async {
-    for id in sessions.keys.sorted() {
-      guard var session = sessions[id] else { continue }
-      session.streamTask?.cancel()
-      session.waitTask?.cancel()
-      session.streamTask = nil
-      session.waitTask = nil
-      if !session.state.isTerminal {
-        session.state = .cancelled
-        session.updatedAt = Date()
-        session.failure = CodexExecRuntimeError(
-          code: "codex.exec.shutdown",
-          message: "Exec session was cancelled because the gateway connection closed."
-        )
-      }
-      sessions[id] = session
-    }
+    let owned = sessions.values.filter { !$0.state.isTerminal }
+    for session in owned { _ = try? await cancel(sessionID: session.id) }
+    for session in owned { await session.waitTask?.value }
     pendingLaunches = 0
   }
 
@@ -330,7 +347,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
         await self?.fail(sessionID: sessionID, error: error)
       }
     }
-    if var registered = sessions[sessionID], registered.state == .running {
+    if var registered = sessions[sessionID], !registered.state.isTerminal {
       registered.streamTask = streamTask
       registered.waitTask = waitTask
       sessions[sessionID] = registered
@@ -362,7 +379,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     decoder: CodexExecJSONLDecoder,
     sessionID: String
   ) async {
-    guard var session = sessions[sessionID], session.state == .running else {
+    guard var session = sessions[sessionID], !session.state.isTerminal else {
       return
     }
 
@@ -380,6 +397,11 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
       let event = try decoder.decodeLine(line)
       switch event {
       case .threadStarted(let id):
+        do { try threadOwnerIndex?.claim(threadID: id) } catch {
+          await recordStreamFailure(sessionID: sessionID, error: error)
+          sessions[sessionID]?.waitTask?.cancel()
+          return
+        }
         session.upstreamSessionID = id
       case .itemStarted(let item), .itemUpdated(let item), .itemCompleted(let item):
         if case .agentMessage(let message) = item {
@@ -398,7 +420,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   }
 
   private func recordStreamFailure(sessionID: String, error: Error) async {
-    guard var session = sessions[sessionID], session.state == .running else {
+    guard var session = sessions[sessionID], !session.state.isTerminal else {
       return
     }
     let runtimeError = Self.runtimeError(for: error)
@@ -412,12 +434,13 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   }
 
   private func complete(sessionID: String, termination: CodexExecTermination) async {
-    guard var session = sessions[sessionID], session.state == .running else {
+    guard var session = sessions[sessionID], !session.state.isTerminal else {
       return
     }
     session.state = session.failure == nil ? .completed : .failed
     session.updatedAt = Date()
     session.termination = termination
+    session.cleanupConfirmed = true
     session.streamTask = nil
     session.waitTask = nil
     sessions[sessionID] = session
@@ -428,13 +451,18 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   }
 
   private func fail(sessionID: String, error: Error) async {
-    guard var session = sessions[sessionID], session.state == .running else {
+    guard var session = sessions[sessionID], !session.state.isTerminal else {
       return
     }
     let runtimeError = Self.runtimeError(for: error)
     session.state = runtimeError.code == "codex.exec.cancelled" ? .cancelled : .failed
     session.updatedAt = Date()
     session.failure = runtimeError
+    session.partialObservation = Self.partialObservation(error)
+    session.cleanupConfirmed = Self.terminationConfirmed(error)
+    session.finalMessage = session.finalMessage ?? session.partialObservation?.finalMessageText
+    session.upstreamSessionID =
+      session.upstreamSessionID ?? session.partialObservation?.resolvedSessionID
     session.streamTask = nil
     session.waitTask = nil
     sessions[sessionID] = session
@@ -448,7 +476,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     while sessions.count + pendingLaunches >= configuration.maxSessions {
       guard
         let evicted = sessions.values
-          .filter({ $0.state.isTerminal })
+          .filter({ $0.state.isTerminal && $0.cleanupConfirmed })
           .min(by: {
             if $0.updatedAt == $1.updatedAt {
               return $0.id < $1.id
@@ -477,36 +505,13 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     return session
   }
 
-  private func requestOptions(model: String?) -> CodexExecRequestOptions {
-    CodexExecRequestOptions(
-      images: [],
-      additionalWritableDirectories: [],
-      approvalMode: nil,
-      searchEnabled: nil,
-      enabledFeatures: [],
-      disabledFeatures: [],
-      model: model,
-      useOSS: false,
-      workingDirectory: workspaceURL,
-      colorMode: "never",
-      dangerouslyBypassApprovalsAndSandbox: false,
-      ephemeral: false,
-      ignoreUserConfig: true,
-      fullAuto: false,
-      profile: nil,
-      sandboxMode: configuration.sandbox.rawValue,
-      skipGitRepoCheck: true,
-      configOverrides: [
-        #"approval_policy="\#(configuration.approvalPolicy.rawValue)""#
-      ]
-    )
-  }
-
   private func sessionSummary(_ session: Session) -> JSONValue {
     .object([
       "session_id": .string(session.id),
       "operation": .string(session.operation.rawValue),
       "state": .string(session.state.rawValue),
+      "cancellation_requested": .bool(session.cancellationRequested),
+      "cleanup_confirmed": .bool(session.cleanupConfirmed),
       "created_at": .string(session.createdAt.formatted(Self.timestampFormat)),
       "updated_at": .string(session.updatedAt.formatted(Self.timestampFormat)),
       "upstream_session_id": session.upstreamSessionID.map(JSONValue.string) ?? .null,
@@ -628,9 +633,43 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
         code: "codex.exec.cancelled",
         message: "Codex execution was cancelled."
       )
+    case .outputCaptureLimitExceeded:
+      return .init(
+        code: "codex.exec.output_capture_limit",
+        message: "Codex output exceeded the capture budget; preserved output is incomplete.")
     case .outputFileFailure(_, let description, _):
       return .init(code: "codex.exec.output_file_failed", message: description)
     }
+  }
+
+  private static func partialObservation(_ error: Error) -> CodexExecPartialObservation? {
+    guard let error = error as? CodexExecError else { return nil }
+    switch error {
+    case .launchFailure, .invalidInvocation: return nil
+    case .resumeTargetNotFound(_, let partial), .nonZeroExit(_, _, let partial),
+      .malformedJSONL(_, let partial), .interrupted(let partial), .cancelled(let partial),
+      .outputFileFailure(_, _, let partial):
+      return partial
+    case .outputCaptureLimitExceeded(let partial): return partial
+    }
+  }
+
+  private static func terminationConfirmed(_ error: Error) -> Bool {
+    guard let error = error as? CodexExecError else { return false }
+    switch error {
+    case .launchFailure, .invalidInvocation: return false
+    case .resumeTargetNotFound, .nonZeroExit, .malformedJSONL, .interrupted, .cancelled,
+      .outputCaptureLimitExceeded, .outputFileFailure:
+      return true
+    }
+  }
+
+  private static func outputCaptureJSON(_ capture: CodexExecOutputCapture) -> JSONValue {
+    .object([
+      "complete": .bool(capture.isComplete),
+      "stdout_dropped_bytes": .number(Double(capture.stdoutDroppedBytes)),
+      "stderr_dropped_bytes": .number(Double(capture.stderrDroppedBytes)),
+    ])
   }
 
   private func terminationJSON(_ termination: CodexExecTermination) -> JSONValue {

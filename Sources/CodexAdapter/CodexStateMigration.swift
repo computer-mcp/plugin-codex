@@ -343,15 +343,32 @@ enum CodexStateMigration {
         result.append(Table(schema: expected, rows: []))
         continue
       }
-      guard try schema(expected.name, in: db) == expected else {
+      let actual = try schema(expected.name, in: db)
+      // The native-approval migration added nullable fields to these historical
+      // source tables. Project their absent values as NULL without migrating the source.
+      let additions: Set<String>
+      switch expected.name {
+      case "codexApprovals": additions = ["ownerJSON", "responseJSON"]
+      case "codexThreadOwnership": additions = ["ownerJSON"]
+      default: additions = []
+      }
+      let addedColumns = expected.columns.filter { additions.contains($0.name) }
+      let historicalColumns = expected.columns.filter { !additions.contains($0.name) }
+      let isHistoricalSource =
+        !isDestination && !additions.isEmpty && addedColumns.count == additions.count
+        && addedColumns.allSatisfy { !$0.notNull && $0.primaryKey == 0 && $0.hidden == 0 }
+        && actual.columns == historicalColumns
+      guard actual == expected || isHistoricalSource else {
         throw Failure.invalid("Unsupported columns in domain table: \(expected.name).")
       }
+      let present = Set(actual.columns.map(\.name))
+      let expressions = expected.columns.map { present.contains($0.name) ? quote($0.name) : "NULL" }
       let rowCount = try Int.fetchOne(db, sql: "SELECT count(*) FROM \(quote(expected.name))") ?? 0
       guard rowCount <= maximumRows - count else {
         throw Failure.invalid("Domain records exceed the row bound.")
       }
-      let byteExpression = expected.columns.map {
-        "coalesce(length(CAST(\(quote($0.name)) AS BLOB)), 0)"
+      let byteExpression = expressions.map {
+        "coalesce(length(CAST(\($0) AS BLOB)), 0)"
       }.joined(separator: " + ")
       let storedBytes =
         try Int64.fetchOne(
@@ -361,10 +378,11 @@ enum CodexStateMigration {
       }
       // Compare raw TEXT bytes with the decoded Swift string before binding it
       // back to SQLite; malformed UTF-8 must not silently become replacement characters.
-      let rawText = expected.columns.enumerated().map { index, column in
-        "CASE WHEN typeof(\(quote(column.name))) = 'text' THEN CAST(\(quote(column.name)) AS BLOB) END AS __migration_text_\(index)"
+      let rawText = expressions.enumerated().map { index, expression in
+        "CASE WHEN typeof(\(expression)) = 'text' THEN CAST(\(expression) AS BLOB) END AS __migration_text_\(index)"
       }
-      let columns = (expected.columns.map { quote($0.name) } + rawText).joined(separator: ", ")
+      let projected = zip(expressions, expected.columns).map { "\($0) AS \(quote($1.name))" }
+      let columns = (projected + rawText).joined(separator: ", ")
       let cursor = try Row.fetchCursor(
         db,
         sql:

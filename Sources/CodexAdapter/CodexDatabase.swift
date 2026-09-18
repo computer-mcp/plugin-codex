@@ -4,13 +4,24 @@ import GRDB
 /// Adapter-owned domain records. Host grants, credentials, workspaces and audit stay with the host.
 final class CodexDatabase: @unchecked Sendable {
   private let writer: any DatabaseWriter
+  private let worktreeLeaseWriter: any DatabaseWriter
+  let sharesWorktreeLeases: Bool
   let fileURL: URL?
 
-  init(path: String) throws {
+  init(path: String, worktreeLeasePath: String? = nil) throws {
     fileURL = URL(fileURLWithPath: path).standardizedFileURL
     var configuration = Configuration()
     configuration.busyMode = .timeout(5)
     writer = try DatabaseQueue(path: path, configuration: configuration)
+    sharesWorktreeLeases = worktreeLeasePath != nil
+    if let worktreeLeasePath {
+      worktreeLeaseWriter = try DatabaseQueue(path: worktreeLeasePath, configuration: configuration)
+      var migrator = DatabaseMigrator()
+      migrator.registerMigration("codex-worktree-leases", migrate: Self.createWorktreeLeaseTable)
+      try migrator.migrate(worktreeLeaseWriter)
+    } else {
+      worktreeLeaseWriter = writer
+    }
     try Self.migrator.migrate(writer)
     try reconcileCodexRuntimeLeaseSemantics()
   }
@@ -18,6 +29,8 @@ final class CodexDatabase: @unchecked Sendable {
   init(inMemory: Void) throws {
     fileURL = nil
     writer = try DatabaseQueue()
+    worktreeLeaseWriter = writer
+    sharesWorktreeLeases = false
     try Self.migrator.migrate(writer)
     try reconcileCodexRuntimeLeaseSemantics()
   }
@@ -207,7 +220,7 @@ final class CodexDatabase: @unchecked Sendable {
   }
 
   func codexWorktreeLease(id: String) throws -> CodexWorktreeLease? {
-    try writer.read { database in
+    try worktreeLeaseWriter.read { database in
       try CodexWorktreeLeaseRow.fetchOne(database, key: id)?.value()
     }
   }
@@ -217,7 +230,7 @@ final class CodexDatabase: @unchecked Sendable {
     states: Set<CodexWorktreeLeaseState> = [],
     limit: Int = 500
   ) throws -> [CodexWorktreeLease] {
-    try writer.read { database in
+    try worktreeLeaseWriter.read { database in
       var request =
         CodexWorktreeLeaseRow
         .order(Column("heartbeatAt").desc, Column("id").desc)
@@ -243,9 +256,10 @@ final class CodexDatabase: @unchecked Sendable {
     parentLeaseID: String?,
     branch: String?,
     ttlSeconds: Int,
-    now: Date
+    now: Date,
+    managedWorktreeID: String? = nil
   ) throws -> CodexWorktreeLease {
-    try writer.write { database in
+    try worktreeLeaseWriter.write { database in
       let rows =
         try CodexWorktreeLeaseRow
         .filter(Column("workspaceID") == workspaceID)
@@ -284,7 +298,8 @@ final class CodexDatabase: @unchecked Sendable {
         expiresAt: now.addingTimeInterval(TimeInterval(ttlSeconds)),
         releasedAt: nil,
         releaseReason: nil,
-        revision: 1
+        revision: 1,
+        managedWorktreeID: managedWorktreeID
       )
       try CodexWorktreeLeaseRow(lease).save(database)
       return lease
@@ -297,7 +312,7 @@ final class CodexDatabase: @unchecked Sendable {
     expectedRevision: Int,
     mutate: (inout CodexWorktreeLease) throws -> Void
   ) throws -> CodexWorktreeLease {
-    try writer.write { database in
+    try worktreeLeaseWriter.write { database in
       guard let row = try CodexWorktreeLeaseRow.fetchOne(database, key: id) else {
         throw CodexWorktreeLeaseError.unknown(id)
       }
@@ -470,20 +485,7 @@ final class CodexDatabase: @unchecked Sendable {
         columns: ["workspaceID", "state", "updatedAt"]
       )
     }
-    migrator.registerMigration("codex-worktree-leases") { database in
-      try database.create(table: "codexWorktreeLeases") { table in
-        table.column("id", .text).primaryKey()
-        table.column("workspaceID", .text).notNull()
-        table.column("state", .text).notNull()
-        table.column("heartbeatAt", .datetime).notNull()
-        table.column("payloadJSON", .text).notNull()
-      }
-      try database.create(
-        index: "codexWorktreeLeases_on_workspace_state_heartbeatAt",
-        on: "codexWorktreeLeases",
-        columns: ["workspaceID", "state", "heartbeatAt"]
-      )
-    }
+    migrator.registerMigration("codex-worktree-leases", migrate: Self.createWorktreeLeaseTable)
     migrator.registerMigration("codex-managed-worktrees") { database in
       try database.create(table: "codexManagedWorktrees") { table in
         table.column("id", .text).primaryKey()
@@ -499,7 +501,29 @@ final class CodexDatabase: @unchecked Sendable {
         columns: ["sourceWorkspaceID", "state", "updatedAt"]
       )
     }
+    migrator.registerMigration("codex-native-approval-responses") { database in
+      try database.alter(table: "codexApprovals") { table in
+        table.add(column: "ownerJSON", .text)
+        table.add(column: "responseJSON", .text)
+      }
+      try database.alter(table: "codexThreadOwnership") { table in
+        table.add(column: "ownerJSON", .text)
+      }
+    }
     return migrator
+  }
+
+  private static func createWorktreeLeaseTable(_ database: Database) throws {
+    try database.create(table: "codexWorktreeLeases") { table in
+      table.column("id", .text).primaryKey()
+      table.column("workspaceID", .text).notNull()
+      table.column("state", .text).notNull()
+      table.column("heartbeatAt", .datetime).notNull()
+      table.column("payloadJSON", .text).notNull()
+    }
+    try database.create(
+      index: "codexWorktreeLeases_on_workspace_state_heartbeatAt",
+      on: "codexWorktreeLeases", columns: ["workspaceID", "state", "heartbeatAt"])
   }
 }
 
@@ -566,6 +590,8 @@ private struct CodexApprovalRecordRow: Codable, FetchableRecord, PersistableReco
   var decision: String?
   var scope: String?
   var resolutionReason: String?
+  var ownerJSON: String?
+  var responseJSON: String?
 
   init(_ value: CodexApprovalRecord) throws {
     id = value.id
@@ -587,7 +613,11 @@ private struct CodexApprovalRecordRow: Codable, FetchableRecord, PersistableReco
     createdAt = value.createdAt
     expiresAt = value.expiresAt
     resolvedAt = value.resolvedAt
-    decision = value.decision?.rawValue
+    decision = try value.decision.map(Self.encode)
+    ownerJSON = try value.owner.map {
+      String(decoding: try JSONEncoder().encode($0), as: UTF8.self)
+    }
+    responseJSON = try value.response.map(Self.encode)
     scope = value.scope
     resolutionReason = value.resolutionReason
   }
@@ -601,14 +631,8 @@ private struct CodexApprovalRecordRow: Codable, FetchableRecord, PersistableReco
         "Codex approval contains unknown enum values."
       )
     }
-    let decision = try decision.map { rawValue in
-      guard let value = CodexApprovalDecision(rawValue: rawValue) else {
-        throw CodexDatabaseError.invalidStoredValue(
-          "Codex approval contains an unknown decision."
-        )
-      }
-      return value
-    }
+    // Historical rows stored the caller decision as an unquoted string.
+    let decision = decision.map { (try? Self.decode($0)) ?? .string($0) }
     return CodexApprovalRecord(
       id: id,
       upstreamRequestID: upstreamRequestID,
@@ -631,7 +655,11 @@ private struct CodexApprovalRecordRow: Codable, FetchableRecord, PersistableReco
       resolvedAt: resolvedAt,
       decision: decision,
       scope: scope,
-      resolutionReason: resolutionReason
+      resolutionReason: resolutionReason,
+      owner: try ownerJSON.map {
+        try JSONDecoder().decode(CodexRuntimeOwner.self, from: Data($0.utf8))
+      },
+      response: try responseJSON.map(Self.decode)
     )
   }
 
@@ -691,8 +719,9 @@ private struct CodexThreadOwnershipRow: Codable, FetchableRecord, PersistableRec
   var state: String
   var createdAt: Date
   var updatedAt: Date
+  var ownerJSON: String?
 
-  init(_ value: CodexThreadOwnershipRecord) {
+  init(_ value: CodexThreadOwnershipRecord) throws {
     threadID = value.threadID
     workspaceID = value.workspaceID
     workspacePath = value.workspacePath
@@ -700,6 +729,9 @@ private struct CodexThreadOwnershipRow: Codable, FetchableRecord, PersistableRec
     state = value.state.rawValue
     createdAt = value.createdAt
     updatedAt = value.updatedAt
+    ownerJSON = try value.owner.map {
+      String(decoding: try JSONEncoder().encode($0), as: UTF8.self)
+    }
   }
 
   func value() throws -> CodexThreadOwnershipRecord {
@@ -715,7 +747,10 @@ private struct CodexThreadOwnershipRow: Codable, FetchableRecord, PersistableRec
       runtimeID: runtimeID,
       state: state,
       createdAt: createdAt,
-      updatedAt: updatedAt
+      updatedAt: updatedAt,
+      owner: try ownerJSON.map {
+        try JSONDecoder().decode(CodexRuntimeOwner.self, from: Data($0.utf8))
+      }
     )
   }
 }
