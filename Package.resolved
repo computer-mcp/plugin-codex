@@ -1,5 +1,5 @@
 {
-  "originHash" : "3e0b07b6f350788c1fbdda66a02d068c71308d50016af71c3a588c1fc37d0e95",
+  "originHash" : "a4250340ac28abf1ac417498a0595591041765d2544ab790b1baf28e94594952",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -150,8 +150,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-library/swift-codex.git",
       "state" : {
-        "revision" : "32125860c13d1cc9bae1c9260966825ab4f7d4f1",
-        "version" : "0.2.1"
+        "revision" : "63913b732da36233591e68db3772483c35fbae07",
+        "version" : "0.2.2"
       }
     },
     {
