@@ -4,20 +4,19 @@ enum CodexOperationalDiagnostics {
   static func snapshot(
     database: CodexDatabase?,
     owner: CodexRuntimeOwner?,
-    configuredSandbox: CodexSandboxMode,
+    configuredSandbox: CodexSandboxMode?,
     limit: Int,
     hostSnapshot: CodexHostDiagnosticSnapshot? = nil,
+    unboundStateAvailable: Bool = false,
     now: Date = Date()
   ) async throws -> JSONValue {
     let workspaceID = owner?.workspaceID
     if let hostSnapshot {
       guard let owner, hostSnapshot.owner == owner,
         hostSnapshot.recentToolAudits.count <= limit,
-        hostSnapshot.elevationGrants.count <= limit,
         hostSnapshot.recentToolAudits.allSatisfy({
           $0.objectValue?["workspace_id"]?.stringValue == owner.workspaceID
-        }),
-        hostSnapshot.elevationGrants.allSatisfy({ $0.workspaceID == owner.workspaceID })
+        })
       else {
         throw CodexToolError.executionFailed(
           "Host diagnostic snapshot does not match the bound scope or limit.")
@@ -47,10 +46,6 @@ enum CodexOperationalDiagnostics {
       database: database,
       workspaceID: workspaceID
     )
-    let elevationGrants = hostSnapshot?.elevationGrants ?? []
-    let effectiveElevationGrants = elevationGrants.filter {
-      $0.state.isEffective && $0.inFlightClaimID == nil
-    }
     let pendingApprovals = approvals.filter { $0.state == .pending }
     let activeRuns = runs.filter { !$0.state.isTerminal }
     let activeLeases = leases.filter { $0.state == .active && $0.expiresAt > now }
@@ -73,6 +68,7 @@ enum CodexOperationalDiagnostics {
       "generated_at": .string(timestamp(now)),
       "scope": .object([
         "workspace_id": diagnosticIdentifier(workspaceID),
+        "principal_id": diagnosticIdentifier(owner?.principalID),
         "profile_id": diagnosticIdentifier(owner?.profileID),
         "caller": diagnosticIdentifier(owner?.caller),
         "transport": diagnosticIdentifier(owner?.transport),
@@ -81,14 +77,17 @@ enum CodexOperationalDiagnostics {
         "tunnel_profile_id": diagnosticIdentifier(owner?.tunnelProfileID),
       ]),
       "persistence_available": .bool(database != nil),
+      "state_storage": .object([
+        "scope": .string(owner?.principalID == nil ? "local" : "authorization_subject"),
+        "unbound_history_available": .bool(unboundStateAvailable),
+        "unbound_history_adopted": .bool(false),
+      ]),
       "host_diagnostics_available": .bool(hostSnapshot != nil),
       "summary": .object([
         "live_runtime_count": .number(Double(liveRuntimeCount(liveRuntimes))),
         "persisted_runtime_count": .number(Double(persistedRuntimes.count)),
         "thread_ownership_receipt_count": .number(Double(threadOwnership.count)),
         "pending_approval_count": .number(Double(pendingApprovals.count)),
-        "effective_elevation_grant_count": hostSnapshot == nil
-          ? .null : .number(Double(effectiveElevationGrants.count)),
         "ownership_reconciliation_candidate_count": .number(
           Double(ownershipReconciliation.candidates.count)
         ),
@@ -104,16 +103,9 @@ enum CodexOperationalDiagnostics {
       "runtime_cleanup": cleanup,
       "ownership_reconciliation": ownershipReconciliation.json,
       "pending_approvals": .array(pendingApprovals.map(\.json)),
-      "elevation": .object([
-        "configured_default_sandbox": .string(configuredSandbox.rawValue),
-        "requested_sandbox": effectiveElevationGrants.isEmpty
-          ? .null : .string("danger-full-access"),
-        "effective_next_eligible_start": hostSnapshot == nil
-          ? .null
-          : (effectiveElevationGrants.isEmpty
-            ? .string(configuredSandbox.rawValue) : .string("danger-full-access")),
-        "active_turn_unchanged": .bool(true),
-        "grants": hostSnapshot == nil ? .null : .array(elevationGrants.map(\.json)),
+      "codex_configuration": .object([
+        "sandbox_override": configuredSandbox.map { .string($0.rawValue) } ?? .null,
+        "unspecified_values": .string("inherited_from_codex"),
       ]),
       "active_runs": .array(activeRuns.map(\.json)),
       "active_worktree_leases": .array(activeLeases.map(\.json)),

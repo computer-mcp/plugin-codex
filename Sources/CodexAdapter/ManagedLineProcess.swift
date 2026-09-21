@@ -166,13 +166,11 @@ final class ManagedLineProcess: @unchecked Sendable {
   }
 
   private func performClose() async {
-    let handles = await state.beginShutdown()
-    let finishInput = Task {
-      try? await handles.writer?.finish()
-    }
+    await state.beginShutdown()
 
     // The child has a separate job-control group. Do not kill its supervisor before
     // it publishes that group's identity, or a concurrently spawned child could escape.
+    // Readiness also ensures EOF delivery sees the input writer attached during launch.
     let startupDeadline = ContinuousClock.now + .seconds(5)
     while !(await state.canSignalOwnedProcess()) {
       if ContinuousClock.now >= startupDeadline {
@@ -180,6 +178,10 @@ final class ManagedLineProcess: @unchecked Sendable {
         return
       }
       try? await Task.sleep(for: .milliseconds(10))
+    }
+
+    let finishInput = Task {
+      try? await state.finishInput()
     }
 
     // Start EOF delivery without waiting for a back-pressured pipe writer. The
@@ -281,9 +283,6 @@ final class ManagedLineProcess: @unchecked Sendable {
             )
           }
           await state.attachChild(processID: processID)
-          if await state.isShuttingDown() {
-            _ = await state.signalChildGroup(SIGTERM)
-          }
           do {
             for try await _ in stderr {}
           } catch {
@@ -534,11 +533,6 @@ private final class ManagedLineProcessOutputReader: @unchecked Sendable {
   }
 }
 
-private struct ManagedLineProcessShutdownHandles: Sendable {
-  var execution: Execution?
-  var writer: StandardInputWriter?
-}
-
 private actor ManagedLineProcessState {
   private let continuation: AsyncThrowingStream<String, Error>.Continuation
   private let maximumMessageBytes: Int
@@ -646,13 +640,16 @@ private actor ManagedLineProcessState {
     }
   }
 
-  func beginShutdown() -> ManagedLineProcessShutdownHandles {
+  func beginShutdown() {
     shutdownRequested = true
     failReadyWaiters(ManagedLineProcessError.closed)
     if state == .starting || state == .running {
       state = .stopping
     }
-    return .init(execution: execution, writer: inputWriter)
+  }
+
+  func finishInput() async throws {
+    try await inputWriter?.finish()
   }
 
   func runningExecution() -> Execution? {

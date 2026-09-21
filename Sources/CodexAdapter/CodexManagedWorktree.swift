@@ -37,6 +37,7 @@ struct CodexManagedWorktree: Codable, Equatable, Sendable, Identifiable {
   var removedAt: Date?
   var lastError: String?
   var revision: Int
+  var principalID: String? = nil
 
   private enum CodingKeys: String, CodingKey {
     case id
@@ -53,6 +54,7 @@ struct CodexManagedWorktree: Codable, Equatable, Sendable, Identifiable {
     case runID = "run_id"
     case parentLeaseID = "parent_lease_id"
     case profileID = "profile_id"
+    case principalID = "principal_id"
     case caller
     case ttlSeconds = "ttl_seconds"
     case leaseID = "lease_id"
@@ -103,6 +105,7 @@ enum CodexManagedWorktreeManager {
     sourceWorkspaceURL: URL,
     profileID: String?,
     caller: String?,
+    principalID: String? = nil,
     agentID: String,
     threadID: String?,
     runID: String?,
@@ -245,7 +248,7 @@ enum CodexManagedWorktreeManager {
       planExpiresAt: now.addingTimeInterval(300),
       removedAt: nil,
       lastError: nil,
-      revision: 1
+      revision: 1, principalID: principalID
     )
     try database.saveCodexManagedWorktree(record)
     return record
@@ -377,7 +380,8 @@ enum CodexManagedWorktreeManager {
         parentLeaseID: record.parentLeaseID,
         branch: record.branch,
         ttlSeconds: record.ttlSeconds,
-        now: now
+        now: now,
+        managedWorktreeID: record.id
       )
       createdLease = lease
       let actualHead = try gitText(
@@ -626,7 +630,8 @@ enum CodexManagedWorktreeManager {
   ) throws {
     guard let leaseID = record.leaseID,
       let lease = try database.codexWorktreeLease(id: leaseID),
-      lease.workspaceID == record.workspaceID
+      lease.workspaceID == record.workspaceID,
+      !database.sharesWorktreeLeases || lease.managedWorktreeID == record.id
     else {
       throw CodexManagedWorktreeError.state("the managed writer lease receipt is missing")
     }
@@ -699,6 +704,7 @@ enum CodexManagedWorktreeManager {
   ) throws {
     guard let leaseID = record.leaseID, let lease = try database.codexWorktreeLease(id: leaseID),
       lease.workspaceID == record.workspaceID, lease.state != .active,
+      !database.sharesWorktreeLeases || lease.managedWorktreeID == record.id,
       (liveRuntimeStatus.objectValue?["runtimes"]?.arrayValue ?? []).isEmpty
     else {
       throw CodexManagedWorktreeError.state(

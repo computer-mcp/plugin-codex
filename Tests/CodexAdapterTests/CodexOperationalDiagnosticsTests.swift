@@ -12,11 +12,11 @@ final class CodexOperationalDiagnosticsTests {
       workspaceID: UUID().uuidString, profileID: "observer", caller: "local-mcp",
       transport: "fixture", socketConnectionID: nil, tunnelInstanceID: nil, tunnelProfileID: nil)
     let host = HostDiagnosticsStub(
-      value: .init(owner: owner, recentToolAudits: [], elevationGrants: []), denied: denied)
+      value: .init(owner: owner, recentToolAudits: []), denied: denied)
     let provider = CodexAppServerProvider(
       appServer: FakeAppServerRuntime(), owner: owner, database: try CodexDatabase(inMemory: ()),
       workspaceURL: URL(fileURLWithPath: "/tmp"), recentThreadReader: nil,
-      readOnly: true, localControlAllowed: false, configuredSandbox: .readOnly,
+      localControlAllowed: false, configuredSandbox: .readOnly,
       hostDiagnostics: host)
     let pair = await InMemoryTransport.createConnectedPair()
     try await pair.server.connect()
@@ -36,9 +36,8 @@ final class CodexOperationalDiagnosticsTests {
         let result = try #require(response.structuredContent?.objectValue?["result"]?.objectValue)
         #expect(result["host_diagnostics_available"] == .bool(true))
         #expect(result["recent_tool_audits"] == .array([]))
-        #expect(result["summary"]?.objectValue?["effective_elevation_grant_count"] == .int(0))
         #expect(
-          result["elevation"]?.objectValue?["effective_next_eligible_start"] == .string("read-only")
+          result["codex_configuration"]?.objectValue?["sandbox_override"] == .string("read-only")
         )
       }
       await client.disconnect()
@@ -57,12 +56,9 @@ final class CodexOperationalDiagnosticsTests {
       database: CodexDatabase(inMemory: ()), owner: nil, configuredSandbox: .readOnly, limit: 10)
     #expect(snapshot.objectValue?["host_diagnostics_available"] == .bool(false))
     #expect(snapshot.objectValue?["recent_tool_audits"] == .null)
-    #expect(
-      snapshot.objectValue?["summary"]?.objectValue?["effective_elevation_grant_count"] == .null)
-    let elevation = try #require(snapshot.objectValue?["elevation"]?.objectValue)
-    #expect(elevation["configured_default_sandbox"] == .string("read-only"))
-    #expect(elevation["effective_next_eligible_start"] == .null)
-    #expect(elevation["grants"] == .null)
+    let configuration = try #require(snapshot.objectValue?["codex_configuration"]?.objectValue)
+    #expect(configuration["sandbox_override"] == .string("read-only"))
+    #expect(configuration["unspecified_values"] == .string("inherited_from_codex"))
   }
 
   @Test(arguments: ["owner", "workspace", "limit"])
@@ -79,8 +75,7 @@ final class CodexOperationalDiagnosticsTests {
         repeating: .object([
           "workspace_id": .string(mismatch == "workspace" ? "workspace-2" : "workspace-1")
         ]),
-        count: mismatch == "limit" ? 2 : 1),
-      elevationGrants: [])
+        count: mismatch == "limit" ? 2 : 1))
     await #expect(throws: CodexToolError.self) {
       try await CodexOperationalDiagnostics.snapshot(
         database: CodexDatabase(inMemory: ()), owner: owner(profileID: "profile-1"),
@@ -241,8 +236,7 @@ final class CodexOperationalDiagnosticsTests {
           "input": .string("unprojected command input"),
           "output": .string("unprojected command output"),
         ]),
-      ],
-      elevationGrants: [])
+      ])
 
     let snapshot = try await CodexOperationalDiagnostics.snapshot(
       database: database,
@@ -260,9 +254,8 @@ final class CodexOperationalDiagnosticsTests {
 
     #expect(object["persistence_available"] == .bool(true))
     #expect(object["host_diagnostics_available"] == .bool(true))
-    #expect(summary["effective_elevation_grant_count"] == .number(0))
     #expect(
-      object["elevation"]?.objectValue?["effective_next_eligible_start"]
+      object["codex_configuration"]?.objectValue?["sandbox_override"]
         == .string("workspace-write"))
     #expect(object["scope"]?.objectValue?["workspace_id"] == .string("workspace-1"))
     #expect(summary["persisted_runtime_count"] == .number(1))

@@ -29,6 +29,7 @@ struct CodexWorktreeLease: Codable, Equatable, Sendable, Identifiable {
   var releasedAt: Date?
   var releaseReason: String?
   var revision: Int
+  var managedWorktreeID: String? = nil
 
   var json: JSONValue {
     (try? JSONValue.encoded(self)) ?? .object([:])
@@ -100,6 +101,7 @@ enum CodexWorktreeLeaseManager {
         )
       }
     }
+    var managedWorktreeID: String?
     if let parentLeaseID {
       guard let parent = try database.codexWorktreeLease(id: parentLeaseID),
         parent.state == .active, parent.expiresAt > now
@@ -110,6 +112,18 @@ enum CodexWorktreeLeaseManager {
         throw CodexWorktreeLeaseError.invalid(
           "an isolated child must use a separately registered worktree workspace"
         )
+      }
+      if database.sharesWorktreeLeases, parent.workspaceID != workspaceID {
+        let lineage = try database.codexWorktreeLeases(workspaceID: workspaceID, limit: 5_000)
+          .first {
+            $0.parentLeaseID == parentLeaseID && $0.managedWorktreeID != nil
+              && $0.workspacePath == workspaceURL.standardizedFileURL.path
+          }
+        guard let lineage else {
+          throw CodexWorktreeLeaseError.invalid(
+            "The parent lease must belong to this workspace's registered managed-worktree lineage.")
+        }
+        managedWorktreeID = lineage.managedWorktreeID
       }
     }
     if mode == .isolatedWorktree, parentLeaseID == nil {
@@ -133,7 +147,8 @@ enum CodexWorktreeLeaseManager {
       parentLeaseID: parentLeaseID,
       branch: safeBranch,
       ttlSeconds: ttlSeconds,
-      now: now
+      now: now,
+      managedWorktreeID: managedWorktreeID
     )
   }
 

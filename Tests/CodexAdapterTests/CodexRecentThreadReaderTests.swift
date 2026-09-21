@@ -107,9 +107,8 @@ final class CodexRecentThreadReaderTests {
     }
 
     let foreignReader = CodexRecentThreadReader(
-      workspaceURL: fixture.root.appendingPathComponent("Foreign Workspace"),
       metadata: fixture.metadata,
-      allowedRolloutRoot: fixture.root
+      allowedRolloutRoot: fixture.root.appendingPathComponent("Other Codex Home")
     )
     expectThrows(
       try foreignReader.read(
@@ -118,7 +117,7 @@ final class CodexRecentThreadReaderTests {
         limits: CodexRecentThreadLimits()
       )
     ) { error in
-      guard case CodexRecentThreadReaderError.outsideWorkspace = error else {
+      guard case CodexRecentThreadReaderError.rolloutOutsideCodexHome = error else {
         Issue.record("Unexpected error: \(error)")
         return
       }
@@ -315,7 +314,6 @@ private struct RecentThreadFixture {
       preview: "Bounded supervision fixture."
     )
     reader = CodexRecentThreadReader(
-      workspaceURL: workspace,
       metadata: metadata,
       allowedRolloutRoot: root
     )

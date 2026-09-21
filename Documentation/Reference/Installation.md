@@ -48,7 +48,7 @@ the current revision from `computer-mcp plugins list`, then supply the digest
 from the artifact receipt:
 
 ```sh
-computer-mcp plugins install /absolute/path/codex-plugin.zip --id codex --version 0.1.1 --sha256 DIGEST --expected-revision REVISION
+computer-mcp plugins install /absolute/path/codex-plugin.zip --id codex --version 0.2.0 --sha256 DIGEST --expected-revision REVISION
 ```
 
 The new package is disabled and exposes no tools. In its settings, choose the

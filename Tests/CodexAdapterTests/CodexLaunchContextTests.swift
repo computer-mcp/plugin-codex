@@ -29,7 +29,7 @@ struct CodexLaunchContextTests {
       FileManager.default.fileExists(
         atPath: root.appendingPathComponent("adapter-state/codex.sqlite").path))
     let execution = try context.executionProvider(configuration: configuration)
-    #expect(execution.tools.count == 16)
+    #expect(execution.tools.count == 6)
     await execution.shutdown()
     await provider.shutdown()
   }
@@ -64,39 +64,29 @@ struct CodexLaunchContextTests {
       environment: [:], currentDirectory: URL(fileURLWithPath: "/tmp/b"))
     #expect(first.owner == same.owner)
     #expect(first.owner.workspaceID != other.owner.workspaceID)
-    #expect(first.owner.elevationConnectionID == nil)
   }
 
-  @Test func hostWorkspaceAndReadOnlyOverrideLocalProcessDefaults() throws {
+  @Test func hostContextDefinesOwnershipAndInitialDirectory() throws {
     let context = try CodexLaunchContext(
       environment: ["COMPUTER_MCP_HOST_CONTEXT": validHost],
       currentDirectory: URL(fileURLWithPath: "/tmp/other"))
     #expect(context.workspaceURL.path == "/tmp/bound-workspace")
-    #expect(context.readOnly)
     let provider = try context.executionProvider(
       configuration: .init(enabled: true, appServerEnabled: false))
-    #expect(provider.readOnly)
-    #expect(provider.tools.count == 16)
+    #expect(provider.tools.count == 6)
   }
 
-  @Test func separateProvidersAndDisabledDefaultDoNotLaunchCodex() async throws {
+  @Test func execAndDisabledDefaultDoNotLaunchCodex() async throws {
     let context = try CodexLaunchContext(
       environment: [:], currentDirectory: URL(fileURLWithPath: "/tmp/standalone"))
     #expect(context.workspaceURL.path == "/tmp/standalone")
-    #expect(!context.readOnly)
     #expect(try context.executionProvider(configuration: .init()).tools.isEmpty)
     let exec = try context.executionProvider(
       configuration: .init(
-        enabled: true, executable: "/missing/codex", appServerEnabled: false, mcpEnabled: false))
-    let mcp = try context.executionProvider(
-      configuration: .init(
-        enabled: true, executable: "/missing/codex", appServerEnabled: false, execEnabled: false))
+        enabled: true, executable: "/missing/codex", appServerEnabled: false))
     #expect(exec.tools.count == 6)
-    #expect(mcp.tools.count == 10)
     _ = try await exec.call(name: "codex.exec.list", arguments: nil)
-    _ = try await mcp.call(name: "codex.mcp.status", arguments: nil)
     await exec.shutdown()
-    await mcp.shutdown()
   }
 
   @Test(arguments: ["", "{}", "null", "oversized"])
@@ -114,10 +104,13 @@ struct CodexLaunchContextTests {
   @Test func existingConfigurationDefaultsAndValidationArePreserved() throws {
     let config = try JSONDecoder().decode(CodexConfig.self, from: Data("{}".utf8))
     #expect(config == CodexConfig())
-    #expect(throws: ConfigurationError.self) {
-      try CodexConfig(enabled: true, sandbox: .dangerFullAccess).validate()
-    }
+    #expect(config.sandbox == nil)
+    #expect(config.approvalPolicy == nil)
+    try CodexConfig(enabled: true, sandbox: .dangerFullAccess).validate()
     #expect(throws: ConfigurationError.self) { try CodexConfig(maxSessions: 65).validate() }
+    #expect(throws: ConfigurationError.self) {
+      try CodexConfig(enabled: true, appServerEnabled: false, execEnabled: false).validate()
+    }
     try CodexConfig(appServerTerminationGraceMilliseconds: 0, appServerKillGraceMilliseconds: 100)
       .validate()
   }
@@ -131,6 +124,41 @@ struct CodexLaunchContextTests {
     #expect(result["COMPUTER_MCP_HOST_CONTEXT"] == nil)
     #expect(result["CODEX_THREAD_ID"] == nil)
     #expect(result["CODEX_HOME"] == "/tmp/private-state")
+  }
+
+  @Test func subjectStorageSurvivesReconnectWithoutAdoptingUnboundHistory() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let historical = Data("unbound-history-fixture".utf8)
+    let unbound = root.appendingPathComponent("codex.sqlite")
+    try historical.write(to: unbound)
+    func provider(principal: String, connection: String) throws -> CodexAppServerProvider {
+      var host = try #require(
+        try JSONSerialization.jsonObject(with: Data(validHost.utf8)) as? [String: Any])
+      host["principalID"] = principal
+      host["transportTrace"] = ["transport": "fixture", "socketConnectionID": connection]
+      let context = try CodexLaunchContext(
+        environment: [
+          "COMPUTER_MCP_HOST_CONTEXT": String(
+            decoding: JSONSerialization.data(withJSONObject: host), as: UTF8.self)
+        ],
+        currentDirectory: root)
+      return try #require(
+        try context.appServerProvider(
+          configuration: .init(enabled: true, executable: "/missing/codex"), stateDirectory: root))
+    }
+    let first = try provider(principal: "principal-a", connection: "first")
+    let reconnected = try provider(principal: "principal-a", connection: "second")
+    let other = try provider(principal: "principal-b", connection: "first")
+    #expect(first.database?.fileURL == reconnected.database?.fileURL)
+    #expect(first.database?.fileURL != other.database?.fileURL)
+    #expect(first.unboundStateAvailable && other.unboundStateAvailable)
+    #expect(try Data(contentsOf: unbound) == historical)
+    #expect(await first.appServer.status().objectValue?["process_state"] == .string("absent"))
+    await first.shutdown()
+    await reconnected.shutdown()
+    await other.shutdown()
   }
 
   private var validHost: String {

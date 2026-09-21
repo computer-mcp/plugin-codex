@@ -177,15 +177,15 @@ metrics_exporter = "none"
 '''
     (state / "config.toml").write_text(config)
     context = {"formatVersion": 1, "runtimeID": str(uuid.uuid4()), "caller": "local-mcp",
-               "profileID": "local-admin", "readOnly": False,
+               "profileID": "local-admin", "principalID": "workflow-fixture",
                "workspace": {"id": "workflow-fixture", "rootPath": str(workspace)}}
     environment = {"PATH": "/usr/bin:/bin", "CODEX_HOME": str(state),
                    "COMPUTER_MCP_HOST_CONTEXT": json.dumps(context)}
     adapter_config = root / "adapter.json"
     adapter_config.write_text(json.dumps({
         "enabled": True, "executable": str(codex), "app_server_enabled": True,
-        "exec_enabled": False, "mcp_enabled": False, "sandbox": "workspace-write",
-        "approval_policy": "untrusted", "app_server_auto_approve_workspace_writes": False,
+        "exec_enabled": False, "sandbox": "workspace-write",
+        "approval_policy": "untrusted",
     }))
     adapter_arguments = ["--config", str(adapter_config), "--state-directory", str(root / "adapter-state")]
     launch_arguments = [str(adapter), *adapter_arguments]
@@ -250,8 +250,8 @@ metrics_exporter = "none"
             assert diagnostic["persistence_available"] is True, diagnostic
             assert diagnostic["host_diagnostics_available"] is False, diagnostic
             assert diagnostic["recent_tool_audits"] is None, diagnostic
-            assert diagnostic["summary"]["effective_elevation_grant_count"] is None, diagnostic
-            assert diagnostic["elevation"]["effective_next_eligible_start"] is None, diagnostic
+            assert diagnostic["codex_configuration"]["sandbox_override"] == "workspace-write", diagnostic
+            assert diagnostic["state_storage"]["scope"] == "authorization_subject", diagnostic
             receipt["steps"].append("diagnostics→adapter persistence→host data explicitly unavailable")
             assert client.call("thread.list")["data"] == []
             started = client.call("thread.start")
@@ -281,7 +281,7 @@ metrics_exporter = "none"
                     assert approval["kind"] == "command_execution", approval
                     assert Path(approval["workspace_path"]).resolve() == workspace, approval
                     assert approval["thread_id"] == thread_id, approval
-                    client.call("approvals.respond", approval_id=approval["id"], decision="approve_once")
+                    client.call("approvals.respond", approval_id=approval["id"], response={"decision": "accept"})
                     approved += 1
                 if completed is None:
                     time.sleep(0.05)

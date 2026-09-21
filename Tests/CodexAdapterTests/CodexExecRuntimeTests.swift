@@ -8,7 +8,7 @@ import Testing
 
 final class CodexExecRuntimeTests {
   @Test
-  func testStartUsesFixedWorkspaceAndPolicyWithoutUnsafeOptions() async throws {
+  func testStartInheritsNativeConfigurationAndUsesInitialDirectory() async throws {
     let workspace = URL(fileURLWithPath: "/tmp/computer-mcp-workspace")
     let adapter = FakeCodexExecClientAdapter(handles: [
       FakeCodexExecHandle(
@@ -35,15 +35,15 @@ final class CodexExecRuntimeTests {
     #expect((request.outputMode) == (.jsonl))
     #expect((request.options.workingDirectory) == (workspace.standardizedFileURL))
     #expect((request.options.approvalMode) == nil)
-    #expect((request.options.sandboxMode) == ("workspace-write"))
+    #expect(request.options.sandboxMode == nil)
     #expect((request.options.model) == ("gpt-5"))
     #expect((request.options.additionalWritableDirectories) == ([]))
-    #expect((request.options.configOverrides) == ([#"approval_policy="never""#]))
-    #expect(request.options.ignoreUserConfig)
+    #expect(request.options.configOverrides.isEmpty)
+    #expect(!request.options.ignoreUserConfig)
     #expect(!(request.options.dangerouslyBypassApprovalsAndSandbox))
     #expect(!(request.options.fullAuto))
     #expect(!(request.options.useOSS))
-    #expect(request.options.skipGitRepoCheck)
+    #expect(!request.options.skipGitRepoCheck)
     #expect((request.options.profile) == nil)
 
     let result = try await waitForResult(runtime: runtime, sessionID: sessionID)
@@ -56,7 +56,7 @@ final class CodexExecRuntimeTests {
   }
 
   @Test
-  func testResumeUsesOpaqueSessionSelectorAndSameFixedPolicy() async throws {
+  func testResumeUsesOpaqueSessionSelectorAndExplicitNativeDefaults() async throws {
     let workspace = URL(fileURLWithPath: "/tmp/resume-workspace")
     let adapter = FakeCodexExecClientAdapter(handles: [
       FakeCodexExecHandle(
@@ -84,13 +84,13 @@ final class CodexExecRuntimeTests {
     #expect((request.promptInput) == (.text("Continue.")))
     #expect((request.outputMode) == (.jsonl))
     #expect((request.options.workingDirectory) == (workspace.standardizedFileURL))
-    #expect((request.options.approvalMode) == nil)
+    #expect(request.options.approvalMode == "on-request")
     #expect((request.options.sandboxMode) == ("read-only"))
     #expect((request.options.additionalWritableDirectories) == ([]))
-    #expect((request.options.configOverrides) == ([#"approval_policy="on-request""#]))
-    #expect(request.options.ignoreUserConfig)
+    #expect(request.options.configOverrides.isEmpty)
+    #expect(!request.options.ignoreUserConfig)
     #expect(!(request.options.dangerouslyBypassApprovalsAndSandbox))
-    #expect(request.options.skipGitRepoCheck)
+    #expect(!request.options.skipGitRepoCheck)
   }
 
   @Test
@@ -156,7 +156,8 @@ final class CodexExecRuntimeTests {
     }
 
     let cancelled = try await runtime.cancel(sessionID: firstID)
-    #expect((cancelled.objectValue?["state"]) == (.string("cancelled")))
+    #expect(cancelled.objectValue?["state"] == .string("cancellation_requested"))
+    _ = try await waitForResult(runtime: runtime, sessionID: firstID)
     _ = try await runtime.start(prompt: "Replacement.", model: nil)
     let runRequestCount = await adapter.runRequests.count
     #expect((runRequestCount) == (2))
@@ -184,7 +185,8 @@ final class CodexExecRuntimeTests {
     }
 
     _ = try await runtime.cancel(sessionID: sessionID)
-    let result = try await runtime.result(sessionID: sessionID)
+    let result = try await waitForResult(runtime: runtime, sessionID: sessionID)
+    #expect(result.objectValue?["cleanup_confirmed"] == .bool(true))
     #expect((result.objectValue?["state"]) == (.string("cancelled")))
     #expect(
       (result.objectValue?["error"]?.objectValue?["code"]) == (.string("codex.exec.cancelled")))
@@ -294,9 +296,67 @@ final class CodexExecRuntimeTests {
     #expect((resumeRequests) == ([]))
   }
 
+  @Test
+  func execResumeSharesNativeThreadOwnershipWithAppServer() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let path = root.appendingPathComponent("owners.sqlite").path
+    let appOwner = try CodexThreadOwnerIndex(path: path, subject: "app-owner", codexHome: root)
+    let execOwner = try CodexThreadOwnerIndex(path: path, subject: "exec-owner", codexHome: root)
+    try appOwner.claim(threadID: "app-owned-thread")
+    let client = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: [#"{"type":"thread.started","thread_id":"exec-created-thread"}"#],
+        termination: successfulTermination(workspace: root, operation: .run))
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: root, client: client,
+      threadOwnerIndex: execOwner)
+    await #expect(throws: CodexToolError.self) {
+      try await runtime.resume(upstreamSessionID: "app-owned-thread", prompt: "must not run")
+    }
+    #expect(await client.resumeRequests.isEmpty)
+    let started = try await runtime.start(prompt: "new native thread")
+    _ = try await waitForResult(
+      runtime: runtime, sessionID: requiredString("session_id", in: started))
+    #expect(try execOwner.owns(threadID: "exec-created-thread"))
+    #expect(throws: CodexToolError.self) { try appOwner.check(threadID: "exec-created-thread") }
+    await runtime.shutdown()
+  }
+
+  @Test
+  func captureLossIsVisibleAfterProcessCleanup() async throws {
+    let partial = CodexExecPartialObservation(
+      finalMessageText: "preserved prefix", resolvedSessionID: "native-session",
+      outputCapture: .init(stdoutDroppedBytes: 128, stderrDroppedBytes: 256))
+    let client = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: [], error: CodexExecError.outputCaptureLimitExceeded(partialObservation: partial))
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"), client: client)
+    let started = try await runtime.start(prompt: "fixture")
+    let result = try await waitForResult(
+      runtime: runtime, sessionID: requiredString("session_id", in: started))
+    #expect(result.objectValue?["state"] == .string("failed"))
+    #expect(result.objectValue?["cleanup_confirmed"] == .bool(true))
+    #expect(
+      result.objectValue?["output_capture"]
+        == .object([
+          "complete": .bool(false), "stdout_dropped_bytes": .number(128),
+          "stderr_dropped_bytes": .number(256),
+        ]))
+    #expect(
+      result.objectValue?["error"]?.objectValue?["code"]
+        == .string("codex.exec.output_capture_limit"))
+    #expect(result.objectValue?["final_message"] == .string("preserved prefix"))
+    #expect(result.objectValue?["upstream_session_id"] == .string("native-session"))
+  }
+
   private func configuration(
-    sandbox: CodexSandboxMode = .workspaceWrite,
-    approval: CodexApprovalPolicy = .never,
+    sandbox: CodexSandboxMode? = nil,
+    approval: CodexApprovalPolicy? = nil,
     maxSessions: Int = 8,
     maxEvents: Int = 1_024
   ) -> CodexConfig {
@@ -415,7 +475,9 @@ private final class ControllableCodexExecHandle:
   }
 
   func waitForTermination() async throws -> CodexExecTermination {
-    try await Task.sleep(for: .seconds(60))
+    do { try await Task.sleep(for: .seconds(60)) } catch is CancellationError {
+      throw CodexExecError.cancelled(partialObservation: nil)
+    }
     throw CodexExecRuntimeError(
       code: "test.unexpected_completion",
       message: "The controllable handle should have been cancelled."

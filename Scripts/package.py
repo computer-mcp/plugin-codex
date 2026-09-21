@@ -117,6 +117,9 @@ def package(output, configuration):
         validate_architectures(manifest, architectures)
         # Basic relocation check; the separate MCP workflow validates resource lookup and execution.
         command([str(binary), "--help"], stage)
+        declared_version = tomllib.loads(manifest.read_text(encoding="utf-8"))["version"]
+        if command([str(binary), "--version"], stage) != declared_version:
+            raise ValueError("Adapter executable version must match the package manifest")
         if manifest.read_bytes() != (repo / manifest.name).read_bytes():
             raise ValueError("Archive manifest must be byte-identical to the repository declaration")
         inventory = {}

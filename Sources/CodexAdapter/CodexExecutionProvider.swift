@@ -1,22 +1,17 @@
 import Foundation
 import MCP
 
-/// The existing Exec and Codex MCP use cases projected over the plugin's standard MCP connection.
+/// Codex Exec use cases projected over the plugin's standard MCP connection.
 struct CodexExecutionProvider: Sendable {
   let exec: (any CodexExecRuntimeProtocol)?
-  let mcp: (any CodexMCPRuntimeProtocol)?
-  let readOnly: Bool
 
   var tools: [MCP.Tool] {
-    (exec == nil ? [] : Self.execTools) + (mcp == nil ? [] : Self.mcpTools)
+    exec == nil ? [] : Self.execTools
   }
 
   func call(name: String, arguments: JSONValue?) async throws -> MCP.CallTool.Result {
     guard let tool = tools.first(where: { $0.name == name }) else {
       throw CodexToolError.unknownTool(name)
-    }
-    if readOnly && Self.mutatingTools.contains(tool.name) {
-      throw CodexToolError.disabled("The bound host profile does not permit this operation.")
     }
     let object = arguments?.objectValue ?? [:]
     guard arguments == nil || arguments?.objectValue != nil,
@@ -32,12 +27,15 @@ struct CodexExecutionProvider: Sendable {
       case "codex.exec.start":
         result = try await tryExec().start(
           prompt: Self.requiredString("prompt", in: object),
-          model: Self.optionalString("model", in: object)
+          model: Self.optionalString("model", in: object),
+          options: object["options"]
         )
       case "codex.exec.resume":
         result = try await tryExec().resume(
           upstreamSessionID: Self.requiredString("upstream_session_id", in: object),
-          prompt: Self.optionalString("prompt", in: object)
+          prompt: Self.optionalString("prompt", in: object),
+          model: Self.optionalString("model", in: object),
+          options: object["options"]
         )
       case "codex.exec.list":
         result = try await tryExec().list()
@@ -61,51 +59,6 @@ struct CodexExecutionProvider: Sendable {
           sessionID: Self.requiredIdentifier("session_id", in: object)
         )
 
-      case "codex.mcp.status":
-        result = try await tryMCP().status()
-      case "codex.mcp.tools.list":
-        result = try await tryMCP().tools()
-      case "codex.mcp.run":
-        result = try await tryMCP().run(
-          prompt: Self.requiredString("prompt", in: object),
-          model: Self.optionalString("model", in: object)
-        )
-      case "codex.mcp.reply":
-        result = try await tryMCP().reply(
-          threadID: Self.requiredIdentifier("thread_id", in: object),
-          prompt: Self.requiredString("prompt", in: object)
-        )
-      case "codex.mcp.calls.list":
-        result = try await tryMCP().calls()
-      case "codex.mcp.events":
-        result = try await tryMCP().events(
-          callID: Self.requiredIdentifier("call_id", in: object),
-          afterCursor: Self.nonnegativeInt("after_cursor", in: object, default: 0),
-          maxResults: Self.boundedInt(
-            "max_results",
-            in: object,
-            default: 100,
-            range: 1...1_000
-          )
-        )
-      case "codex.mcp.result":
-        result = try await tryMCP().result(
-          callID: Self.requiredIdentifier("call_id", in: object)
-        )
-      case "codex.mcp.approvals.list":
-        result = try await tryMCP().pendingApprovals(
-          callID: Self.requiredIdentifier("call_id", in: object)
-        )
-      case "codex.mcp.approval.respond":
-        result = try await tryMCP().respondToApproval(
-          callID: Self.requiredIdentifier("call_id", in: object),
-          approvalID: Self.requiredIdentifier("approval_id", in: object),
-          decision: Self.requiredString("decision", in: object)
-        )
-      case "codex.mcp.cancel":
-        result = try await tryMCP().cancel(
-          callID: Self.requiredIdentifier("call_id", in: object)
-        )
       default: throw CodexToolError.unknownTool(name)
       }
     } catch let error as CodexToolError {
@@ -123,14 +76,8 @@ struct CodexExecutionProvider: Sendable {
       structuredContent: .object(["result": value]), isError: false)
   }
 
-  private static let mutatingTools: Set<String> = [
-    "codex.exec.start", "codex.exec.resume", "codex.exec.cancel",
-    "codex.mcp.run", "codex.mcp.reply", "codex.mcp.approval.respond", "codex.mcp.cancel",
-  ]
-
   func shutdown() async {
     await exec?.shutdown()
-    await mcp?.shutdown()
   }
 
   private func tryExec() throws -> any CodexExecRuntimeProtocol {
@@ -138,13 +85,6 @@ struct CodexExecutionProvider: Sendable {
       throw CodexToolError.disabled("codex.exec.disabled: Codex Exec is disabled.")
     }
     return exec
-  }
-
-  private func tryMCP() throws -> any CodexMCPRuntimeProtocol {
-    guard let mcp else {
-      throw CodexToolError.disabled("codex.mcp.disabled: Codex MCP is disabled.")
-    }
-    return mcp
   }
 
   private static func requiredString(
@@ -261,20 +201,24 @@ struct CodexExecutionProvider: Sendable {
   private static let execTools: [MCP.Tool] = [
     tool(
       "codex.exec.start",
-      "Start an isolated `codex exec` JSONL session. cwd, sandbox, approval policy, writable roots, and config overrides are fixed locally.",
+      "Start an owned Codex Exec JSONL session. Omitted native options inherit Codex configuration; workspace supplies only the initial directory.",
       objectSchema(
-        properties: ["prompt": stringSchema(), "model": stringSchema()],
+        properties: [
+          "prompt": stringSchema(), "model": stringSchema(), "options": CodexExecOptions.schema,
+        ],
         required: ["prompt"]
       ),
       write: true
     ),
     tool(
       "codex.exec.resume",
-      "Resume one upstream Codex Exec session under the same fixed workspace and policy.",
+      "Resume one upstream Codex Exec session with optional native execution overrides.",
       objectSchema(
         properties: [
           "upstream_session_id": stringSchema(),
           "prompt": stringSchema(),
+          "model": stringSchema(),
+          "options": CodexExecOptions.schema,
         ],
         required: ["upstream_session_id"]
       ),
@@ -295,68 +239,6 @@ struct CodexExecutionProvider: Sendable {
       "codex.exec.cancel",
       "Cancel one running Codex Exec session.",
       objectSchema(properties: ["session_id": stringSchema()], required: ["session_id"]),
-      write: true
-    ),
-  ]
-
-  private static let mcpTools: [MCP.Tool] = [
-    tool(
-      "codex.mcp.status", "Read the persistent `codex mcp-server` connection status.", emptySchema),
-    tool("codex.mcp.tools.list", "List tools reported by `codex mcp-server`.", emptySchema),
-    tool(
-      "codex.mcp.run",
-      "Start the Codex MCP `codex` tool with gateway-owned cwd, sandbox, approval policy, and no instruction/config overrides.",
-      objectSchema(
-        properties: ["prompt": stringSchema(), "model": stringSchema()],
-        required: ["prompt"]
-      ),
-      write: true
-    ),
-    tool(
-      "codex.mcp.reply",
-      "Reply to an existing Codex MCP thread.",
-      objectSchema(
-        properties: ["thread_id": stringSchema(), "prompt": stringSchema()],
-        required: ["thread_id", "prompt"]
-      ),
-      write: true
-    ),
-    tool("codex.mcp.calls.list", "List gateway-owned Codex MCP calls.", emptySchema),
-    tool(
-      "codex.mcp.events",
-      "Read server messages and approval events for one Codex MCP call by cursor.",
-      sessionCursorSchema(id: "call_id")
-    ),
-    tool(
-      "codex.mcp.result",
-      "Read the current or terminal result for one Codex MCP call.",
-      objectSchema(properties: ["call_id": stringSchema()], required: ["call_id"])
-    ),
-    tool(
-      "codex.mcp.approvals.list",
-      "List pending command or patch approvals for one Codex MCP call.",
-      objectSchema(properties: ["call_id": stringSchema()], required: ["call_id"])
-    ),
-    tool(
-      "codex.mcp.approval.respond",
-      "Allow or deny one pending Codex MCP approval. Allow is accepted only when every cwd, grant root, and patch path stays within the bound workspace.",
-      objectSchema(
-        properties: [
-          "call_id": stringSchema(),
-          "approval_id": stringSchema(),
-          "decision": .object([
-            "type": .string("string"),
-            "enum": .array([.string("allow"), .string("deny")]),
-          ]),
-        ],
-        required: ["call_id", "approval_id", "decision"]
-      ),
-      write: true
-    ),
-    tool(
-      "codex.mcp.cancel",
-      "Request cancellation for one active Codex MCP call.",
-      objectSchema(properties: ["call_id": stringSchema()], required: ["call_id"]),
       write: true
     ),
   ]

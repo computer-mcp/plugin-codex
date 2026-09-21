@@ -73,8 +73,7 @@ enum CodexThreadHandoffService {
     workspaceID: String?,
     mode: CodexThreadHandoffMode,
     interruptActiveTurn: Bool,
-    database: CodexDatabase?,
-    elevationAuthority: (any CodexElevationAuthority)? = nil
+    database: CodexDatabase?
   ) async throws -> JSONValue {
     let correlationID = UUID().uuidString
     let priorDiagnosis = await CodexThreadHandoffDiagnostics.diagnose(
@@ -175,13 +174,6 @@ enum CodexThreadHandoffService {
       }
       throw error
     }
-    try await elevationAuthority?.invalidateCodexElevationGrants(
-      workspaceID: workspaceID,
-      threadID: threadID,
-      consumedRuntimeIDs: Set(runtimeResults.map(\.runtimeID)),
-      reason: "The bound thread was released for handoff."
-    )
-
     if var record = ownership {
       record.state = .released
       record.updatedAt = Date()

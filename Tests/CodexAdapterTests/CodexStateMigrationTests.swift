@@ -51,6 +51,84 @@ struct CodexStateMigrationTests {
     #expect(try database.codexRuntimeLeases().first?.state == "stopped")
   }
 
+  @Test(arguments: [false, true])
+  func historicalSourcePreservesEveryStoredColumnAndDefaultsAddedFieldsToNull(
+    destinationExists: Bool
+  ) throws {
+    let fixture = try Fixture()
+    try fixture.restoreHistoricalSchema(at: fixture.source)
+    if destinationExists { _ = try CodexDatabase(path: fixture.destination.path) }
+    let before = try Data(contentsOf: fixture.source)
+    let plan = try fixture.preview()
+    #expect(plan.canApply)
+    #expect(plan.destinationExists == destinationExists)
+    #expect(plan.insertRows == 7)
+    #expect(try Data(contentsOf: fixture.source) == before)
+    #expect(FileManager.default.fileExists(atPath: fixture.destination.path) == destinationExists)
+    #expect(try fixture.apply(plan).insertedRows == 7)
+    #expect(try Data(contentsOf: fixture.source) == before)
+
+    let source = try DatabaseQueue(path: fixture.source.path)
+    defer { try? source.close() }
+    let destination = try DatabaseQueue(path: fixture.destination.path)
+    defer { try? destination.close() }
+    for table in CodexStateMigration.tables {
+      let names = try source.read { db in
+        try Row.fetchAll(db, sql: "PRAGMA table_info(\(table))").map { row -> String in
+          row["name"]
+        }
+      }
+      let columns = names.map { "\"\($0)\"" }.joined(separator: ", ")
+      let original = try source.read { try Row.fetchAll($0, sql: "SELECT * FROM \(table)") }
+      let copied = try destination.read {
+        try Row.fetchAll($0, sql: "SELECT \(columns) FROM \(table)")
+      }
+      #expect(original == copied)
+    }
+    try destination.read { db in
+      let approvals = try Int.fetchOne(
+        db,
+        sql: "SELECT count(*) FROM codexApprovals WHERE ownerJSON IS NULL AND responseJSON IS NULL")
+      let ownerships = try Int.fetchOne(
+        db, sql: "SELECT count(*) FROM codexThreadOwnership WHERE ownerJSON IS NULL")
+      #expect(approvals == 1)
+      #expect(ownerships == 1)
+    }
+    let again = try fixture.preview()
+    #expect(again.tables.allSatisfy { $0.identicalRows == 1 })
+    #expect(try fixture.apply(again).insertedRows == 0)
+    #expect(try Data(contentsOf: fixture.source) == before)
+  }
+
+  @Test(arguments: ["unknown-column", "missing-original-column", "partial-extension"])
+  func historicalSourceRejectsUnrecognizedColumnLayouts(_ change: String) throws {
+    let fixture = try Fixture()
+    try fixture.restoreHistoricalSchema(at: fixture.source)
+    try fixture.write(fixture.source) { db in
+      switch change {
+      case "unknown-column":
+        try db.execute(sql: "ALTER TABLE codexApprovals ADD COLUMN future_field TEXT")
+      case "missing-original-column":
+        try db.execute(sql: "ALTER TABLE codexApprovals DROP COLUMN scope")
+      default:
+        try db.execute(sql: "ALTER TABLE codexApprovals ADD COLUMN ownerJSON TEXT")
+      }
+    }
+    let before = try Data(contentsOf: fixture.source)
+    #expect(throws: CodexStateMigration.Failure.self) { try fixture.preview() }
+    #expect(!FileManager.default.fileExists(atPath: fixture.destination.path))
+    #expect(try Data(contentsOf: fixture.source) == before)
+  }
+
+  @Test func historicalDestinationIsNotSilentlyUpgraded() throws {
+    let fixture = try Fixture()
+    do { _ = try CodexDatabase(path: fixture.destination.path) }
+    try fixture.restoreHistoricalSchema(at: fixture.destination)
+    let before = try Data(contentsOf: fixture.destination)
+    #expect(throws: CodexStateMigration.Failure.self) { try fixture.preview() }
+    #expect(try Data(contentsOf: fixture.destination) == before)
+  }
+
   @Test func conflictRejectsWholeImportWithoutOverwritingOrPartialRows() throws {
     let fixture = try Fixture()
     do {
@@ -107,7 +185,8 @@ struct CodexStateMigrationTests {
       // tables have been inserted. The transaction must still roll them back.
       try db.execute(sql: "CREATE UNIQUE INDEX reject_two_states ON codexThreadOwnership(state)")
       try db.execute(
-        sql: "INSERT INTO codexThreadOwnership VALUES (?, NULL, ?, ?, ?, ?, ?)",
+        sql:
+          "INSERT INTO codexThreadOwnership (threadID, workspaceID, workspacePath, runtimeID, state, createdAt, updatedAt) VALUES (?, NULL, ?, ?, ?, ?, ?)",
         arguments: ["local-thread", "/tmp/local", "local", "released", fixture.date, fixture.date])
     }
     let plan = try fixture.preview()
@@ -216,7 +295,8 @@ struct CodexStateMigrationTests {
     try fixture.write(fixture.source) { db in
       for key in ["\u{00e9}", "e\u{0301}"] {
         try db.execute(
-          sql: "INSERT INTO codexThreadOwnership VALUES (?, NULL, ?, ?, ?, ?, ?)",
+          sql:
+            "INSERT INTO codexThreadOwnership (threadID, workspaceID, workspacePath, runtimeID, state, createdAt, updatedAt) VALUES (?, NULL, ?, ?, ?, ?, ?)",
           arguments: [key, "/tmp/local", "runtime", "released", fixture.date, fixture.date])
       }
     }
@@ -287,6 +367,19 @@ struct CodexStateMigrationTests {
       defer { try? writer.close() }
       try writer.write(body)
     }
+
+    func restoreHistoricalSchema(at file: URL) throws {
+      try write(file) { db in
+        // These are the exact additive columns absent from the embedded host schema.
+        try db.execute(sql: "ALTER TABLE codexApprovals DROP COLUMN ownerJSON")
+        try db.execute(sql: "ALTER TABLE codexApprovals DROP COLUMN responseJSON")
+        try db.execute(sql: "ALTER TABLE codexThreadOwnership DROP COLUMN ownerJSON")
+        try db.execute(
+          sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+          arguments: ["codex-native-approval-responses"])
+      }
+    }
+
     private func seed() throws {
       do {
         let database = try CodexDatabase(path: source.path)

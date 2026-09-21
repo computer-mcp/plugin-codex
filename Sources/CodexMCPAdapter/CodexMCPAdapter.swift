@@ -9,13 +9,15 @@ struct CodexMCPAdapter: AsyncParsableCommand {
     abstract: "Serve Codex execution and protocol inspection through standard MCP.",
     discussion:
       "Without --config, serves protocol inspection. Execution settings are local JSON Codex configuration. Logs and errors go to stderr; serving uses MCP on stdin/stdout.",
+    version: CodexAdapterBuildInfo.version,
     subcommands: [CompareSchema.self, MigrateState.self])
 
   @Option(name: .customLong("config"), help: "Path to local Codex JSON configuration.")
   var configurationPath: String?
 
   @Option(
-    name: .customLong("state-directory"), help: "Directory for adapter-owned App Server records.")
+    name: .customLong("state-directory"),
+    help: "Directory for adapter-owned records and native thread ownership.")
   var stateDirectoryPath: String?
 
   mutating func validate() throws {

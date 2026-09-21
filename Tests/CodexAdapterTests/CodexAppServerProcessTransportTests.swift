@@ -32,8 +32,8 @@ struct CodexAppServerProcessTransportTests {
     }
   }
 
-  @Test
-  func cleanEOFReapsTheSupervisorWithoutSpendingTheTerminationGrace() async throws {
+  @Test(arguments: 0..<40)
+  func cleanEOFReapsTheSupervisorWithoutSpendingTheTerminationGrace(iteration: Int) async throws {
     let transport = try ManagedCodexAppServerTransport(
       configuration: .init(
         executable: "/bin/sh",
@@ -117,6 +117,30 @@ struct CodexAppServerProcessTransportTests {
     #expect(await waitForProcessExit(parentPID))
     #expect(await waitForProcessExit(childPID))
     #expect(await waitForProcessExit(supervisorPID))
+  }
+
+  @Test(arguments: 0..<20)
+  func closeDuringStartupDeliversEOFAndReapsTheOwnedProcess(iteration: Int) async throws {
+    let transport = try ManagedCodexAppServerTransport(
+      configuration: .init(
+        executable: "/bin/sh",
+        arguments: ["-c", "while read line; do :; done"],
+        workingDirectory: FileManager.default.temporaryDirectory,
+        terminationGraceMilliseconds: 500))
+    try await Task.sleep(for: .milliseconds(1))
+
+    await transport.close()
+
+    let stopped = await transport.snapshot()
+    #expect(stopped.state == .stopped)
+    #expect(stopped.exitCode == 0)
+    #expect(!stopped.terminationEscalated)
+    if let processID = stopped.processID {
+      #expect(Darwin.kill(processID, 0) == -1 && errno == ESRCH)
+    }
+    if let supervisorID = stopped.supervisorProcessID {
+      #expect(Darwin.kill(supervisorID, 0) == -1 && errno == ESRCH)
+    }
   }
 
   @Test

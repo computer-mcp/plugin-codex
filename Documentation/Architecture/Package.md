@@ -11,44 +11,56 @@ dependency.
 | Package | Responsibility |
 | --- | --- |
 | Official MCP Swift SDK 0.12.1 | Standard northbound MCP transport, tools and results |
-| swift-codex 0.1.2 | App Server client, Exec client and Codex MCP client, each with its own lifecycle |
+| swift-codex | App Server client and Exec client, each with its own lifecycle |
 | swift-subprocess 0.4.0 | Existing process infrastructure dependency |
 | swift-argument-parser 1.8.2 | Named options, schema-comparison subcommand, validation and generated CLI help |
 | GRDB 7.11.1 | Codex approval, runtime/thread ownership, acceptance run, worktree lease and managed-worktree storage and transactions |
 
-`Scripts/verify-swift-codex-release-gate.sh` verifies the exact remote SDK pin
-and resolved revision for this package. Its dependency notices ship with the
+`Scripts/verify-swift-codex-release-gate.sh` verifies that the manifest's exact
+SDK version, resolved revision and public Git tag agree. CI requires this check
+before packaging. Its dependency notices ship with the
 adapter artifact, independently of host dependencies.
 
 Argument Parser keeps command structure and help in one declaration instead of
 fixed-position argument handling. Serving and schema comparison delegate to the
 same use cases as before parameter parsing; parser errors do not start Codex.
 
-Use the SDK's public clients, including App Server raw-request access, for
-protocol initialization and request correlation. Domain state, policy-specific
-validation and tool projection belong in this package.
+Use the SDK's public clients, including App Server raw request, notification and server-request access, for
+protocol initialization and request correlation. Domain ownership, input validation and MCP projection belong in this package.
+Typed validation checks known native approval and interaction contracts; the
+SDK sends the original JSON response, preserving unknown fields.
 
 ## Execution and authority
 
 `CodexAppServerProvider` maps the App Server and persisted-domain tools to
 the App Server runtime, acceptance engine, worktree operations and diagnostics.
-`CodexExecutionProvider` maps the existing Exec and MCP tools to
-`LiveCodexExecRuntime` and `LiveCodexMCPRuntime`. Each retains its own session
-or call records, event buffers, cancellation and shutdown. MCP discovery does
+`CodexExecutionProvider` maps Exec tools to `LiveCodexExecRuntime`, which owns
+session records, event buffers, cancellation and shutdown. Cancellation requests
+and confirmed process cleanup are distinct states. The SDK bounds process output
+and drains pipes through termination; the adapter exposes capture loss separately
+from its bounded event history. MCP discovery does
 not eagerly connect any provider. The server invokes all shutdown paths
 when its northbound transport completes or fails.
 
-`CodexLaunchContext` consumes immutable workspace/read-only metadata from the
-host environment. This metadata narrows the launched session, is not a
-credential and permits no callback into the host's database or control socket.
-Standalone clients use their configured working directory. Caller tool
-arguments cannot select a different workspace, sandbox or approval policy.
-The plugin's operation classification enforces read-only calls independently
-of MCP annotations; the host still authorizes and audits every forwarded call.
+`CodexLaunchContext` records the initial workspace and verified host subject.
+The host authorizes every invocation against its current policy; launch metadata
+does not freeze permissions or grant control-plane access. Native Codex
+configuration owns sandbox, approval, provider, MCP, Skills, hooks and
+authentication. Omitted overrides inherit it; explicit native parameters pass
+through unchanged. An initial directory or Git worktree is not OS isolation.
 
 `CodexProcessEnvironment` preserves vendor state configuration and proxy
 behavior while removing parent Codex session and Computer MCP launch metadata.
 External Codex installation and user credentials remain user-owned.
+
+App Server and Exec resolve the configured executable using the same
+launch environment and workspace: absolute paths are direct, relative paths
+are workspace-relative, and bare names use PATH. Resolution happens when the
+provider starts, so a missing program does not prevent catalog discovery.
+Each child receives the complete filtered environment, not an overlay that
+could reintroduce parent-session authority. Exec loads personal Codex config,
+including provider, MCP, Skills and hooks; only explicit native overrides
+change those settings.
 
 ## App Server domain
 
@@ -63,14 +75,24 @@ reconciliation receipts, acceptance runs, worktree leases and managed-worktree r
 existing row and JSON representations.
 It reuses GRDB transactions and lease-state compatibility handling; it does
 not store host profiles, credentials, workspace registrations or audit.
+Host-launched storage is partitioned by verified subject, profile and registered
+workspace, not a transient connection or channel. Reconnection retains this
+identity. Worktree lease facts use one transactional store per subject and
+profile, so a registered child workspace and its source observe the same lease
+revision. Tool access remains workspace-bound; cross-workspace lineage requires
+a managed-worktree receipt created by the source's verified host registration.
+Other domain records remain workspace-partitioned.
+Existing unbound storage is preserved and reported for local review;
+it is never silently assigned to a new subject. A shared, transactional native
+thread-owner index prevents concurrent claims or reads by another subject.
+Read-only history lookup does not claim a thread.
 
-`CodexHostTools` and `CodexElevationAuthority` mark host-owned calls.
-The former requires host preflight plus per-execution authorization and audit.
-The latter consumes or invalidates a bound, locally approved grant; it cannot
-issue approval. `CodexHostMCPClient` implements these interfaces over the host's
-explicitly delegated, inherited standard MCP connection. The connection's
-scope is fixed at launch, and the host validates the actual currently forwarded
-operation; tool arguments cannot select authority or an administrator socket.
+`CodexHostTools` requires host preflight plus per-execution authorization and
+audit. Native Codex approvals retain official decisions and scopes; host-tool
+approvals remain under the host's own authority.
+`CodexHostMCPClient` uses the explicitly delegated standard MCP connection.
+Its verified subject is fixed, while the host checks current grants for each
+call. Tool arguments cannot select authority or an administrator socket.
 
 `CodexManagedWorktreeManager` owns Git planning, creation, ownership checks and
 removal, preserving the stored revision and source-workspace scope.
@@ -79,8 +101,8 @@ registration rollback, and destructive-operation authorization. Removal requires
 that authorization before changing either Git or the lifecycle receipt.
 
 `CodexOperationalDiagnostics` correlates adapter-owned state with a bounded,
-scope-matched `CodexHostDiagnostics` snapshot. Host audit and elevation data stay
-host-owned; missing host data produces explicit unknown values. Audit projection
+scope-matched `CodexHostDiagnostics` snapshot. Host audit data stays host-owned;
+missing host data produces explicit unknown values. Audit projection
 retains identifiers and digests, redacts strings, and excludes command bodies.
 The executable's launch factory supplies these interfaces when the host provides
 its inherited MCP descriptor. Without it, managed-worktree mutations remain
@@ -96,7 +118,7 @@ See [Host integration](../Reference/HostIntegration.md) for the operator contrac
 
 ## API and verification scope
 
-The original Exec/MCP and App Server runtime tests execute in this package.
+The Exec and App Server runtime tests execute in this package.
 App Server tests use isolated protocol processes and adapter-owned databases,
 including independent database connections and exact process-ownership checks.
 Standard-MCP dispatch tests use controlled execution doubles and an isolated
@@ -109,7 +131,7 @@ host denial without mutation, durable removal and branch preservation.
 The workspace and diagnostic host implementations in these tests are test
 doubles, not evidence of a connected Computer MCP control plane.
 
-The exposed execution surface includes App Server, Exec and Codex MCP.
+The exposed execution surface includes App Server and Exec.
 Version-specific schemas remain separate inspection tools. The package exports an executable, not a
 public Swift library API; [Documentation](Documentation.md) defines its manual
 and API documentation scope.
