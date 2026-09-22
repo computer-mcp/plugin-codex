@@ -7,6 +7,68 @@ import Testing
 @Suite(.serialized)
 struct CodexAppServerProcessTransportTests {
   @Test
+  func oversizedTrailingFrameFailsAfterAValidLine() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let response = directory.appendingPathComponent("response")
+    try Data(("ok\n" + String(repeating: "x", count: 100)).utf8).write(to: response)
+    let transport = try ManagedCodexAppServerTransport(
+      configuration: .init(
+        executable: "/bin/cat", arguments: [response.path], workingDirectory: directory,
+        maximumMessageBytes: 16))
+    var lines = transport.inboundLines.makeAsyncIterator()
+    do {
+      #expect(try await lines.next() == "ok")
+      _ = try await lines.next()
+      Issue.record("Expected oversized trailing frame to fail")
+    } catch {
+      if case ManagedLineProcessError.oversizedMessage(let limit) = error {
+        #expect(limit == 16)
+      } else {
+        Issue.record("Expected a bounded frame error, received \(error)")
+      }
+    }
+    await transport.close()
+  }
+
+  @Test
+  func hostDeathReapsResponsiveCommandAndLongDeadlineTimer() async throws {
+    let owner = Process()
+    owner.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    owner.arguments = ["30"]
+    try owner.run()
+    defer { if owner.isRunning { owner.terminate() } }
+    let transport = try ManagedLineProcess(
+      configuration: .init(
+        executable: "/usr/bin/python3",
+        arguments: [
+          "-c",
+          "import os,signal,time; signal.signal(signal.SIGTERM,lambda *_:exit(0)); print(os.getpid(),flush=True); time.sleep(30)",
+        ],
+        workingDirectory: FileManager.default.temporaryDirectory,
+        terminationGraceMilliseconds: 30_000, ownerProcessID: owner.processIdentifier))
+    do {
+      var lines = transport.inboundLines.makeAsyncIterator()
+      let ready = try #require(try await lines.next())
+      let child = try #require(Int32(ready))
+      owner.terminate()
+      let deadline = ContinuousClock.now + .seconds(5)
+      while !(await transport.snapshot().hasExited), ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+      }
+      let stopped = await transport.snapshot()
+      #expect(stopped.hasExited)
+      #expect(stopped.exitCode == 0)
+      #expect(Darwin.kill(child, 0) == -1 && errno == ESRCH)
+      await transport.close()
+    } catch {
+      await transport.close()
+      throw error
+    }
+  }
+
+  @Test
   func responsiveDescendantIsReapedWithoutSpendingTheTerminationGrace() async throws {
     let transport = try ManagedCodexAppServerTransport(
       configuration: .init(

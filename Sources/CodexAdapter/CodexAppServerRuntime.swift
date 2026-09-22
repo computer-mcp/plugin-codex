@@ -931,6 +931,10 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         priorState: turnStartPriorState,
         priorActiveTurnID: turnStartPriorActiveTurnID
       )
+      if error is CancellationError {
+        await retireCurrentRequestGeneration(method: method)
+        throw CancellationError()
+      }
       if !(error is RequestTimeoutError) {
         recordRequestFailure(
           kind: "request_failed",

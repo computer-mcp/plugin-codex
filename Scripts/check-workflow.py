@@ -145,6 +145,10 @@ def verify_owned_stop(status):
 
 
 def run(adapter, codex, gateway=None, database=None, control_socket=None, registered_workspace=None):
+    # A vendor launcher may use an interpreter installed beside it (for example Node).
+    runtime_path = str(codex.parent) + os.pathsep + "/usr/bin:/bin"
+    codex_version = subprocess.run([str(codex), "--version"], env={"PATH": runtime_path},
+                                   capture_output=True, text=True, timeout=5, check=True).stdout.strip()
     root = Path(tempfile.mkdtemp(prefix="codex-workflow-")).resolve()
     state, workspace = root / "state", registered_workspace or root / "workspace"
     state.mkdir(mode=0o700)
@@ -179,7 +183,7 @@ metrics_exporter = "none"
     context = {"formatVersion": 1, "runtimeID": str(uuid.uuid4()), "caller": "local-mcp",
                "profileID": "local-admin", "principalID": "workflow-fixture",
                "workspace": {"id": "workflow-fixture", "rootPath": str(workspace)}}
-    environment = {"PATH": "/usr/bin:/bin", "CODEX_HOME": str(state),
+    environment = {"PATH": runtime_path, "CODEX_HOME": str(state),
                    "COMPUTER_MCP_HOST_CONTEXT": json.dumps(context)}
     adapter_config = root / "adapter.json"
     adapter_config.write_text(json.dumps({
@@ -193,10 +197,19 @@ metrics_exporter = "none"
         # The actual Gateway supplies provenance; do not inject the adapter's fixture context.
         environment.pop("COMPUTER_MCP_HOST_CONTEXT")
         manifest = (root if database else workspace) / "gateway.toml"
+        read_tools = ["diagnostics.snapshot", "app.thread.list", "app.thread.loaded.list", "app.thread.read",
+                      "app.events.read", "app.approvals.list", "app.goal.get", "app.status"]
+        write_tools = ["app.thread.start", "app.thread.fork", "app.thread.release", "app.thread.reclaim",
+                       "app.goal.set", "app.goal.clear", "app.turn.start", "app.turn.steer",
+                       "app.approvals.respond", "app.runtime.stop"]
+        tool_risks = {"codex." + name: "read-only" for name in read_tools}
+        tool_risks.update({"codex." + name: "workspace-write" for name in write_tools})
+        risk_table = ", ".join(json.dumps(name) + " = " + json.dumps(risk) for name, risk in tool_risks.items())
         manifest.write_text('schema_version = 1\n[runtime]\ncaller = "local-cli"\nprofile = "local-admin"\n'
                             '[policy]\nshell_enabled = false\n[[mcp.servers]]\nid = "adapter"\ntransport = "stdio"\n'
                             'command = ' + json.dumps(str(adapter)) + '\nargs = ' + json.dumps(launch_arguments[1:]) + '\n'
-                            'allow_any_tool = true\nexposure = "reexport"\nprefix = "adapter"\n'
+                            'allowed_tools = ' + json.dumps(list(tool_risks)) + '\n'
+                            'tool_risks = { ' + risk_table + ' }\nexposure = "reexport"\nprefix = "adapter"\n'
                             'startup_timeout_ms = 10000\nrequest_timeout_ms = 40000\n')
         launch_arguments = [str(gateway), "serve", "stdio", "--config", str(manifest)]
         if database:
@@ -209,7 +222,8 @@ metrics_exporter = "none"
             snapshot = json.loads(shown.stdout)
             assert len(snapshot["state"]["installations"]) == 1, "Expected one isolated Codex installation"
             settings = {"enabled": True, "mcp": {"app-server": {"prefix": "adapter", "exposure": "reexport",
-                        "allowAnyTool": True, "args": adapter_arguments}}}
+                        "allowAnyTool": False, "allowedTools": list(tool_risks), "toolRisks": tool_risks,
+                        "args": adapter_arguments}}}
             settings_path = root / "plugin-settings.json"
             settings_path.write_text(json.dumps(settings))
             subprocess.run([str(gateway), "plugins", "configure", "codex", "--settings-file", str(settings_path),
@@ -222,8 +236,7 @@ metrics_exporter = "none"
     receipt = {"model_backend": "loopback-fixture", "real_model_verified": False,
                "production_host_used": False, "inherited_credentials": False,
                "northbound": "installed-plugin-gateway" if database else ("isolated-gateway" if gateway else "direct-standard-mcp"), "steps": []}
-    receipt["codex_version"] = subprocess.run([str(codex), "--version"], env={"PATH": "/usr/bin:/bin"},
-                                              capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+    receipt["codex_version"] = codex_version
     receipt["adapter_sha256"] = hashlib.sha256(adapter.read_bytes()).hexdigest()
     try:
         with stderr_path.open("w") as stderr:

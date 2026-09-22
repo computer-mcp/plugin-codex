@@ -426,6 +426,34 @@ final class CodexAppServerRuntimeTests {
   }
 
   @Test
+  func cancellationRetiresTheOwnedGenerationBeforeReturning() async throws {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    try Data().write(to: fixture.hangRequestsFile)
+    let runtime = fixture.makeRuntime(requestTimeoutSeconds: 60)
+    let request = Task {
+      try await runtime.call(method: "thread/loaded/list", params: .object([:]))
+    }
+    let processID = try await fixture.waitForLatestPID(count: 1)
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !FileManager.default.fileExists(atPath: fixture.hangRequestReceivedFile.path),
+      ContinuousClock.now < deadline
+    { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(FileManager.default.fileExists(atPath: fixture.hangRequestReceivedFile.path))
+    request.cancel()
+    do {
+      _ = try await request.value
+      Issue.record("Expected cancellation")
+    } catch {
+      #expect(error is CancellationError)
+    }
+    #expect(!processExists(processID))
+    #expect(try fixture.processIDs() == [processID])
+    #expect(!FileManager.default.fileExists(atPath: fixture.leaseDirectory.path))
+    await runtime.shutdown()
+  }
+
+  @Test
   func testConcurrentRequestsRemainRunningUntilEveryRequestCompletes() async throws {
     let fixture = try AppServerProcessFixture()
     defer { fixture.remove() }
@@ -1349,6 +1377,7 @@ struct AppServerProcessFixture {
   let processLog: URL
   let leaseDirectory: URL
   let hangRequestsFile: URL
+  let hangRequestReceivedFile: URL
   let hangTurnStartFile: URL
   let hangInitializeFile: URL
   let delayLoadedThreadsFile: URL
@@ -1367,6 +1396,7 @@ struct AppServerProcessFixture {
     processLog = directory.appendingPathComponent("processes.log")
     leaseDirectory = directory.appendingPathComponent("writer.lease", isDirectory: true)
     hangRequestsFile = directory.appendingPathComponent("hang-requests")
+    hangRequestReceivedFile = directory.appendingPathComponent("hang-request-received")
     hangTurnStartFile = directory.appendingPathComponent("hang-turn-start")
     hangInitializeFile = directory.appendingPathComponent("hang-initialize")
     delayLoadedThreadsFile = directory.appendingPathComponent("delay-loaded-threads")
@@ -1437,6 +1467,7 @@ struct AppServerProcessFixture {
         case "$line" in
           *thread*loaded*list*)
             if [ -f "$fixture_dir/hang-requests" ]; then
+              : > "$fixture_dir/hang-request-received"
               continue
             fi
             if [ -f "$fixture_dir/delay-loaded-threads" ]; then
