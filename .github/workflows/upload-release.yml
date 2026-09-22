@@ -56,6 +56,13 @@ jobs:
           [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
           printf '%s  codex-plugin.zip\n' "$expected" | sha256sum --check --strict
           unzip -t codex-plugin.zip
+          python3 - <<'PY'
+          import os, tomllib, zipfile
+          with zipfile.ZipFile("codex-plugin.zip") as archive:
+              manifest = tomllib.loads(archive.read("computer-mcp-plugin.toml").decode())
+          if manifest["id"] != "codex" or "v" + manifest["version"] != os.environ["RELEASE_TAG"]:
+              raise SystemExit("Release tag does not match the accepted plugin manifest")
+          PY
           gh api "repos/$GH_REPO/releases/$release_id/assets" > assets.json
           existing=$(jq -r '.[] | select(.name == "codex-plugin.zip") | .id' assets.json)
           if [[ -n "$existing" ]]; then

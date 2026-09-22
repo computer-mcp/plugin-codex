@@ -33,7 +33,11 @@ package enum CodexAdapterBuildInfo {{
 '''
 
 
-def check(root, binary=None):
+def git(root, *arguments):
+    return subprocess.run(["git", *arguments], cwd=root, capture_output=True, text=True, timeout=30, check=True).stdout.strip()
+
+
+def check(root, binary=None, base=None, tag=None):
     value = read(root)
     if (root / GENERATED).read_text() != generated(value):
         raise ValueError("Adapter metadata differs from manifest; run Scripts/version.py generate")
@@ -41,6 +45,15 @@ def check(root, binary=None):
         result = subprocess.run([str(binary.resolve()), "--version"], capture_output=True, text=True, timeout=10, check=True)
         if result.stdout.strip() != value:
             raise ValueError("Actual adapter version differs from manifest")
+    if base:
+        previous = tomllib.loads(git(root, "show", f"{base}:{MANIFEST}"))["version"]
+        if parse(value) < parse(previous):
+            raise ValueError("Plugin version must not move backwards from the base commit")
+    if tag:
+        if tag != "v" + value:
+            raise ValueError("Release tag differs from the manifest version")
+        if git(root, "rev-parse", f"refs/tags/{tag}^{{commit}}") != git(root, "rev-parse", "HEAD"):
+            raise ValueError("Release tag does not identify the checked commit")
     return value
 
 
@@ -59,6 +72,8 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     verify = commands.add_parser("check")
     verify.add_argument("--binary", type=Path)
+    verify.add_argument("--base", help="Base commit whose manifest must not have a newer version")
+    verify.add_argument("--tag", help="Existing formal tag to verify against the manifest and HEAD")
     commands.add_parser("generate")
     update = commands.add_parser("update")
     update.add_argument("--kind", required=True, choices=("fix", "feature", "breaking"))
@@ -67,7 +82,7 @@ def main():
     root = args.root.resolve()
     current = read(root)
     if args.command == "check":
-        print(json.dumps({"status": "passed", "version": check(root, args.binary)}))
+        print(json.dumps({"status": "passed", "version": check(root, args.binary, args.base, args.tag)}))
         return
     if args.command == "generate":
         (root / GENERATED).write_text(generated(current))

@@ -3,7 +3,10 @@
 The root `computer-mcp-plugin.toml` owns the adapter's version.
 `Scripts/version.py generate` derives `BuildInfo`; `check` is read-only and
 rejects drift. `update --kind … --reason …` changes the manifest and
-refreshes the constant. An actual packaged executable's `--version` must match
+refreshes the constant. `check --base COMMIT` rejects version regression;
+`check --tag vVERSION` verifies both the manifest version and the tag's commit.
+CI checks the pull request base or previous main commit without changing files.
+An actual packaged executable's `--version` must match
 the byte-identical packaged manifest. Never infer a candidate version from an
 installed adapter or another worktree.
 
@@ -33,6 +36,7 @@ installed-gateway checks against the exact adapter bytes.
 Accept the complete host/plugin/SDK combination before delivery. Create a formal
 signed tag only for the accepted commit; `upload-release.yml` promotes the
 already-built artifact from its verified source run into the matching draft.
+The upload also verifies the archive's manifest against the formal tag.
 Candidate retries keep the intended product version and use a new run identity.
 A public tag and archive remain immutable. Only changed components are released.
 See [Installation](../Reference/Installation.md) for packaging, installation,
