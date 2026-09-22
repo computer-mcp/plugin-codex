@@ -42,7 +42,7 @@ jobs:
         run: |
           /usr/bin/sw_vers
           /usr/sbin/sysctl -n hw.logicalcpu
-          /usr/bin/swift test --skip-build --disable-automatic-resolution &
+          /usr/bin/swift test --skip-build --disable-automatic-resolution --no-parallel &
           test_pid=$!
           for ((elapsed = 0; elapsed < 60; elapsed++)); do
             if ! /bin/kill -0 "$test_pid" 2>/dev/null; then break; fi

@@ -106,7 +106,7 @@ struct CodexHostMCPClientTests {
   func incompleteHostStartupHasABoundedAndJoinedExit(mode: String) async throws {
     let pair = try MCPInheritedSocketTransport.makePair()
     let peer = try MCPInheritedSocketTransport(takingOwnershipOf: pair.1)
-    try await peer.connect()
+    if mode == "cancel" { try await peer.connect() }
     let owner = CodexRuntimeOwner(
       workspaceID: "fixture", profileID: "fixture", caller: "secure-tunnel",
       transport: "gateway_socket", socketConnectionID: "fixture-socket", tunnelInstanceID: nil,
@@ -114,26 +114,35 @@ struct CodexHostMCPClientTests {
     let client = try CodexHostMCPClient(
       takingOwnershipOf: pair.0, owner: owner,
       requestTimeout: mode == "timeout" ? .milliseconds(200) : .seconds(10))
+    let started = ContinuousClock.now
     let call = Task {
       try await client.risk(
         named: "file.test", arguments: .object([:]), requestID: "call", workspaceID: "fixture")
     }
     do {
       var messages = await peer.receive().makeAsyncIterator()
-      let initialize = try #require(try await messages.next())
-      let request = try JSONDecoder().decode(JSONValue.self, from: initialize)
-      #expect(request.objectValue?["method"] == .string("initialize"))
-      let started = ContinuousClock.now
-      if mode == "cancel" { call.cancel() }
+      if mode == "cancel" {
+        let initialize = try #require(try await messages.next())
+        let request = try JSONDecoder().decode(JSONValue.self, from: initialize)
+        #expect(request.objectValue?["method"] == .string("initialize"))
+        call.cancel()
+      }
       let result = await call.result
       await client.shutdown()
       await client.shutdown()
       #expect(started.duration(to: .now) < .seconds(2))
       if case .success = result { Issue.record("Incomplete startup unexpectedly succeeded.") }
+      // The deadline may close startup before the peer reads its initialization frame.
+      if mode == "timeout" { try await peer.connect() }
       // A joined disconnect closes the peer, including the transport reader.
       do {
-        let next = try await messages.next()
-        #expect(next == nil)
+        var remaining = 0
+        while let message = try await messages.next() {
+          remaining += 1
+          #expect(mode == "timeout" && remaining == 1)
+          let request = try JSONDecoder().decode(JSONValue.self, from: message)
+          #expect(request.objectValue?["method"] == .string("initialize"))
+        }
       } catch let error as MCPError {
         #expect(error == .connectionClosed)
       }
