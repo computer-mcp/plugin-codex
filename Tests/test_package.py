@@ -2,11 +2,14 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Scripts"))
+import version
 
 spec = importlib.util.spec_from_file_location("plugin_package", Path(__file__).resolve().parents[1] / "Scripts/package.py")
 package = importlib.util.module_from_spec(spec)
@@ -26,6 +29,9 @@ class PackageOwnershipTests(unittest.TestCase):
         (repo / "computer-mcp-plugin.toml").write_text(
             "id = 'codex'\nversion = '1.2.3'\n\n[compatibility]\narchitectures = ['arm64']\n"
         )
+        metadata = repo / version.GENERATED
+        metadata.parent.mkdir(parents=True)
+        metadata.write_text(version.generated("1.2.3"))
         (repo / "Package.resolved").write_text(json.dumps({"pins": [{"identity": "swift-codex"}]}))
         documentation = repo / "Documentation"
         documentation.mkdir()
@@ -37,6 +43,17 @@ class PackageOwnershipTests(unittest.TestCase):
         for name in ("LICENSE", "NOTICE"):
             (schema / name).write_text("fixture schema notice")
         return repo, built
+
+    def test_version_drift_is_rejected_before_building(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, _ = self.make_repository(root)
+            (repo / version.GENERATED).write_text(version.generated("1.2.4"))
+            with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(package, "command") as command:
+                with self.assertRaisesRegex(ValueError, "differs from manifest"):
+                    package.package(root / "output", "debug")
+                command.assert_not_called()
+            self.assertFalse((root / "output").exists())
 
     def test_package_preserves_manifest_bytes_in_archive_and_receipt(self):
         with tempfile.TemporaryDirectory() as directory:

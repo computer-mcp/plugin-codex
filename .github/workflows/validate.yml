@@ -2,12 +2,13 @@ name: Validate and package
 on:
   pull_request:
   push:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
   group: validate-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   package:
     runs-on: macos-latest
@@ -23,6 +24,7 @@ jobs:
         run: brew install jq ripgrep
       - name: Validate Swift package
         run: |
+          python3 Scripts/version.py check
           /usr/bin/swift --version
           /usr/bin/swift package resolve
           git diff --exit-code -- Package.resolved

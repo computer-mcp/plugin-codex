@@ -14,6 +14,8 @@ import tempfile
 import tomllib
 import zipfile
 
+from version import check as check_version
+
 
 def command(arguments, cwd):
     result = subprocess.run(arguments, cwd=cwd, check=True, capture_output=True, text=True)
@@ -63,6 +65,7 @@ def publish_directory(source, destination):
 
 def package(output, configuration):
     repo = Path(__file__).resolve().parent.parent
+    check_version(repo)
     if output.exists():
         raise ValueError("Output already exists; select a new directory to preserve existing artifacts")
     output.parent.mkdir(parents=True, exist_ok=True)

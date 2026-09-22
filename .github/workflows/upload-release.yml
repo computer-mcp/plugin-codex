@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   upload:
+    if: github.repository == 'computer-mcp/plugin-codex' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -32,9 +33,16 @@ jobs:
           gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN" > run.json
           jq -e --arg repo "$GH_REPO" '
             .status == "completed" and .conclusion == "success" and
+            .event == "push" and .head_branch == "main" and
             .path == ".github/workflows/validate.yml" and
             .head_repository.full_name == $repo' run.json > /dev/null
           source_sha=$(jq -r .head_sha run.json)
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" > tag-ref.json
+          [[ $(jq -r .object.type tag-ref.json) == tag ]]
+          tag_object=$(jq -r .object.sha tag-ref.json)
+          gh api "repos/$GH_REPO/git/tags/$tag_object" > tag.json
+          jq -e --arg sha "$source_sha" '.object.type == "commit" and .object.sha == $sha' tag.json > /dev/null
           gh api --paginate "repos/$GH_REPO/releases?per_page=100" --slurp > releases.json
           jq -e --arg tag "$RELEASE_TAG" --arg sha "$source_sha" '
             [ .[][] | select(.tag_name == $tag) ] |
