@@ -83,6 +83,52 @@ final class CodexAppServerRuntimeTests {
     #expect(status.objectValue?["last_error"]?.stringValue?.isEmpty == false)
   }
 
+  @Test(arguments: [false, true])
+  func confirmedRetirementReleasesLoadedAndActiveThreadOwnership(timeout: Bool) async throws {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    let runtime = fixture.makeRuntime(requestTimeoutSeconds: 1)
+    do {
+      _ = try await runtime.call(method: "thread/start", params: .object([:]))
+      _ = try await runtime.call(
+        method: "turn/start",
+        params: .object([
+          "threadId": .string("thread_native"),
+          "input": .array([.object(["type": .string("text"), "text": .string("fixture")])]),
+        ]))
+      #expect(await runtime.hasLiveOwnership(of: "thread_native"))
+      let pid = try await fixture.waitForLatestPID(count: 1)
+      if timeout {
+        try Data().write(to: fixture.hangRequestsFile)
+        await assertThrowsErrorAsync(
+          try await runtime.call(method: "thread/loaded/list", params: .object([:])))
+      } else {
+        #expect(Darwin.kill(pid, SIGTERM) == 0)
+        try await waitUntilRuntimeCondition {
+          let status = await runtime.status()
+          return status.objectValue?["connection_state"] != .string("running")
+            && status.objectValue?["process"]?.objectValue?["cleanup_confirmed"] == .bool(true)
+        }
+      }
+      let status = await runtime.status()
+      #expect(status.objectValue?["process"]?.objectValue?["cleanup_confirmed"] == .bool(true))
+      #expect(await waitForProcessExit(pid))
+      #expect(!(await runtime.hasLiveOwnership(of: "thread_native")))
+      #expect(
+        await CodexRuntimeDirectory.shared.runtimeIDs(
+          owning: "thread_native", workspaceID: "fixture-workspace"
+        ).isEmpty)
+      if timeout { try FileManager.default.removeItem(at: fixture.hangRequestsFile) }
+      _ = try await runtime.call(method: "thread/loaded/list", params: .object([:]))
+      #expect(await runtime.hasLiveOwnership(of: "thread_fixture"))
+      #expect(!(await runtime.hasLiveOwnership(of: "thread_native")))
+      await runtime.shutdown()
+    } catch {
+      await runtime.shutdown()
+      throw error
+    }
+  }
+
   @Test
   func testReleaseForHandoffVerifiesLoadedStateAndReapsEmptyRuntime() async throws {
     let fixture = try AppServerProcessFixture()

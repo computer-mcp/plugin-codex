@@ -49,6 +49,10 @@ not modify the active connection's state. Each reservation captures its creating
 work-invocation UUID; follow-up requests retain that origin. Its reservation token
 identifies the ownership lifetime separately from the reusable native handle.
 Late replies cannot release or change a replacement reservation's state.
+Confirmed process-group cleanup also clears that generation's loaded,
+subscribed and active-thread claims and connection-local thread cache. Unknown
+cleanup retains these claims until confirmation; native history and persistent
+thread-ownership records are separate from a live connection's claims.
 
 ## Execution and authority
 

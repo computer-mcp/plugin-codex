@@ -1032,11 +1032,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
     approvalTimeoutTasks.removeAll()
     pendingApprovalHandles.removeAll()
-    workspaceScopedThreadIDs.removeAll()
-    loadedThreadIDs.removeAll()
-    subscribedThreadIDs.removeAll()
-    threadStates.removeAll()
-    activeTurnIDs.removeAll()
     connectionState = "stopped"
     lastError = nil
     startup?.task.cancel()
@@ -1049,7 +1044,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       lastProcessSnapshot = await activeTransport.snapshot()
     }
     if lastProcessSnapshot?.cleanupConfirmed == true {
-      nativeResources.retired(generation: retiredGeneration)
+      releaseConfirmedGeneration(retiredGeneration)
     } else if let transport = startup?.transport ?? activeTransport {
       unconfirmedTransport = (retiredGeneration, transport)
     }
@@ -1765,7 +1760,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     connection = nil
     connectionID = nil
     processTransport = nil
-    workspaceScopedThreadIDs.removeAll()
     connectionState = message == nil ? "stopped" : "failed"
     shutdownReason = nil
     let redactedMessage = message.map(Self.redactedMessage)
@@ -1807,7 +1801,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       requestTask?.cancel()
       requestTask = nil
       pendingUserInputRequests.removeAll()
-      workspaceScopedThreadIDs.removeAll()
       connectionState = "failed"
       shutdownReason = nil
       lastError = "App Server request deadline exceeded."
@@ -1880,7 +1873,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     if let processSnapshot {
       lastProcessSnapshot = processSnapshot
       if processSnapshot.cleanupConfirmed == true {
-        nativeResources.retired(generation: retirement.generation)
+        releaseConfirmedGeneration(retirement.generation)
       } else if let transport = retirement.transport {
         unconfirmedTransport = (retirement.generation, transport)
       }
@@ -1898,10 +1891,20 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     guard unconfirmedTransport?.generation == pending.generation else { return }
     lastProcessSnapshot = snapshot
     if snapshot.cleanupConfirmed == true {
-      nativeResources.retired(generation: pending.generation)
+      releaseConfirmedGeneration(pending.generation)
       unconfirmedTransport = nil
       if isShutdown { CodexRuntimeDirectory.shared.unregister(id: runtimeID) }
     }
+  }
+
+  private func releaseConfirmedGeneration(_ generation: Int) {
+    nativeResources.retired(generation: generation)
+    guard generation == connectionGeneration else { return }
+    workspaceScopedThreadIDs.removeAll()
+    loadedThreadIDs.removeAll()
+    subscribedThreadIDs.removeAll()
+    activeTurnIDs.removeAll()
+    threadStates.removeAll()
   }
 
   private func recordRequestFailure(kind: String, message: String) {
