@@ -131,6 +131,18 @@ Aliases preserve string versus exact integer identity, remain through uncertain
 cleanup and confer no permission. Whole-report resource and byte bounds also
 apply to aliases.
 
+Existing-handle tools declare ordinary MCP continuation selectors. Native tool
+selectors use the SDK-derived thread parameter schema and the adapter's owned
+command/process/watch/subscription lifetimes. `methods.call` declares exact method
+conditions for the same associations; a handle-creation operation does not select
+an older lifetime merely because the caller reused its native ID. Optional native
+thread scopes support an explicit null. New tasks, including forks and Exec
+resume processes, use their creation context. Unscoped status, listing, events
+and whole-runtime operations have no implicit existing-owner selector. Runtime
+inspect/stop tools can locate a specific `runtime_id` while it owns work.
+Declarations preserve publisher risk metadata and native schemas. Host generation
+selection and current authorization remain host responsibilities.
+
 Exec reserves a session identity before native startup. Its owner retains the
 startup task until registration settles, counts that pending identity once
 against capacity, and cancels and joins it during shutdown. A handle returned

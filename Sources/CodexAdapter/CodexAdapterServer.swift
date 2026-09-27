@@ -58,7 +58,7 @@ package enum CodexAdapterServer {
     await server.withMethodHandler(MCP.ListTools.self) { params in
       guard params.cursor == nil else { throw MCPError.invalidParams("Unknown tools cursor.") }
       return MCP.ListTools.Result(
-        tools: (ProtocolTools.definitions + execution.tools + (appServer?.tools ?? []))
+        tools: try (ProtocolTools.definitions + execution.tools + (appServer?.tools ?? []))
           .map(CodexWorkSnapshot.declaring))
     }
     await server.withMethodHandler(MCP.ListResources.self) { params in

@@ -71,7 +71,7 @@ struct CodexWorkSnapshotTests {
   }
 
   @Test(arguments: [
-    "", "bad\nidentity", "bad\u{7f}identity", "bad\u{9f}identity",
+    "", "bad\nidentity", "bad\u{7f}identity", "bad\u{9f}identity", "bad\u{200b}identity",
     String(repeating: "a", count: 1025), String(repeating: "界", count: 342),
   ])
   func invalidIdentifiersFailTheEntireObservation(_ invalid: String) async throws {

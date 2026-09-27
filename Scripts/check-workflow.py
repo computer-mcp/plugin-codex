@@ -153,6 +153,22 @@ class MCPClient:
             raise RuntimeError(f"{suffix}: {result['content']}")
         return result["structuredContent"]["result"]
 
+    def host_work(self, count):
+        deadline = time.monotonic() + 15
+        observed = None
+        while time.monotonic() < deadline:
+            result = self.request("tools/call", {"name": "mcp.servers.status", "arguments": {}})
+            assert not result.get("isError"), result
+            servers = result["structuredContent"]["result"]["servers"]
+            assert len(servers) == 1, servers
+            observed = servers[0]["connection"].get("provider_work")
+            assert isinstance(observed, dict), "Candidate host lacks provider-work observation"
+            if (observed["resource_count"] == count and observed["unsettled_invocation_count"] == 0
+                    and not observed["observation_pending"]):
+                return observed
+            time.sleep(.03)
+        raise AssertionError(f"Candidate host did not observe {count} settled resources: {observed}")
+
 def verify_owned_stop(status):
     assert status["runtime_state"] == "stopped", status
     snapshot = status["process"]
@@ -168,7 +184,8 @@ def verify_owned_stop(status):
     return snapshot
 
 
-def run(adapter, codex, gateway=None, database=None, control_socket=None, registered_workspace=None):
+def run(adapter, codex, gateway=None, database=None, control_socket=None, registered_workspace=None,
+        require_host_work=False):
     # A vendor launcher may use an interpreter installed beside it (for example Node).
     runtime_path = str(codex.parent) + os.pathsep + "/usr/bin:/bin"
     codex_version = subprocess.run([str(codex), "--version"], env={"PATH": runtime_path},
@@ -230,7 +247,11 @@ metrics_exporter = "none"
         tool_risks.update({"codex." + name: "workspace-write" for name in write_tools})
         risk_table = ", ".join(json.dumps(name) + " = " + json.dumps(risk) for name, risk in tool_risks.items())
         manifest.write_text('schema_version = 1\n[runtime]\ncaller = "local-cli"\nprofile = "local-admin"\n'
-                            '[policy]\nshell_enabled = false\n[[mcp.servers]]\nid = "adapter"\ntransport = "stdio"\n'
+                            '[policy]\nshell_enabled = false\n'
+                            '[[profiles]]\nid = "local-admin"\nmode = "local-full-access"\n'
+                            'confirmation_policy = "never"\nfull_shell_enabled = true\n'
+                            'capabilities = ["*"]\nworkspaces = ["*"]\nallowed_callers = ["local-cli"]\n'
+                            '[[mcp.servers]]\nid = "adapter"\ntransport = "stdio"\n'
                             'command = ' + json.dumps(str(adapter)) + '\nargs = ' + json.dumps(launch_arguments[1:]) + '\n'
                             'allowed_tools = ' + json.dumps(list(tool_risks)) + '\n'
                             'tool_risks = { ' + risk_table + ' }\nexposure = "reexport"\nprefix = "adapter"\n'
@@ -280,6 +301,9 @@ metrics_exporter = "none"
                         "turn.steer", "events.read", "approvals.list", "approvals.respond", "runtime.stop"}
             missing = {client.tool_prefix + "codex.app." + name for name in required} - names
             assert not missing, {"missing_tools": sorted(missing), "listed_tools": sorted(names)}
+            if require_host_work:
+                assert all(key not in tool.get("_meta", {}) for tool in catalog
+                           for key in ("io.github.computer-mcp/work", "io.github.computer-mcp/continuation")), catalog
             if not gateway:
                 for tool in catalog:
                     assert tool["_meta"]["io.github.computer-mcp/work"] == {
@@ -301,6 +325,8 @@ metrics_exporter = "none"
             thread_origin = client.last_invocation
             thread_id = started["thread"]["id"]
             assert thread_id in client.call("thread.loaded.list")["data"]
+            if require_host_work:
+                receipt["host_work_opened"] = client.host_work(1)
             if not gateway:
                 rows = [row for row in client.work() if row["kind"] == "codex.app.thread"]
                 assert len(rows) == 1 and rows[0]["acquired_by"] == thread_origin, rows
@@ -375,6 +401,8 @@ metrics_exporter = "none"
             assert forced["externally_claimable"] is True, forced
             stopped = client.call("status")
             receipt["first_owned_stop"] = verify_owned_stop(stopped)
+            if require_host_work:
+                receipt["host_work_released"] = client.host_work(0)
             if not gateway:
                 assert client.work() == [], "Confirmed process exit retained native work"
                 receipt["steps"].append("complete work resource→native creator/callback correlation→confirmed cleanup")
@@ -442,7 +470,11 @@ if __name__ == "__main__":
     parser.add_argument("--database", type=Path, help="Fresh isolated host-test database containing an installed Codex plugin")
     parser.add_argument("--control-socket", type=Path, help="Owner socket of that isolated host-test instance")
     parser.add_argument("--workspace", type=Path, help="Existing disposable workspace registered in that test database")
+    parser.add_argument("--require-host-work", action="store_true",
+                        help="Require the candidate Gateway to accept provider aliases and observe final release")
     options = parser.parse_args()
+    if options.require_host_work and not options.gateway:
+        parser.error("Host work observation requires --gateway")
     fixture_options = [options.database, options.control_socket, options.workspace]
     if any(fixture_options) and (not all(fixture_options) or not options.gateway):
         parser.error("Installed-plugin checks require --gateway, --database, --control-socket and --workspace together")
@@ -452,4 +484,5 @@ if __name__ == "__main__":
     for executable in [options.adapter, options.codex] + ([options.gateway] if options.gateway else []):
         if not executable.is_absolute() or not os.access(executable, os.X_OK):
             parser.error("Both executables must be existing absolute executable paths")
-    print(json.dumps(run(options.adapter, options.codex, options.gateway, options.database, options.control_socket, options.workspace), indent=2))
+    print(json.dumps(run(options.adapter, options.codex, options.gateway, options.database,
+                         options.control_socket, options.workspace, options.require_host_work), indent=2))

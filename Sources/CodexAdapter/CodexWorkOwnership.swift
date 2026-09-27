@@ -116,6 +116,6 @@ struct CodexWorkResource: Equatable, Sendable {
 
   private static func validIdentifier(_ value: String) -> Bool {
     !value.isEmpty && value.utf8.count <= 1024
-      && !value.unicodeScalars.contains { $0.value < 32 || (127...159).contains($0.value) }
+      && !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
   }
 }

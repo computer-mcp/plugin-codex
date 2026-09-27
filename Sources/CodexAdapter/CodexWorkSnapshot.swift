@@ -17,10 +17,13 @@ actor CodexWorkSnapshot {
     self.collect = collect
   }
 
-  static func declaring(_ tool: MCP.Tool) -> MCP.Tool {
+  static func declaring(_ tool: MCP.Tool) throws -> MCP.Tool {
     var tool = tool
     var fields = tool._meta?.fields ?? [:]
     fields[metadataKey] = .object(["format_version": .int(1), "uri": .string(uri)])
+    if let continuation = try CodexWorkContinuation.declaration(for: tool.name) {
+      fields[CodexWorkContinuation.metadataKey] = continuation
+    }
     tool._meta = .init(additionalFields: fields)
     return tool
   }
@@ -85,6 +88,6 @@ actor CodexWorkSnapshot {
 
   private static func isIdentifier(_ value: String) -> Bool {
     !value.isEmpty && value.utf8.count <= 1024
-      && !value.unicodeScalars.contains { $0.value < 32 || (127...159).contains($0.value) }
+      && !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
   }
 }
