@@ -465,6 +465,171 @@ final class CodexExecRuntimeTests {
     await runtime.shutdown()
   }
 
+  @Test
+  func retainedWorkKeepsItsCreatorUntilExplicitRelease() async throws {
+    let origin = UUID()
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"),
+      client: FakeCodexExecClientAdapter(handles: [ControllableCodexExecHandle()]))
+    let started = try await CodexWorkInvocation.$current.withValue(origin) {
+      try await runtime.start(prompt: "fixture")
+    }
+    let id = try requiredString("session_id", in: started)
+    let expected = try CodexWorkResource(kind: "codex.exec.session", id: id, acquiredBy: origin)
+    #expect(try await runtime.workResources() == [expected])
+    await assertThrowsErrorAsync(try await runtime.release(sessionID: id)) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.not_finished")
+    }
+    _ = try await CodexWorkInvocation.$current.withValue(UUID()) {
+      _ = try await runtime.events(sessionID: id, afterCursor: 0, maxResults: 100)
+      return try await runtime.cancel(sessionID: id)
+    }
+    await runtime.shutdown()
+    #expect(
+      try await runtime.result(sessionID: id).objectValue?["cleanup_confirmed"] == .bool(true))
+    #expect(try await runtime.workResources() == [expected])
+    let released = try await runtime.release(sessionID: id)
+    #expect(released.objectValue?["released"] == .bool(true))
+    #expect(try await runtime.workResources().isEmpty)
+    await assertThrowsErrorAsync(try await runtime.result(sessionID: id)) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.session_unknown")
+    }
+    await assertThrowsErrorAsync(try await runtime.release(sessionID: id)) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.session_unknown")
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func workCoversPendingLaunchAndLateHandle(resume: Bool) async throws {
+    let events = AsyncStream<String>.makeStream()
+    let client = PendingExecClient(events: events.continuation)
+    let origin = UUID()
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"), client: client)
+    var observations = events.stream.makeAsyncIterator()
+    let launch = Task {
+      try await CodexWorkInvocation.$current.withValue(origin) {
+        if resume { return try await runtime.resume(upstreamSessionID: "fixture", prompt: nil) }
+        return try await runtime.start(prompt: "fixture")
+      }
+    }
+    #expect(await observations.next() == "launch-entered")
+    let pending = try #require(try await runtime.workResources().first)
+    #expect(pending.acquiredBy == origin)
+    #expect(pending.state == .active)
+    launch.cancel()
+    #expect(await observations.next() == "launch-cancelled")
+    #expect(try await runtime.workResources() == [pending])
+    await client.release()
+    let result = try await launch.value
+    #expect(result.objectValue?["session_id"] == .string(pending.id))
+    #expect(result.objectValue?["cleanup_confirmed"] == .bool(true))
+    #expect(try await runtime.workResources() == [pending])
+    _ = try await runtime.release(sessionID: pending.id)
+    #expect(try await runtime.workResources().isEmpty)
+    await runtime.shutdown()
+  }
+
+  @Test
+  func concurrentCreatorsRemainDistinct() async throws {
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"),
+      client: FakeCodexExecClientAdapter(handles: [
+        ControllableCodexExecHandle(), ControllableCodexExecHandle(),
+      ]))
+    let firstOrigin = UUID()
+    let secondOrigin = UUID()
+    async let first = CodexWorkInvocation.$current.withValue(firstOrigin) {
+      try await runtime.start(prompt: "first")
+    }
+    async let second = CodexWorkInvocation.$current.withValue(secondOrigin) {
+      try await runtime.resume(upstreamSessionID: "fixture", prompt: "second")
+    }
+    let firstID = try requiredString("session_id", in: await first)
+    let secondID = try requiredString("session_id", in: await second)
+    let owners = Dictionary(
+      uniqueKeysWithValues: try await runtime.workResources().map {
+        ($0.id, $0.acquiredBy)
+      })
+    #expect(owners == [firstID: firstOrigin, secondID: secondOrigin])
+    await runtime.shutdown()
+    _ = try await runtime.release(sessionID: firstID)
+    #expect(try await runtime.workResources().map(\.id) == [secondID])
+    _ = try await runtime.release(sessionID: secondID)
+  }
+
+  @Test
+  func uncertainCleanupCannotBeReleasedOrEvicted() async throws {
+    let origin = UUID()
+    let client = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: [], error: CodexExecError.launchFailure(description: "unknown cleanup"))
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(maxSessions: 1), workspaceURL: URL(fileURLWithPath: "/tmp"),
+      client: client)
+    let started = try await CodexWorkInvocation.$current.withValue(origin) {
+      try await runtime.start(prompt: "fixture")
+    }
+    let id = try requiredString("session_id", in: started)
+    _ = try await waitForResult(runtime: runtime, sessionID: id)
+    await assertThrowsErrorAsync(try await runtime.start(prompt: "blocked")) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.session_limit")
+    }
+    await runtime.shutdown()
+    await assertThrowsErrorAsync(try await runtime.release(sessionID: id)) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.cleanup_unconfirmed")
+    }
+    #expect(
+      try await runtime.workResources() == [
+        try CodexWorkResource(
+          kind: "codex.exec.session", id: id, acquiredBy: origin, state: .uncertain)
+      ])
+    #expect(await client.runRequests.count == 1)
+  }
+
+  @Test
+  func releasingCompletedResultPreservesNativeThreadOwnership() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let index = try CodexThreadOwnerIndex(
+      path: root.appendingPathComponent("owners.sqlite").path, subject: "fixture", codexHome: root)
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: root,
+      client: FakeCodexExecClientAdapter(handles: [
+        FakeCodexExecHandle(
+          lines: [#"{"type":"thread.started","thread_id":"native-history"}"#],
+          termination: successfulTermination(workspace: root, operation: .run))
+      ]), threadOwnerIndex: index)
+    let started = try await CodexWorkInvocation.$current.withValue(UUID()) {
+      try await runtime.start(prompt: "fixture")
+    }
+    let id = try requiredString("session_id", in: started)
+    _ = try await waitForResult(runtime: runtime, sessionID: id)
+    await runtime.shutdown()
+    #expect(try index.owns(threadID: "native-history"))
+    #expect(try await runtime.workResources().count == 1)
+    _ = try await runtime.release(sessionID: id)
+    #expect(try await runtime.workResources().isEmpty)
+    #expect(try index.owns(threadID: "native-history"))
+  }
+
+  @Test
+  func standaloneWorkCannotBeReportedAsAnEmptySnapshot() async throws {
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"),
+      client: FakeCodexExecClientAdapter(handles: [ControllableCodexExecHandle()]))
+    #expect(try await runtime.workResources().isEmpty)
+    let started = try await runtime.start(prompt: "fixture")
+    let id = try requiredString("session_id", in: started)
+    await #expect(throws: (any Error).self) { try await runtime.workResources() }
+    await runtime.shutdown()
+    await #expect(throws: (any Error).self) { try await runtime.workResources() }
+    _ = try await runtime.release(sessionID: id)
+    #expect(try await runtime.workResources().isEmpty)
+  }
+
   private func configuration(
     sandbox: CodexSandboxMode? = nil,
     approval: CodexApprovalPolicy? = nil,

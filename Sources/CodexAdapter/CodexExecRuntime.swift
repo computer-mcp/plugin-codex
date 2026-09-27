@@ -9,6 +9,8 @@ protocol CodexExecRuntimeProtocol: Sendable {
   func events(sessionID: String, afterCursor: Int, maxResults: Int) async throws -> JSONValue
   func result(sessionID: String) async throws -> JSONValue
   func cancel(sessionID: String) async throws -> JSONValue
+  func release(sessionID: String) async throws -> JSONValue
+  func workResources() async throws -> [CodexWorkResource]
   func shutdown() async
 }
 
@@ -85,6 +87,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
 
   private struct Session: Sendable {
     let id: String
+    let workInvocation: UUID?
     let operation: Operation
     let createdAt: Date
     let eventBuffer: CodexEventBuffer
@@ -94,6 +97,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     var state: State
     var cancellationRequested = false
     var cleanupConfirmed = false
+    var settled = false
     var upstreamSessionID: String?
     var finalMessage: String?
     var termination: CodexExecTermination?
@@ -103,13 +107,18 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     var waitTask: Task<Void, Never>?
   }
 
+  private struct PendingLaunch: Sendable {
+    let workInvocation: UUID?
+    let task: Task<JSONValue, Error>
+  }
+
   private let configuration: CodexConfig
   private let workspaceURL: URL
   private let outputBounds: CodexOutputBounds
   private let client: any CodexExecClientAdapter
   private let threadOwnerIndex: CodexThreadOwnerIndex?
   private var sessions: [String: Session] = [:]
-  private var pendingLaunches: [String: Task<JSONValue, Error>] = [:]
+  private var pendingLaunches: [String: PendingLaunch] = [:]
   private var isShutdown = false
 
   init(
@@ -270,13 +279,43 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     ])
   }
 
+  func release(sessionID: String) throws -> JSONValue {
+    let session = try session(named: sessionID)
+    guard session.state.isTerminal, session.settled, pendingLaunches[sessionID] == nil else {
+      throw CodexExecRuntimeError(
+        code: "codex.exec.not_finished", message: "The exec session has not finished settling.")
+    }
+    guard session.cleanupConfirmed else {
+      throw CodexExecRuntimeError(
+        code: "codex.exec.cleanup_unconfirmed", message: "Native process cleanup is not confirmed.")
+    }
+    sessions.removeValue(forKey: sessionID)
+    return .object(["session_id": .string(sessionID), "released": .bool(true)])
+  }
+
+  func workResources() throws -> [CodexWorkResource] {
+    var resources = try sessions.values.map { session in
+      try CodexWorkResource(
+        kind: "codex.exec.session", id: session.id, acquiredBy: session.workInvocation,
+        state: session.state.isTerminal && !session.cleanupConfirmed ? .uncertain : .active)
+    }
+    for (id, launch) in pendingLaunches where sessions[id] == nil {
+      resources.append(
+        try CodexWorkResource(
+          kind: "codex.exec.session", id: id, acquiredBy: launch.workInvocation))
+    }
+    return resources.sorted { $0.id < $1.id }
+  }
+
   func shutdown() async {
     isShutdown = true
-    let launches = Array(pendingLaunches.values)
+    let launches = pendingLaunches.values.map(\.task)
     for launch in launches { launch.cancel() }
     for launch in launches { _ = await launch.result }
-    let owned = sessions.values.filter { !$0.state.isTerminal }
-    for session in owned { _ = try? await cancel(sessionID: session.id) }
+    let owned = sessions.values.filter { !$0.state.isTerminal || $0.waitTask != nil }
+    for session in owned where !session.state.isTerminal {
+      _ = try? await cancel(sessionID: session.id)
+    }
     for session in owned { await session.waitTask?.value }
   }
 
@@ -286,6 +325,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   ) async throws -> JSONValue {
     try reserveSessionSlot()
     let id = UUID().uuidString.lowercased()
+    let workInvocation = CodexWorkInvocation.current
     // The owner can cancel and join startup even before the SDK supplies a process handle.
     let task = Task {
       do {
@@ -294,12 +334,12 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
         return await register(
           sessionID: id, handle: handle, operation: operation,
           requestedUpstreamSessionID: requestedUpstreamSessionID,
-          model: model)
+          model: model, workInvocation: workInvocation)
       } catch {
         throw Self.runtimeError(for: error)
       }
     }
-    pendingLaunches[id] = task
+    pendingLaunches[id] = .init(workInvocation: workInvocation, task: task)
     defer { pendingLaunches.removeValue(forKey: id) }
     return try await withTaskCancellationHandler {
       try await task.value
@@ -313,7 +353,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     handle: any CodexExecProcessHandleAdapter,
     operation: Operation,
     requestedUpstreamSessionID: String?,
-    model: String?
+    model: String?, workInvocation: UUID?
   ) async -> JSONValue {
     let now = Date()
     let eventBuffer = CodexEventBuffer(
@@ -322,6 +362,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     )
     let session = Session(
       id: sessionID,
+      workInvocation: workInvocation,
       operation: operation,
       createdAt: now,
       eventBuffer: eventBuffer,
@@ -453,13 +494,12 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     session.updatedAt = Date()
     session.termination = termination
     session.cleanupConfirmed = true
-    session.streamTask = nil
-    session.waitTask = nil
     sessions[sessionID] = session
     await session.eventBuffer.append(
       kind: session.state == .completed ? "session.completed" : "session.failed",
       payload: session.failure.map { errorJSON($0) } ?? terminationJSON(termination)
     )
+    markSettled(sessionID: sessionID)
   }
 
   private func fail(sessionID: String, error: Error) async {
@@ -475,13 +515,18 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     session.finalMessage = session.finalMessage ?? session.partialObservation?.finalMessageText
     session.upstreamSessionID =
       session.upstreamSessionID ?? session.partialObservation?.resolvedSessionID
-    session.streamTask = nil
-    session.waitTask = nil
     sessions[sessionID] = session
     await session.eventBuffer.append(
       kind: session.state == .cancelled ? "session.cancelled" : "session.failed",
       payload: errorJSON(runtimeError)
     )
+    markSettled(sessionID: sessionID)
+  }
+
+  private func markSettled(sessionID: String) {
+    sessions[sessionID]?.settled = true
+    sessions[sessionID]?.streamTask = nil
+    sessions[sessionID]?.waitTask = nil
   }
 
   private func checkSessionAdmission() throws {
@@ -498,7 +543,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     while sessions.count + unregistered >= configuration.maxSessions {
       guard
         let evicted = sessions.values
-          .filter({ $0.state.isTerminal && $0.cleanupConfirmed && pendingLaunches[$0.id] == nil })
+          .filter({ $0.settled && $0.cleanupConfirmed && pendingLaunches[$0.id] == nil })
           .min(by: {
             if $0.updatedAt == $1.updatedAt {
               return $0.id < $1.id

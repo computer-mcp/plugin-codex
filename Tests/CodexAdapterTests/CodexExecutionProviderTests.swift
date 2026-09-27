@@ -25,16 +25,22 @@ struct CodexExecutionProviderTests {
       for (name, risk) in [
         ("start", "full-shell"), ("resume", "full-shell"), ("cancel", "destructive"),
         ("list", "read-only"), ("events", "read-only"), ("result", "read-only"),
+        ("release", "destructive"),
       ] {
         let tool = try #require(catalog.tools.first { $0.name == "codex.exec.\(name)" })
         #expect(tool._meta?["io.github.computer-mcp/risk"] == .string(risk))
         #expect(tool.annotations.readOnlyHint == (risk == "read-only"))
       }
+      let origin = UUID()
       for item in cases {
+        let meta: MCP.Metadata? =
+          item.name == "codex.exec.start" || item.name == "codex.exec.resume"
+          ? .init(additionalFields: [CodexWorkInvocation.metadataKey: .string(origin.uuidString)])
+          : nil
         let request = try await client.send(
           MCP.CallTool.request(
             .init(
-              name: item.name, arguments: item.arguments)))
+              name: item.name, arguments: item.arguments, meta: meta)))
         let result = try await request.value
         #expect(result.isError == false)
         #expect(
@@ -50,6 +56,22 @@ struct CodexExecutionProviderTests {
           try JSONDecoder().decode(MCP.Value.self, from: Data(text.utf8))
             == result.structuredContent?.objectValue?["result"])
       }
+      #expect(await exec.invocations == [origin, origin, nil, nil, nil, nil, nil])
+      for value: MCP.Value in [
+        .null, .bool(true), .int(1), .array([]), .object([:]), .string(""),
+        .string("not-a-uuid"), .string(" " + origin.uuidString),
+        .string("{" + origin.uuidString + "}"),
+      ] {
+        await #expect(throws: MCPError.self) {
+          let response = try await client.send(
+            MCP.CallTool.request(
+              .init(
+                name: "codex.exec.start", arguments: ["prompt": .string("never invoked")],
+                meta: .init(additionalFields: [CodexWorkInvocation.metadataKey: value]))))
+          return try await response.value
+        }
+      }
+      #expect(await exec.operations.count == 7)
       let invalid = try await client.callTool(name: "codex.exec.start", arguments: [:])
       #expect(invalid.isError == true)
       await #expect(throws: MCPError.self) { try await client.callTool(name: "codex.unknown") }
@@ -61,7 +83,7 @@ struct CodexExecutionProviderTests {
       _ = try? await serving.value
       throw error
     }
-    #expect(await exec.operations.count == 6)
+    #expect(await exec.operations.count == 7)
     #expect(await exec.shutdowns == 1)
   }
 
@@ -112,15 +134,18 @@ struct CodexExecutionProviderTests {
         ]),
       .init("exec.result", ["session_id": .string("session")]),
       .init("exec.cancel", ["session_id": .string("session")], write: true),
+      .init("exec.release", ["session_id": .string("session")], write: true),
     ]
   }
 }
 
 private actor ExecutionSpy: CodexExecRuntimeProtocol {
   var operations: [String] = []
+  var invocations: [UUID?] = []
   var shutdowns = 0
   func record(_ operation: String, _ arguments: [String: JSONValue] = [:]) -> JSONValue {
     operations.append(operation)
+    invocations.append(CodexWorkInvocation.current)
     return .object(["operation": .string(operation), "arguments": .object(arguments)])
   }
   func start(prompt: String, model: String?, options: JSONValue?) -> JSONValue {
@@ -152,5 +177,9 @@ private actor ExecutionSpy: CodexExecRuntimeProtocol {
   func cancel(sessionID: String) -> JSONValue {
     record("exec.cancel", ["session_id": .string(sessionID)])
   }
+  func release(sessionID: String) -> JSONValue {
+    record("exec.release", ["session_id": .string(sessionID)])
+  }
+  func workResources() -> [CodexWorkResource] { [] }
   func shutdown() { shutdowns += 1 }
 }

@@ -58,6 +58,10 @@ struct CodexExecutionProvider: Sendable {
         result = try await tryExec().cancel(
           sessionID: Self.requiredIdentifier("session_id", in: object)
         )
+      case "codex.exec.release":
+        result = try await tryExec().release(
+          sessionID: Self.requiredIdentifier("session_id", in: object)
+        )
 
       default: throw CodexToolError.unknownTool(name)
       }
@@ -238,6 +242,12 @@ struct CodexExecutionProvider: Sendable {
     tool(
       "codex.exec.cancel",
       "Cancel one running Codex Exec session.",
+      objectSchema(properties: ["session_id": stringSchema()], required: ["session_id"]),
+      risk: .destructive
+    ),
+    tool(
+      "codex.exec.release",
+      "Release a retained Exec result after confirmed native cleanup. Native conversation storage is unchanged.",
       objectSchema(properties: ["session_id": stringSchema()], required: ["session_id"]),
       risk: .destructive
     ),

@@ -66,6 +66,13 @@ after cancellation is still registered and cleaned through the normal process
 waiter. Shutdown closes new admission; cancellation never substitutes for
 observed process cleanup.
 
+Each Exec owner captures its optional work-invocation UUID before startup. The
+pending launch and registered session share that immutable acquisition; later
+reads or cancellation calls cannot replace it. A missing binding is distinct
+from an empty work set. Result retention remains owned after process termination.
+`codex.exec.release` drops a settled result only after confirmed process cleanup,
+without changing native conversation storage or the thread-owner index.
+
 `CodexLaunchContext` records the initial workspace and verified host subject.
 The host authorizes every invocation against its current policy; launch metadata
 does not freeze permissions or grant control-plane access. Native Codex

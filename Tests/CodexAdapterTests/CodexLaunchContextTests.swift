@@ -29,7 +29,7 @@ struct CodexLaunchContextTests {
       FileManager.default.fileExists(
         atPath: root.appendingPathComponent("adapter-state/codex.sqlite").path))
     let execution = try context.executionProvider(configuration: configuration)
-    #expect(execution.tools.count == 6)
+    #expect(execution.tools.count == 7)
     await execution.shutdown()
     await provider.shutdown()
   }
@@ -73,7 +73,7 @@ struct CodexLaunchContextTests {
     #expect(context.workspaceURL.path == "/tmp/bound-workspace")
     let provider = try context.executionProvider(
       configuration: .init(enabled: true, appServerEnabled: false))
-    #expect(provider.tools.count == 6)
+    #expect(provider.tools.count == 7)
   }
 
   @Test func execAndDisabledDefaultDoNotLaunchCodex() async throws {
@@ -84,7 +84,7 @@ struct CodexLaunchContextTests {
     let exec = try context.executionProvider(
       configuration: .init(
         enabled: true, executable: "/missing/codex", appServerEnabled: false))
-    #expect(exec.tools.count == 6)
+    #expect(exec.tools.count == 7)
     _ = try await exec.call(name: "codex.exec.list", arguments: nil)
     await exec.shutdown()
   }

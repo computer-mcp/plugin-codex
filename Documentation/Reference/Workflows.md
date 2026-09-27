@@ -13,13 +13,13 @@ by the runtime; do not substitute upstream thread IDs for local handles.
 | Acceptance and writer ownership | `codex.run.*` and `codex.worktree.leases.*`, with durable revisions |
 | Managed worktrees | `codex.worktree.provision.plan` / `perform`, `managed.list` / `read`, and `remove.plan` / `perform`; mutations require the host workspace service |
 | Operational diagnostics | `codex.diagnostics.snapshot`, with optional bounded `limit` |
-| Exec | `codex.exec.start` or `resume` → `list` / `events` / `result` → `cancel` when required |
+| Exec | `codex.exec.start` / `resume`; inspect `list` / `events` / `result`; `cancel` while running; `release` after cleanup |
 
 ## Native coding configuration
 
 Exec start accepts `prompt` and optional `model` and `options`; resume accepts
 `upstream_session_id` and optional `prompt`, `model` and `options`.
-Exec events/result/cancel use `session_id`.
+Exec events/result/cancel/release use `session_id`.
 
 Exec uses existing Codex configuration and authentication, including provider,
 MCP servers, Skills and hooks. Omitted sandbox and approval values inherit native
@@ -178,6 +178,14 @@ completion with cancellation history. Results expose `output_capture`, including
 dropped stdout/stderr bytes. Capture-budget failure is explicit; preserved output
 must not be treated as complete. Adapter text truncation and missed event cursors
 are separate, visible limits.
+
+Completed Exec results remain readable until explicit `codex.exec.release` or
+capacity eviction. Release requires both a settled result and confirmed native
+cleanup; it rejects running, still-settling and uncertain-cleanup sessions.
+Releasing removes the adapter session, its result and buffered events. It does
+not delete native conversation history or its workspace ownership record.
+Result and event reads are non-destructive. Capacity eviction removes only
+settled results with confirmed cleanup; uncertain work continues to occupy a slot.
 
 Exec shutdown also covers native requests still starting. It refuses new
 start/resume calls before claiming thread ownership and waits for admitted

@@ -56,16 +56,19 @@ package enum CodexAdapterServer {
         tools: ProtocolTools.definitions + execution.tools + (appServer?.tools ?? []))
     }
     await server.withMethodHandler(MCP.CallTool.self) { params in
+      let invocation = try CodexWorkInvocation.parse(params._meta)
       if ProtocolTools.definitions.contains(where: { $0.name == params.name }) {
         return try tools.call(name: params.name, arguments: params.arguments ?? [:])
       }
       let arguments = try JSONDecoder().decode(
         JSONValue.self, from: JSONEncoder().encode(params.arguments ?? [:]))
       do {
-        if let appServer, appServer.tools.contains(where: { $0.name == params.name }) {
-          return try await appServer.call(name: params.name, arguments: arguments)
+        return try await CodexWorkInvocation.$current.withValue(invocation) {
+          if let appServer, appServer.tools.contains(where: { $0.name == params.name }) {
+            return try await appServer.call(name: params.name, arguments: arguments)
+          }
+          return try await execution.call(name: params.name, arguments: arguments)
         }
-        return try await execution.call(name: params.name, arguments: arguments)
       } catch CodexToolError.unknownTool {
         throw MCPError.invalidParams("Unknown tool: \(params.name)")
       } catch {

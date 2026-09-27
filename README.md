@@ -7,8 +7,8 @@ The plugin does not link Computer MCP Core or install the vendor Codex binary.
 
 ## Current capabilities
 
-The configured server exposes six `codex.exec.*` tools for sessions, bounded
-events, results and cancellation, alongside the App Server tools below.
+The configured server exposes seven `codex.exec.*` tools for sessions, bounded
+events, results, cancellation and retained-result release, alongside the App Server tools below.
 
 `codex.protocol.methods.list` and `codex.protocol.methods.describe` inspect bundled,
 version-specific protocol declarations. Schema presence does not prove
