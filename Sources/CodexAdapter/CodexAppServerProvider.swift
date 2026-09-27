@@ -1332,7 +1332,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["agent_id", "parent_lease_id", "branch"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.worktree.provision.perform",
@@ -1345,7 +1345,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["plan_id", "expected_revision", "confirm_provision"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.worktree.remove.plan",
@@ -1354,7 +1354,7 @@ struct CodexAppServerProvider: Sendable {
         properties: ["managed_worktree_id": stringSchema()],
         required: ["managed_worktree_id"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.worktree.remove.perform",
@@ -1367,7 +1367,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["managed_worktree_id", "expected_revision", "confirm_remove"]
       ),
-      write: true
+      risk: .destructive
     ),
     tool(
       "codex.app.status", "Read the persistent Codex App Server connection status.", emptySchema),
@@ -1393,7 +1393,7 @@ struct CodexAppServerProvider: Sendable {
         properties: ["confirm_cleanup": booleanSchema()],
         required: ["confirm_cleanup"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.app.ownership.reconcile.preview",
@@ -1410,7 +1410,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["expected_plan_digest", "confirm_reconciliation"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.app.runtimes.inspect",
@@ -1421,7 +1421,7 @@ struct CodexAppServerProvider: Sendable {
       "codex.app.runtimes.stop",
       "Stop and reap one specific Computer MCP-owned runtime. Other Codex applications and user-owned processes are never targeted.",
       objectSchema(properties: ["runtime_id": stringSchema()], required: ["runtime_id"]),
-      write: true
+      risk: .destructive
     ),
     tool(
       "codex.app.methods.list",
@@ -1447,7 +1447,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["method"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool(
       "codex.app.thread.start", "Start a Codex thread in the bound workspace.",
@@ -1459,7 +1459,7 @@ struct CodexAppServerProvider: Sendable {
           "service_tier": stringSchema(),
         ]
       ),
-      write: true),
+      risk: .fullShell),
     tool(
       "codex.app.thread.list",
       "List Codex threads restricted to the bound workspace.",
@@ -1488,7 +1488,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["thread_id"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool(
       "codex.app.thread.loaded.list",
@@ -1560,7 +1560,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["thread_id"]
       ),
-      write: true),
+      risk: .fullShell),
     tool(
       "codex.app.thread.release",
       "Release a thread from every matching Computer-MCP-owned runtime and verify that another official Codex client can claim it immediately. Active turns are interrupted only when explicitly requested; force mode can stop only exact Computer-MCP-owned runtimes.",
@@ -1578,7 +1578,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["thread_id"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool(
       "codex.app.handoff.diagnose",
@@ -1614,22 +1614,23 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["thread_id"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.app.goal.clear",
       "Clear the official persisted Codex Goal for a verified workspace thread.",
       objectSchema(properties: ["thread_id": stringSchema()], required: ["thread_id"]),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.app.runtime.stop",
       "Release all thread subscriptions and stop the current Computer MCP-owned App Server runtime.",
       emptySchema,
-      write: true
+      risk: .destructive
     ),
     tool(
-      "codex.app.turn.start", "Start a Codex turn with gateway-owned sandbox and approval policy.",
+      "codex.app.turn.start",
+      "Start a Codex turn using native sandbox and approval settings under host authorization.",
       objectSchema(
         properties: [
           "thread_id": stringSchema(),
@@ -1643,7 +1644,7 @@ struct CodexAppServerProvider: Sendable {
           "worktree_lease_id": stringSchema(),
         ],
         required: ["thread_id", "prompt"]
-      ), write: true),
+      ), risk: .fullShell),
     tool(
       "codex.app.turn.steer",
       "Steer the currently active Codex turn. The expected turn ID prevents instructions from being applied to a newer turn.",
@@ -1656,14 +1657,14 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["thread_id", "expected_turn_id", "prompt"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool(
       "codex.app.turn.interrupt", "Interrupt an active Codex turn.",
       objectSchema(
         properties: ["thread_id": stringSchema(), "turn_id": stringSchema()],
         required: ["thread_id", "turn_id"]
-      ), write: true),
+      ), risk: .fullShell),
     tool(
       "codex.app.review.start", "Start a Codex review for a verified workspace thread.",
       objectSchema(
@@ -1676,7 +1677,7 @@ struct CodexAppServerProvider: Sendable {
           ]),
         ],
         required: ["thread_id", "target"]
-      ), write: true),
+      ), risk: .fullShell),
     tool(
       "codex.app.models.list", "List models exposed by Codex App Server.",
       objectSchema(
@@ -1718,7 +1719,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["request_id", "response"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool(
       "codex.app.approvals.list",
@@ -1754,7 +1755,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["approval_id", "response"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool(
       "codex.run.create",
@@ -1776,7 +1777,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["objective", "accepted_scope", "acceptance_criteria"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.run.list",
@@ -1823,7 +1824,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["run_id", "expected_revision", "event", "summary"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.run.evaluate",
@@ -1835,7 +1836,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["run_id", "expected_revision"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.run.accept",
@@ -1848,7 +1849,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["run_id", "expected_revision", "worktree_clean"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.run.transition",
@@ -1865,7 +1866,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["run_id", "expected_revision", "action"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.run.reconcile",
@@ -1884,7 +1885,7 @@ struct CodexAppServerProvider: Sendable {
           "criterion_id",
         ]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.worktree.leases.acquire",
@@ -1904,7 +1905,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["agent_id"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.worktree.leases.list",
@@ -1927,7 +1928,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["lease_id", "expected_revision"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.worktree.leases.release",
@@ -1940,7 +1941,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["lease_id", "expected_revision", "reason"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
     tool(
       "codex.worktree.leases.cleanup.preview",
@@ -1954,12 +1955,13 @@ struct CodexAppServerProvider: Sendable {
         properties: ["confirm_cleanup": booleanSchema()],
         required: ["confirm_cleanup"]
       ),
-      write: true
+      risk: .workspaceWrite
     ),
 
   ]
   private static func tool(
-    _ name: String, _ description: String, _ inputSchema: JSONValue, write: Bool = false
+    _ name: String, _ description: String, _ inputSchema: JSONValue,
+    risk: CodexOperationRisk = .readOnly
   ) -> MCP.Tool {
     let title = name.split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" })
       .map { String($0.prefix(1)).uppercased() + $0.dropFirst() }.joined(separator: " ")
@@ -1968,14 +1970,14 @@ struct CodexAppServerProvider: Sendable {
     return .init(
       name: name, title: title, description: description, inputSchema: input,
       annotations: .init(
-        readOnlyHint: !write, destructiveHint: name == "codex.worktree.remove.perform",
-        idempotentHint: !write, openWorldHint: write),
+        readOnlyHint: risk == .readOnly,
+        destructiveHint: risk == .destructive || risk == .fullShell,
+        idempotentHint: risk == .readOnly, openWorldHint: risk != .readOnly),
       outputSchema: .object([
         "type": .string("object"), "properties": .object(["result": .object([:])]),
         "required": .array([.string("result")]), "additionalProperties": .bool(false),
       ]),
-      _meta: name == "codex.app.methods.call"
-        ? .init(additionalFields: ["io.github.computer-mcp/risk": .string("full-shell")]) : nil)
+      _meta: .init(additionalFields: ["io.github.computer-mcp/risk": .string(risk.rawValue)]))
   }
 
   private static func objectSchema(

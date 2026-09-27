@@ -208,7 +208,7 @@ struct CodexExecutionProvider: Sendable {
         ],
         required: ["prompt"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool(
       "codex.exec.resume",
@@ -222,7 +222,7 @@ struct CodexExecutionProvider: Sendable {
         ],
         required: ["upstream_session_id"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool("codex.exec.list", "List gateway-owned Codex Exec sessions.", emptySchema),
     tool(
@@ -239,12 +239,13 @@ struct CodexExecutionProvider: Sendable {
       "codex.exec.cancel",
       "Cancel one running Codex Exec session.",
       objectSchema(properties: ["session_id": stringSchema()], required: ["session_id"]),
-      write: true
+      risk: .destructive
     ),
   ]
 
   private static func tool(
-    _ name: String, _ description: String, _ inputSchema: JSONValue, write: Bool = false
+    _ name: String, _ description: String, _ inputSchema: JSONValue,
+    risk: CodexOperationRisk = .readOnly
   ) -> MCP.Tool {
     let title = name.split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" })
       .map { String($0.prefix(1)).uppercased() + $0.dropFirst() }.joined(separator: " ")
@@ -253,11 +254,14 @@ struct CodexExecutionProvider: Sendable {
     return .init(
       name: name, title: title, description: description, inputSchema: input,
       annotations: .init(
-        readOnlyHint: !write, destructiveHint: false, idempotentHint: !write, openWorldHint: write),
+        readOnlyHint: risk == .readOnly,
+        destructiveHint: risk == .destructive || risk == .fullShell,
+        idempotentHint: risk == .readOnly, openWorldHint: risk != .readOnly),
       outputSchema: .object([
         "type": .string("object"), "properties": .object(["result": .object([:])]),
         "required": .array([.string("result")]), "additionalProperties": .bool(false),
-      ]))
+      ]),
+      _meta: .init(additionalFields: ["io.github.computer-mcp/risk": .string(risk.rawValue)]))
   }
 
   private static func objectSchema(

@@ -5,6 +5,35 @@ import Testing
 @testable import CodexAdapter
 
 struct CodexNativeProjectionTests {
+  @Test(arguments: [
+    "thread/start", "thread/resume", "thread/fork", "turn/start", "turn/steer", "review/start",
+    "thread/compact/start", "thread/archive", "thread/delete", "turn/interrupt",
+    "thread/queue/add", "thread/queue/update", "thread/queue/start", "thread/realtime/start",
+    "thread/realtime/appendAudio", "thread/realtime/appendSpeech", "thread/realtime/appendText",
+    "thread/realtime/stop", "thread/settings/update", "turn/settings/update",
+    "thread/approveGuardianDeniedAction", "config/mcpServer/reload",
+  ])
+  func nativeExecutionAndContinuationCannotAdvertiseRestrictedRisk(method: String) throws {
+    let descriptor = try #require(CodexAppServerMethodCatalog.method(named: method))
+    #expect(descriptor.risk == .fullShell)
+    #expect(
+      descriptor.tool._meta?["io.github.computer-mcp/risk"]
+        == .string("full-shell"))
+  }
+
+  @Test
+  func narrowNativeEffectsKeepTheirOwnClassification() throws {
+    for (method, risk) in [
+      ("fs/readFile", CodexOperationRisk.readOnly), ("thread/read", .readOnly),
+      ("thread/name/set", .workspaceWrite), ("thread/goal/set", .workspaceWrite),
+      ("fs/writeFile", .externalWrite), ("fs/remove", .destructive),
+      ("command/exec/terminate", .destructive), ("process/kill", .destructive),
+      ("command/exec/resize", .workspaceWrite), ("process/resizePty", .workspaceWrite),
+    ] {
+      #expect(try #require(CodexAppServerMethodCatalog.method(named: method)).risk == risk)
+    }
+  }
+
   @Test func everyAdoptedStableRequestHasOneTypedProjection() throws {
     let inventory = try ProtocolInventory.bundled()
     let methods = try CodexAppServerMethodCatalog.derive(inventory: inventory)

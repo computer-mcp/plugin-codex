@@ -22,6 +22,14 @@ struct CodexExecutionProviderTests {
       #expect(
         Set(catalog.tools.map(\.name))
           == Set(cases.map(\.name) + ProtocolTools.definitions.map(\.name)))
+      for (name, risk) in [
+        ("start", "full-shell"), ("resume", "full-shell"), ("cancel", "destructive"),
+        ("list", "read-only"), ("events", "read-only"), ("result", "read-only"),
+      ] {
+        let tool = try #require(catalog.tools.first { $0.name == "codex.exec.\(name)" })
+        #expect(tool._meta?["io.github.computer-mcp/risk"] == .string(risk))
+        #expect(tool.annotations.readOnlyHint == (risk == "read-only"))
+      }
       for item in cases {
         let request = try await client.send(
           MCP.CallTool.request(

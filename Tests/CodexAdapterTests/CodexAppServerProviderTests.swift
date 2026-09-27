@@ -7,6 +7,33 @@ import Testing
 @Suite(.serialized)
 struct CodexAppServerProviderTests {
   @Test
+  func modelAndApprovalEntryPointsDeclareFullShellAcrossTheMCPCatalog() throws {
+    let tools = makeProvider().tools
+    for tool in tools {
+      let raw = try #require(
+        tool._meta?["io.github.computer-mcp/risk"]?.stringValue)
+      #expect(CodexOperationRisk(rawValue: raw) != nil)
+      #expect(tool.annotations.readOnlyHint == (raw == "read-only"))
+    }
+    for name in [
+      "codex.app.methods.call", "codex.app.thread.start", "codex.app.thread.reclaim",
+      "codex.app.thread.fork", "codex.app.thread.release", "codex.app.turn.start",
+      "codex.app.turn.steer", "codex.app.turn.interrupt", "codex.app.review.start",
+      "codex.app.requests.respond", "codex.app.approvals.respond",
+    ] {
+      let tool = try #require(tools.first { $0.name == name })
+      #expect(tool._meta?["io.github.computer-mcp/risk"] == .string("full-shell"))
+    }
+    for name in ["codex.app.thread.read", "codex.app.approvals.read", "codex.app.events.read"] {
+      let tool = try #require(tools.first { $0.name == name })
+      #expect(tool._meta?["io.github.computer-mcp/risk"] == .string("read-only"))
+    }
+    let goal = try #require(tools.first { $0.name == "codex.app.goal.set" })
+    #expect(
+      goal._meta?["io.github.computer-mcp/risk"] == .string("workspace-write"))
+  }
+
+  @Test
   func threadHistoryDefaultsToMetadataAndBoundedNativePages() async throws {
     let provider = makeProvider()
     for includeTurns in [nil, false, true] as [Bool?] {

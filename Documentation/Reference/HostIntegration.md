@@ -28,12 +28,25 @@ native request. The host decides whether the caller may invoke Codex; it does
 not replace Codex's sandbox or approval policy. Codex callbacks into host tools
 remain subject to current host authorization and confirmation.
 
-Native tool metadata declares `io.github.computer-mcp/risk`; the generic
-`codex.app.methods.call` declares `full-shell` because its selected method can
-execute arbitrary commands. Hosts can use these declarations to impose a
+Execution tool metadata declares `io.github.computer-mcp/risk`. Starting or
+continuing a model task, answering approvals or interactive requests, and
+native lifecycle operations that can invoke configured command hooks declare
+`full-shell`. This includes thread startup/resume/fork, turn steering, manual
+compaction, archive/delete and turn interruption. Queued and realtime inputs
+and native execution-policy updates use the same floor. Explicit native sandbox
+settings do not lower the floor: the host does not enforce a vendor sandbox.
+The generic `codex.app.methods.call` also declares `full-shell` because its
+selected method can execute arbitrary commands. Hosts use these declarations as a
 minimum risk, never to reduce a configured restriction or grant access.
 `codex.app.methods.list` provides the same per-method classification for
 configuration review. MCP annotations remain advisory.
+
+Metadata/history/event inspection declares `read-only`. Narrow filesystem and
+metadata mutations retain their effect classification. Exec cancellation and
+native process termination declare `destructive`; they retire owned work rather
+than submit new model input. Native turn interruption differs because Codex can
+run an Interrupt command hook. A host emergency-revocation action is a separate
+host-owned control, not a promise that a vendor cancellation RPC has no hooks.
 
 Native approval responses use official response objects, including session
 scope, amendments, refusal and cancellation. Responses bind to their original

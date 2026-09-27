@@ -126,53 +126,53 @@ enum CodexAppServerMethodCatalog {
   static func risk(for method: String) -> CodexOperationRisk? {
     switch method {
     case "account/rateLimits/read", "account/read", "account/usage/read",
-      "account/workspaceMessages/read", "app/installed", "app/list", "app/read",
-      "config/read", "configRequirements/read", "experimentalFeature/list",
-      "externalAgentConfig/detect", "externalAgentConfig/import/readHistories",
-      "fs/getMetadata", "fs/readDirectory", "fs/readFile", "hooks/list",
-      "mcpServer/resource/read", "mcpServerStatus/list", "model/list",
+      "account/workspaceMessages/read", "app/installed", "app/list", "app/read", "config/read",
+      "configRequirements/read", "experimentalFeature/list", "externalAgentConfig/detect",
+      "externalAgentConfig/import/readHistories", "fs/getMetadata", "fs/readDirectory",
+      "fs/readFile", "hooks/list", "mcpServer/resource/read", "mcpServerStatus/list", "model/list",
       "modelProvider/capabilities/read", "permissionProfile/list", "plugin/installed",
       "plugin/list", "plugin/read", "plugin/share/list", "plugin/skill/read", "skills/list",
-      "thread/goal/get", "thread/items/list", "thread/list", "thread/loaded/list",
-      "thread/read", "thread/turns/list", "threadSection/list", "windowsSandbox/readiness",
+      "thread/goal/get", "thread/items/list", "thread/list", "thread/loaded/list", "thread/read",
+      "thread/turns/list", "threadSection/list", "windowsSandbox/readiness",
       "collaborationMode/list", "environment/info", "environment/status", "plugin/search",
       "project/list", "project/read", "remoteControl/client/list", "remoteControl/pairing/status",
       "remoteControl/status/read", "server/diagnostics", "thread/backgroundTerminals/list",
       "thread/queue/list", "thread/realtime/listVoices", "thread/search",
       "thread/searchOccurrences", "thread/timeline/list", "mock/experimentalMethod":
       return .readOnly
-    case "thread/archive", "thread/compact/start", "thread/fork", "thread/goal/clear",
-      "thread/goal/set", "thread/inject_items", "thread/metadata/update", "thread/name/set",
-      "thread/resume", "thread/rollback", "thread/section/move", "thread/start",
-      "thread/unarchive", "thread/unsubscribe", "threadSection/create", "threadSection/update",
-      "turn/interrupt", "turn/start", "turn/steer", "review/start", "thread/decrement_elicitation",
-      "thread/increment_elicitation", "thread/memoryMode/set", "thread/queue/add",
-      "thread/queue/delete", "thread/queue/reorder", "thread/queue/start", "thread/queue/update",
-      "thread/realtime/appendAudio", "thread/realtime/appendSpeech", "thread/realtime/appendText",
-      "thread/realtime/start", "thread/realtime/stop", "thread/settings/update",
-      "turn/settings/update":
+    case "thread/goal/clear", "thread/goal/set", "thread/inject_items", "thread/metadata/update",
+      "thread/name/set", "thread/rollback", "thread/section/move", "thread/unarchive",
+      "thread/unsubscribe", "threadSection/create", "threadSection/update",
+      "thread/decrement_elicitation", "thread/increment_elicitation", "thread/memoryMode/set",
+      "thread/queue/delete", "thread/queue/reorder", "command/exec/resize", "process/resizePty":
       return .workspaceWrite
     case "account/login/cancel", "account/login/start", "account/logout",
       "account/rateLimitResetCredit/consume", "account/sendAddCreditsNudgeEmail",
-      "config/batchWrite", "config/mcpServer/reload", "config/value/write",
-      "experimentalFeature/enablement/set", "externalAgentConfig/import",
-      "externalAgentConfig/import/recordHistory", "feedback/upload", "fs/copy",
-      "fs/createDirectory", "fs/unwatch", "fs/watch", "fs/writeFile", "marketplace/add",
+      "config/batchWrite", "config/value/write", "experimentalFeature/enablement/set",
+      "externalAgentConfig/import", "externalAgentConfig/import/recordHistory", "feedback/upload",
+      "fs/copy", "fs/createDirectory", "fs/unwatch", "fs/watch", "fs/writeFile", "marketplace/add",
       "marketplace/upgrade", "mcpServer/oauth/login", "plugin/install", "plugin/share/checkout",
       "plugin/share/save", "plugin/share/updateTargets", "skills/config/write",
-      "skills/extraRoots/set",
-      "windowsSandbox/setupStart", "environment/add", "project/create", "project/import",
-      "project/move", "project/update", "remoteControl/disable", "remoteControl/enable",
-      "remoteControl/pairing/start", "mcpServer/event/stream/start", "mcpServer/event/stream/stop":
+      "skills/extraRoots/set", "windowsSandbox/setupStart", "environment/add", "project/create",
+      "project/import", "project/move", "project/update", "remoteControl/disable",
+      "remoteControl/enable", "remoteControl/pairing/start", "mcpServer/event/stream/start",
+      "mcpServer/event/stream/stop":
       return .externalWrite
     case "fs/remove", "marketplace/remove", "plugin/share/delete", "plugin/uninstall",
-      "thread/delete", "thread/revert", "threadSection/delete", "memory/reset", "project/delete",
+      "thread/revert", "threadSection/delete", "memory/reset", "project/delete",
       "remoteControl/client/revoke", "thread/backgroundTerminals/clean",
-      "thread/backgroundTerminals/terminate":
+      "thread/backgroundTerminals/terminate", "command/exec/terminate", "process/kill":
       return .destructive
-    case "command/exec", "command/exec/resize", "command/exec/terminate", "command/exec/write",
-      "mcpServer/tool/call", "thread/approveGuardianDeniedAction", "thread/shellCommand",
-      "process/kill", "process/resizePty", "process/spawn", "process/writeStdin":
+    // Model continuations and native lifecycle hooks can execute user-configured
+    // commands. Parameter-level sandbox settings do not lower the host floor.
+    case "config/mcpServer/reload", "review/start", "thread/archive", "thread/compact/start",
+      "thread/delete", "thread/fork", "thread/queue/add", "thread/queue/start",
+      "thread/queue/update", "thread/realtime/appendAudio", "thread/realtime/appendSpeech",
+      "thread/realtime/appendText", "thread/realtime/start", "thread/realtime/stop",
+      "thread/resume", "thread/settings/update", "thread/start", "turn/interrupt",
+      "turn/settings/update", "turn/start", "turn/steer", "command/exec",
+      "command/exec/write", "mcpServer/tool/call", "thread/approveGuardianDeniedAction",
+      "thread/shellCommand", "process/spawn", "process/writeStdin":
       return .fullShell
     default: return nil
     }
