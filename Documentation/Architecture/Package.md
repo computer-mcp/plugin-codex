@@ -54,6 +54,17 @@ subscribed and active-thread claims and connection-local thread cache. Unknown
 cleanup retains these claims until confirmation; native history and persistent
 thread-ownership records are separate from a live connection's claims.
 
+Thread and turn work capture their creating invocation separately. Native IDs
+can arrive through notifications before the creating RPC returns; pending
+inputs and approvals share the same once-bound origin. An ordinary client's
+unbound work cannot later be claimed by a metadata-bearing reader or resume.
+Goal-created turns and callbacks retain the Goal's origin. Interleaved Goal
+notifications invalidate older observations before ownership can be released.
+Server-request work belongs to its exact connection and remains live until both
+the SDK request lifecycle and any host callback have settled. Native process
+cleanup alone does not finish a host callback, and a new connection can reuse
+native request IDs without replacing callbacks from the previous connection.
+
 ## Execution and authority
 
 `CodexAppServerProvider` maps the App Server and persisted-domain tools to

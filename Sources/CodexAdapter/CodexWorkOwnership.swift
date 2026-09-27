@@ -17,6 +17,44 @@ enum CodexWorkInvocation {
   }
 }
 
+/// A notification can expose a native ID before its creating RPC returns.
+/// Children share this once-bound origin, never a consumer task's context.
+final class CodexWorkOrigin: @unchecked Sendable {
+  private let lock = NSLock()
+  private var resolved = false
+  private var invocation: UUID?
+
+  init() {}
+
+  init(invocation: UUID?) {
+    self.invocation = invocation
+    resolved = true
+  }
+
+  func bind(to invocation: UUID?) {
+    lock.withLock {
+      guard !resolved else { return }
+      self.invocation = invocation
+      resolved = true
+    }
+  }
+
+  var value: UUID? { lock.withLock { invocation } }
+}
+
+struct CodexWorkBinding: Sendable {
+  let id = UUID().uuidString.lowercased()
+  let origin: CodexWorkOrigin
+
+  init(origin: CodexWorkOrigin = .init()) { self.origin = origin }
+
+  func resource(_ kind: String, state: CodexWorkResource.State = .active) throws
+    -> CodexWorkResource
+  {
+    try CodexWorkResource(kind: kind, id: id, acquiredBy: origin.value, state: state)
+  }
+}
+
 struct CodexWorkResource: Equatable, Sendable {
   enum State: String, Sendable {
     case active
@@ -30,7 +68,7 @@ struct CodexWorkResource: Equatable, Sendable {
 
   init(kind: String, id: String, acquiredBy: UUID?, state: State = .active) throws {
     guard let acquiredBy else {
-      throw MCPError.internalError("Work ownership is unavailable for an unbound resource.")
+      throw MCPError.internalError("Work ownership is unavailable for an unbound \(kind) resource.")
     }
     self.kind = kind
     self.id = id

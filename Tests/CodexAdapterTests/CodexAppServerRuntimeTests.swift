@@ -1564,6 +1564,11 @@ struct AppServerProcessFixture {
             ;;
         esac
         id=$(printf '%s\n' "$line" | /usr/bin/sed -E 's/.*"id":("[^"]*"|[0-9]+).*/\\1/')
+        if [ -f "$fixture_dir/notifications-next.jsonl" ]; then
+          /bin/cat "$fixture_dir/notifications-next.jsonl"
+          /bin/rm "$fixture_dir/notifications-next.jsonl"
+          while [ -f "$fixture_dir/hold-notification-response" ]; do /bin/sleep 0.01; done
+        fi
         case "$line" in
           *thread*loaded*list*)
             if [ -f "$fixture_dir/hang-requests" ]; then
@@ -1595,8 +1600,10 @@ struct AppServerProcessFixture {
             fi
             printf '{"id":%s,"result":{"status":"unsubscribed"}}\n' "$id"
             ;;
-          *thread*start*)
-            printf '{"id":%s,"result":{"futureResponse":{"preserved":true},"approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"%s","model":"gpt-test","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"cliVersion":"fixture","createdAt":1,"cwd":"%s","ephemeral":false,"id":"thread_native","modelProvider":"openai","preview":"","sessionId":"session_native","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":1}}}\n' "$id" "$workspace_dir" "$workspace_dir"
+          *thread*start*|*thread*resume*)
+            thread_id=thread_native
+            if [ -f "$fixture_dir/created-thread-id" ]; then thread_id=$(/bin/cat "$fixture_dir/created-thread-id"); fi
+            printf '{"id":%s,"result":{"futureResponse":{"preserved":true},"approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"%s","model":"gpt-test","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"cliVersion":"fixture","createdAt":1,"cwd":"%s","ephemeral":false,"id":"%s","modelProvider":"openai","preview":"","sessionId":"session_native","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":1}}}\n' "$id" "$workspace_dir" "$workspace_dir" "$thread_id"
             ;;
           *turn*interrupt*)
             printf '{"id":%s,"result":{}}\n' "$id"
@@ -1605,7 +1612,9 @@ struct AppServerProcessFixture {
             if [ -f "$fixture_dir/hang-turn-start" ]; then
               continue
             fi
-            printf '{"id":%s,"result":{"turn":{"id":"turn_native","items":[],"status":"inProgress"}}}\n' "$id"
+            turn_id=turn_native
+            if [ -f "$fixture_dir/created-turn-id" ]; then turn_id=$(/bin/cat "$fixture_dir/created-turn-id"); fi
+            printf '{"id":%s,"result":{"turn":{"id":"%s","items":[],"status":"inProgress"}}}\n' "$id" "$turn_id"
             ;;
           *thread*goal*set*)
             budget=50000
@@ -1613,7 +1622,9 @@ struct AppServerProcessFixture {
             printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"active","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":%s,"tokensUsed":1250,"updatedAt":2}}}\n' "$id" "$budget"
             ;;
           *thread*goal*get*)
-            printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"active","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":50000,"tokensUsed":1250,"updatedAt":2}}}\n' "$id"
+            goal_status=active
+            if [ -f "$fixture_dir/goal-read-status" ]; then goal_status=$(/bin/cat "$fixture_dir/goal-read-status"); fi
+            printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"%s","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":50000,"tokensUsed":1250,"updatedAt":2}}}\n' "$id" "$goal_status"
             ;;
           *thread*goal*clear*)
             printf '{"id":%s,"result":{"cleared":true}}\n' "$id"
@@ -1638,7 +1649,8 @@ struct AppServerProcessFixture {
     requestTimeoutSeconds: Int = CodexConfig().appServerRequestTimeoutSeconds,
     approvalTimeoutSeconds: Int = 300,
     database: CodexDatabase? = nil,
-    workspaceID: String? = "fixture-workspace"
+    workspaceID: String? = "fixture-workspace",
+    dynamicToolDispatcher: (any CodexHostTools)? = nil
   ) -> LiveCodexAppServerRuntime {
     LiveCodexAppServerRuntime(
       configuration: CodexConfig(
@@ -1661,7 +1673,7 @@ struct AppServerProcessFixture {
         tunnelInstanceID: nil,
         tunnelProfileID: nil
       ),
-      database: database
+      database: database, dynamicToolDispatcher: dynamicToolDispatcher
     )
   }
 
