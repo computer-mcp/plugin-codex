@@ -8,7 +8,7 @@ import Testing
 struct CodexAppWorkOwnershipTests {
   @Test
   func threadAndTurnKeepDifferentCreatorsAndReleasedThreadGetsANewLifetime() async throws {
-    try await withRuntime { _, runtime in
+    try await withRuntime { fixture, runtime in
       let threadCreator = UUID()
       let turnCreator = UUID()
       _ = try await invoke(runtime, "thread/start", creator: threadCreator)
@@ -21,12 +21,385 @@ struct CodexAppWorkOwnershipTests {
       #expect(rows.first { $0.kind == "codex.app.turn" }?.acquiredBy == turnCreator)
       #expect(rows.first { $0.kind == "codex.app.thread" } == first)
       _ = try await invoke(runtime, "thread/unsubscribe", params: threadParams())
-      #expect(try await runtime.workResources().isEmpty)
+      #expect(try await runtime.workResources() == rows)
+      try inject(
+        fixture,
+        [
+          .object([
+            "method": .string("thread/closed"), "params": threadParams(),
+          ])
+        ])
+      _ = try await invoke(runtime, "thread/goal/get", params: threadParams())
+      try await until { try await runtime.workResources().isEmpty }
       let replacementCreator = UUID()
       _ = try await invoke(runtime, "thread/start", creator: replacementCreator)
       let replacement = try #require(try await runtime.workResources().first)
       #expect(replacement.id != first.id)
       #expect(replacement.acquiredBy == replacementCreator)
+    }
+  }
+
+  @Test
+  func threadClosedBeforeCreationReplyDoesNotRegainLiveOwnership() async throws {
+    try await withRuntime { fixture, runtime in
+      let gate = fixture.directory.appendingPathComponent("hold-notification-response")
+      try Data().write(to: gate)
+      try inject(
+        fixture,
+        [
+          .object([
+            "method": .string("thread/closed"), "params": threadParams(),
+          ])
+        ])
+      let starting = Task { try await invoke(runtime, "thread/start") }
+      defer { starting.cancel() }
+      try await until {
+        await runtime.events(afterCursor: 0, maxResults: 100).objectValue?["events"]?.arrayValue?
+          .contains {
+            $0.objectValue?["payload"]?.objectValue?["method"] == .string("thread/closed")
+          } == true
+      }
+      try FileManager.default.removeItem(at: gate)
+      _ = try await starting.value
+      #expect(try await runtime.workResources().isEmpty)
+      #expect(!(await runtime.hasLiveOwnership(of: "thread_native")))
+    }
+  }
+
+  @Test
+  func missingLoadedThreadWaitsForClosureAndCannotBeResumedOverCleanup() async throws {
+    try await withRuntime { fixture, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      let original = try #require(try await runtime.workResources().first)
+      _ = try await invoke(runtime, "thread/unsubscribe", params: threadParams())
+      try Data("[]".utf8).write(to: fixture.loadedThreadsFile)
+      _ = try await invoke(runtime, "thread/loaded/list")
+      let uncertain = try #require(try await runtime.workResources().first)
+      #expect(uncertain.id == original.id)
+      #expect(uncertain.acquiredBy == original.acquiredBy)
+      #expect(uncertain.state == .uncertain)
+      await #expect(throws: (any Error).self) {
+        try await invoke(runtime, "thread/resume", params: threadParams())
+      }
+      try inject(
+        fixture,
+        [
+          .object([
+            "method": .string("thread/closed"), "params": threadParams(),
+          ])
+        ])
+      _ = try await invoke(runtime, "thread/loaded/list")
+      try await until { try await runtime.workResources().isEmpty }
+    }
+  }
+
+  @Test
+  func archiveCloseNotificationKeepsUnconfirmedNativeCleanupOwned() async throws {
+    try await withRuntime { fixture, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      let original = try #require(try await runtime.workResources().first)
+      try inject(
+        fixture,
+        [
+          .object([
+            "method": .string("thread/closed"), "params": threadParams(),
+          ])
+        ])
+      _ = try await invoke(runtime, "thread/archive", params: threadParams())
+      try await until {
+        await runtime.status().objectValue?["threads"]?.arrayValue?.first?.objectValue?["state"]
+          == .string("closed")
+      }
+      let retained = try #require(try await runtime.workResources().first)
+      #expect(retained.id == original.id)
+      #expect(retained.state == .uncertain)
+      await runtime.shutdown()
+      #expect(try await runtime.workResources().isEmpty)
+    }
+  }
+
+  @Test
+  func handoffCannotReapAnUnrelatedPendingLogin() async throws {
+    try await withRuntime { fixture, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      try Data("[\"thread_native\"]".utf8).write(to: fixture.loadedThreadsFile)
+      let creator = UUID()
+      _ = try await invoke(
+        runtime, "account/login/start", params: .object(["type": .string("chatgpt")]),
+        creator: creator)
+      let preparation = try await runtime.prepareForHandoff(
+        threadID: "thread_native", mode: .graceful, interruptActiveTurn: false)
+      await #expect(throws: (any Error).self) {
+        try await runtime.releaseForHandoff(
+          threadID: "thread_native", mode: .graceful, interruptActiveTurn: false,
+          preparationID: preparation)
+      }
+      #expect(
+        try await runtime.workResources().first { $0.kind == "codex.app.login" }?.acquiredBy
+          == creator)
+      #expect(await runtime.status().objectValue?["connection_state"] != .string("stopped"))
+    }
+  }
+
+  @Test
+  func remoteControlDisableRetainsItsOwnerUntilNativeProcessCleanup() async throws {
+    try await withRuntime { fixture, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      let creator = UUID()
+      _ = try await invoke(runtime, "remoteControl/enable", creator: creator)
+      let first = try #require(
+        try await runtime.workResources().first { $0.kind == "codex.app.remote-control" })
+      try inject(fixture, [remoteStatus("disabled")])
+      _ = try await invoke(runtime, "remoteControl/disable")
+      let retained = try #require(
+        try await runtime.workResources().first { $0.kind == "codex.app.remote-control" })
+      #expect(retained.id == first.id)
+      #expect(retained.acquiredBy == creator)
+      #expect(retained.state == .uncertain)
+      await runtime.shutdown()
+      #expect(try await runtime.workResources().isEmpty)
+    }
+  }
+
+  @Test
+  func persistedRemoteControlBelongsToTheConnectionCreator() async throws {
+    try await withRuntime { fixture, runtime in
+      try Data("connected".utf8).write(
+        to: fixture.directory.appendingPathComponent("initial-remote-status"))
+      let creator = UUID()
+      _ = try await invoke(runtime, "thread/start", creator: creator)
+      let remote = try #require(
+        try await runtime.workResources().first { $0.kind == "codex.app.remote-control" })
+      #expect(remote.acquiredBy == creator)
+      try inject(fixture, [remoteStatus("disabled")])
+      _ = try await invoke(runtime, "thread/goal/get", params: threadParams())
+      try await until {
+        try await runtime.workResources().first { $0.kind == "codex.app.remote-control" }?.state
+          == .uncertain
+      }
+      #expect(try await runtime.workResources().contains { $0.id == remote.id })
+    }
+  }
+
+  private func remoteStatus(_ status: String) -> JSONValue {
+    .object([
+      "method": .string("remoteControl/status/changed"),
+      "params": .object([
+        "status": .string(status), "installationId": .string("fixture-installation"),
+        "serverName": .string("fixture"),
+      ]),
+    ])
+  }
+
+  @Test(arguments: [false, true])
+  func realtimeWorkEndsAtClosureRatherThanStopAcknowledgement(earlyClose: Bool) async throws {
+    try await withRuntime { fixture, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      let creator = UUID()
+      let closed = JSONValue.object([
+        "method": .string("thread/realtime/closed"), "params": threadParams(),
+      ])
+      let gate = fixture.directory.appendingPathComponent("hold-notification-response")
+      if earlyClose {
+        try Data().write(to: gate)
+        try inject(fixture, [closed])
+      }
+      let starting = Task {
+        try await invoke(
+          runtime, "thread/realtime/start",
+          params: .object([
+            "threadId": .string("thread_native"), "outputModality": .string("text"),
+          ]), creator: creator)
+      }
+      defer { starting.cancel() }
+      if earlyClose {
+        try await until {
+          await runtime.events(afterCursor: 0, maxResults: 100).objectValue?["events"]?.arrayValue?
+            .contains {
+              $0.objectValue?["payload"]?.objectValue?["method"]
+                == .string("thread/realtime/closed")
+            } == true
+        }
+        try FileManager.default.removeItem(at: gate)
+      }
+      _ = try await starting.value
+      if !earlyClose {
+        let first = try #require(
+          try await runtime.workResources().first { $0.kind == "codex.app.realtime" })
+        #expect(first.acquiredBy == creator)
+        await #expect(throws: (any Error).self) {
+          try await runtime.prepareForHandoff(
+            threadID: "thread_native", mode: .graceful, interruptActiveTurn: false)
+        }
+        _ = try await invoke(runtime, "thread/realtime/stop", params: threadParams())
+        #expect(try await runtime.workResources().contains(first))
+        try inject(fixture, [closed])
+        _ = try await invoke(runtime, "thread/goal/get", params: threadParams())
+      }
+      try await until {
+        try await runtime.workResources().filter { $0.kind == "codex.app.realtime" }.isEmpty
+      }
+    }
+  }
+
+  @Test(arguments: ["thread/queue/start", "review/start"])
+  func returnedTurnsRetainTheirCreator(method: String) async throws {
+    try await withRuntime { _, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      let creator = UUID()
+      var params = ["threadId": JSONValue.string("thread_native")]
+      if method == "review/start" {
+        params["target"] = .object(["type": .string("uncommittedChanges")])
+      } else {
+        params["queuedSubmissionId"] = .string("queued-fixture")
+      }
+      _ = try await invoke(runtime, method, params: .object(params), creator: creator)
+      let turn = try #require(
+        try await runtime.workResources().first { $0.kind == "codex.app.turn" })
+      #expect(turn.acquiredBy == creator)
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func queuedInputOwnsItsEarlyAutomaticTurnAndCallbacks(completed: Bool) async throws {
+    try await withRuntime { fixture, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      _ = try await invoke(runtime, "thread/goal/set", params: threadParams())
+      let gate = fixture.directory.appendingPathComponent("hold-notification-response")
+      try Data().write(to: gate)
+      var messages = [
+        turnNotification("turn/started", id: "turn_native"),
+        inputRequest(turnID: "turn_native"), queuedUserMessage(),
+      ]
+      if completed { messages.append(turnNotification("turn/completed", id: "turn_native")) }
+      try inject(fixture, messages)
+      let creator = UUID()
+      let adding = Task {
+        try await invoke(runtime, "thread/queue/add", params: queueParams(), creator: creator)
+      }
+      defer { adding.cancel() }
+      try await until {
+        let method = completed ? "turn/completed" : "item/started"
+        return await runtime.events(afterCursor: 0, maxResults: 100).objectValue?["events"]?
+          .arrayValue?
+          .contains { $0.objectValue?["payload"]?.objectValue?["method"] == .string(method) }
+          == true
+      }
+      try FileManager.default.removeItem(at: gate)
+      _ = try await adding.value
+      let resources = try await runtime.workResources()
+      #expect(resources.filter { $0.kind == "codex.app.queued-input" }.isEmpty)
+      #expect(resources.first { $0.kind == "codex.app.server-request" }?.acquiredBy == creator)
+      #expect(resources.filter { $0.kind == "codex.app.turn" }.count == (completed ? 0 : 1))
+      #expect(
+        resources.filter { $0.kind == "codex.app.turn" }.allSatisfy { $0.acquiredBy == creator })
+    }
+  }
+
+  @Test
+  func explicitQueueStartRetainsTheQueuedCreatorAndDeletionReleasesPendingInput() async throws {
+    try await withRuntime { fixture, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      let creator = UUID()
+      _ = try await invoke(runtime, "thread/queue/add", params: queueParams(), creator: creator)
+      let queued = try #require(
+        try await runtime.workResources().first { $0.kind == "codex.app.queued-input" })
+      #expect(queued.acquiredBy == creator)
+      await #expect(throws: (any Error).self) {
+        try await invoke(runtime, "thread/queue/add", params: queueParams())
+      }
+      _ = try await invoke(
+        runtime, "thread/queue/start",
+        params: .object([
+          "threadId": .string("thread_native"), "queuedSubmissionId": .string("queued-native"),
+        ]))
+      #expect(
+        try await runtime.workResources().first { $0.kind == "codex.app.turn" }?.acquiredBy
+          == creator)
+      try inject(
+        fixture, [queuedUserMessage(), turnNotification("turn/completed", id: "turn_native")])
+      _ = try await invoke(runtime, "thread/goal/get", params: threadParams())
+      try await until { try await runtime.workResources().count == 1 }
+      _ = try await invoke(runtime, "thread/queue/add", params: queueParams())
+      _ = try await invoke(
+        runtime, "thread/queue/delete",
+        params: .object([
+          "threadId": .string("thread_native"), "queuedSubmissionId": .string("queued-native"),
+        ]))
+      #expect(try await runtime.workResources().count == 1)
+    }
+  }
+
+  private func queueParams() -> JSONValue {
+    .object([
+      "threadId": .string("thread_native"), "clientUserMessageId": .string("queued-client"),
+      "input": .array([.object(["type": .string("text"), "text": .string("fixture")])]),
+    ])
+  }
+
+  private func queuedUserMessage() -> JSONValue {
+    .object([
+      "method": .string("item/started"),
+      "params": .object([
+        "threadId": .string("thread_native"), "turnId": .string("turn_native"),
+        "item": .object([
+          "type": .string("userMessage"), "id": .string("fixture-user-message"),
+          "clientId": .string("queued-client"), "content": .array([]),
+        ]),
+      ]),
+    ])
+  }
+
+  @Test(arguments: [false, true])
+  func detachedReviewBindsEarlyInputWithoutResurrectingACompletedTurn(completed: Bool) async throws
+  {
+    try await withRuntime { fixture, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      try Data("review-thread".utf8).write(
+        to: fixture.directory.appendingPathComponent("review-thread-id"))
+      var input = try #require(inputRequest(turnID: "turn_native").objectValue)
+      var inputParams = try #require(input["params"]?.objectValue)
+      inputParams["threadId"] = .string("review-thread")
+      input["params"] = .object(inputParams)
+      var messages = [
+        turnNotification("turn/started", thread: "review-thread", id: "turn_native"),
+        JSONValue.object(input),
+      ]
+      if completed {
+        messages.append(
+          turnNotification("turn/completed", thread: "review-thread", id: "turn_native"))
+      }
+      try inject(fixture, messages)
+      let gate = fixture.directory.appendingPathComponent("hold-notification-response")
+      try Data().write(to: gate)
+      let creator = UUID()
+      let reviewing = Task {
+        try await invoke(
+          runtime, "review/start",
+          params: .object([
+            "threadId": .string("thread_native"), "delivery": .string("detached"),
+            "target": .object(["type": .string("uncommittedChanges")]),
+          ]), creator: creator)
+      }
+      defer { reviewing.cancel() }
+      try await until {
+        await runtime.pendingRequests().objectValue?["requests"]?.arrayValue?.count == 1
+      }
+      if completed {
+        try await until {
+          await runtime.events(afterCursor: 0, maxResults: 100).objectValue?["events"]?.arrayValue?
+            .contains {
+              $0.objectValue?["payload"]?.objectValue?["method"] == .string("turn/completed")
+            } == true
+        }
+      }
+      try FileManager.default.removeItem(at: gate)
+      _ = try await reviewing.value
+      let rows = try await runtime.workResources()
+      #expect(rows.filter { $0.kind == "codex.app.thread" }.count == 2)
+      #expect(rows.first { $0.kind == "codex.app.server-request" }?.acquiredBy == creator)
+      #expect(rows.filter { $0.kind == "codex.app.turn" }.count == (completed ? 0 : 1))
+      #expect(rows.filter { $0.kind == "codex.app.turn" }.allSatisfy { $0.acquiredBy == creator })
     }
   }
 
@@ -237,6 +610,112 @@ struct CodexAppWorkOwnershipTests {
   }
 
   @Test
+  func canceledAndReplacedLoginsKeepOwnersUntilTheirExactCompletion() async throws {
+    try await withRuntime { fixture, runtime in
+      let firstCreator = UUID()
+      let secondCreator = UUID()
+      let firstID = "11111111-1111-1111-1111-111111111111"
+      let secondID = UUID().uuidString
+      let params = JSONValue.object(["type": .string("chatgpt")])
+      _ = try await invoke(runtime, "account/login/start", params: params, creator: firstCreator)
+      let first = try #require(try await runtime.workResources().first)
+      _ = try await invoke(
+        runtime, "account/login/cancel", params: .object(["loginId": .string(firstID)]))
+      #expect(try await runtime.workResources() == [first])
+      try Data(secondID.utf8).write(to: fixture.directory.appendingPathComponent("login-id"))
+      _ = try await invoke(runtime, "account/login/start", params: params, creator: secondCreator)
+      #expect(
+        Set(try await runtime.workResources().map(\.acquiredBy)) == [firstCreator, secondCreator])
+      try inject(fixture, [loginCompletion(id: firstID)])
+      _ = try await invoke(
+        runtime, "account/login/cancel", params: .object(["loginId": .string(firstID)]))
+      try await until { try await runtime.workResources().count == 1 }
+      #expect(try await runtime.workResources().first?.acquiredBy == secondCreator)
+      try inject(fixture, [loginCompletion(id: secondID)])
+      _ = try await invoke(
+        runtime, "account/login/cancel", params: .object(["loginId": .string(secondID)]))
+      try await until { try await runtime.workResources().isEmpty }
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func earlyLoginCompletionDoesNotLeaveWorkAfterTheReply(mcp: Bool) async throws {
+    try await withRuntime { fixture, runtime in
+      let method = mcp ? "mcpServer/oauth/login" : "account/login/start"
+      let completion =
+        mcp
+        ? mcpLoginCompletion(threadID: nil)
+        : loginCompletion(id: "11111111-1111-1111-1111-111111111111")
+      let params = JSONValue.object(
+        mcp ? ["name": .string("fixture")] : ["type": .string("chatgptDeviceCode")])
+      let gate = fixture.directory.appendingPathComponent("hold-notification-response")
+      try Data().write(to: gate)
+      try inject(fixture, [completion])
+      let starting = Task { try await invoke(runtime, method, params: params) }
+      defer { starting.cancel() }
+      try await until {
+        await runtime.events(afterCursor: 0, maxResults: 100).objectValue?["events"]?.arrayValue?
+          .contains {
+            $0.objectValue?["payload"]?.objectValue?["method"] == completion.objectValue?["method"]
+          } == true
+      }
+      try FileManager.default.removeItem(at: gate)
+      _ = try await starting.value
+      #expect(try await runtime.workResources().isEmpty)
+    }
+  }
+
+  @Test
+  func mcpLoginCompletionMatchesServerAndThreadBeforeAllowingAnotherAttempt() async throws {
+    try await withRuntime { fixture, runtime in
+      _ = try await invoke(runtime, "thread/start")
+      let globalCreator = UUID()
+      let threadCreator = UUID()
+      let globalParams = JSONValue.object(["name": .string("fixture")])
+      _ = try await invoke(
+        runtime, "mcpServer/oauth/login", params: globalParams, creator: globalCreator)
+      await #expect(throws: (any Error).self) {
+        try await invoke(runtime, "mcpServer/oauth/login", params: globalParams)
+      }
+      _ = try await invoke(
+        runtime, "mcpServer/oauth/login",
+        params: .object([
+          "name": .string("fixture"), "threadId": .string("thread_native"),
+        ]), creator: threadCreator)
+      try inject(fixture, [mcpLoginCompletion(threadID: nil)])
+      _ = try await invoke(runtime, "thread/goal/get", params: threadParams())
+      try await until {
+        try await runtime.workResources().filter { $0.kind == "codex.app.mcp-login" }.count == 1
+      }
+      #expect(
+        try await runtime.workResources().first { $0.kind == "codex.app.mcp-login" }?.acquiredBy
+          == threadCreator)
+      _ = try await invoke(runtime, "mcpServer/oauth/login", params: globalParams)
+      #expect(
+        try await runtime.workResources().filter { $0.kind == "codex.app.mcp-login" }.count == 2)
+      await runtime.shutdown()
+      #expect(try await runtime.workResources().isEmpty)
+    }
+  }
+
+  private func loginCompletion(id: String) -> JSONValue {
+    .object([
+      "method": .string("account/login/completed"),
+      "params": .object(["loginId": .string(id), "success": .bool(false), "error": .null]),
+    ])
+  }
+
+  private func mcpLoginCompletion(threadID: String?) -> JSONValue {
+    .object([
+      "method": .string("mcpServer/oauthLogin/completed"),
+      "params": .object([
+        "name": .string("fixture"), "threadId": threadID.map(JSONValue.string) ?? .null,
+        "success": .bool(false), "error": .null,
+      ]),
+    ])
+  }
+
+  @Test
   func unboundHistoricalThreadsRemainUnavailableAndAreNotClaimedByReaders() async throws {
     try await withRuntime { fixture, runtime in
       try Data("thread_fixture".utf8).write(
@@ -249,6 +728,30 @@ struct CodexAppWorkOwnershipTests {
       await #expect(throws: (any Error).self) { try await runtime.workResources() }
       await runtime.shutdown()
       #expect(try await runtime.workResources().isEmpty)
+    }
+  }
+
+  @Test
+  func nativeThreadActivityKeepsItsParentOriginRatherThanTheObserver() async throws {
+    try await withRuntime { fixture, runtime in
+      let creator = UUID()
+      _ = try await invoke(runtime, "thread/start", creator: creator)
+      try inject(
+        fixture,
+        [
+          turnNotification("turn/started", id: "native-turn"),
+          inputRequest(turnID: "native-turn"),
+        ])
+      _ = try await invoke(runtime, "thread/goal/get", params: threadParams(), creator: UUID())
+      try await until {
+        await runtime.pendingRequests().objectValue?["requests"]?.arrayValue?.count == 1
+      }
+      let resources = try await runtime.workResources()
+      #expect(
+        Set(resources.map(\.kind)) == [
+          "codex.app.thread", "codex.app.turn", "codex.app.server-request",
+        ])
+      #expect(resources.allSatisfy { $0.acquiredBy == creator })
     }
   }
 
@@ -342,6 +845,84 @@ struct CodexAppWorkOwnershipTests {
     }
   }
 
+  @Test
+  func queuedHostRequestKeepsItsOriginWhenTurnCompletionOvertakesItsConsumer() async throws {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    let host = BlockingWorkHost()
+    let runtime = fixture.makeRuntime(
+      workspaceID: fixture.directory.lastPathComponent, dynamicToolDispatcher: host)
+    do {
+      _ = try await invoke(runtime, "thread/start")
+      let creator = UUID()
+      _ = try await invoke(runtime, "turn/start", params: turnParams(), creator: creator)
+      try inject(fixture, [dynamicRequest()])
+      _ = try await invoke(runtime, "thread/goal/get", params: threadParams())
+      try await until { await host.totalStarted == 1 }
+      try inject(
+        fixture, [dynamicRequest(id: 901), turnNotification("turn/completed", id: "turn_native")])
+      _ = try await invoke(runtime, "thread/goal/get", params: threadParams())
+      try await until {
+        await runtime.status().objectValue?["threads"]?.arrayValue?.first?.objectValue?[
+          "active_turn_id"] == .null
+      }
+      try await until { await host.totalStarted == 2 }
+      let callbacks = try await runtime.workResources().filter {
+        $0.kind == "codex.app.server-request"
+      }
+      #expect(callbacks.count == 2)
+      #expect(callbacks.allSatisfy { $0.acquiredBy == creator })
+      await host.finish()
+      await runtime.shutdown()
+      try await until { try await runtime.workResources().isEmpty }
+    } catch {
+      await host.finish()
+      await runtime.shutdown()
+      throw error
+    }
+  }
+
+  @Test
+  func callbackCapacityRejectsNewRequestsWithoutEvictingUnfinishedOwners() async throws {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    let host = BlockingWorkHost()
+    let runtime = fixture.makeRuntime(
+      workspaceID: fixture.directory.lastPathComponent, dynamicToolDispatcher: host)
+    do {
+      _ = try await invoke(runtime, "thread/start")
+      let creator = UUID()
+      _ = try await invoke(runtime, "turn/start", params: turnParams(), creator: creator)
+      let requests = (900...1156).map { dynamicRequest(id: Int64($0)) }
+      for offset in stride(from: 0, to: requests.count, by: 16) {
+        let end = min(offset + 16, requests.count)
+        let completion =
+          end == requests.count
+          ? [turnNotification("turn/completed", id: "turn_native")] : []
+        try inject(fixture, Array(requests[offset..<end]) + completion)
+        _ = try await invoke(runtime, "thread/goal/get", params: threadParams())
+        try await until { await host.totalStarted == min(end, 256) }
+      }
+      try await until {
+        (try? String(contentsOf: fixture.approvalResponseLog, encoding: .utf8))?
+          .contains("pending server-request capacity") == true
+      }
+      let callbacks = try await runtime.workResources().filter {
+        $0.kind == "codex.app.server-request"
+      }
+      #expect(callbacks.count == 256)
+      #expect(callbacks.allSatisfy { $0.acquiredBy == creator })
+      await runtime.shutdown()
+      #expect(try await runtime.workResources().count == 256)
+      await host.finish()
+      try await until { try await runtime.workResources().isEmpty }
+    } catch {
+      await host.finish()
+      await runtime.shutdown()
+      throw error
+    }
+  }
+
   private func inputRequest(turnID: String) -> JSONValue {
     .object([
       "id": .integer(900), "method": .string("item/tool/requestUserInput"),
@@ -358,9 +939,9 @@ struct CodexAppWorkOwnershipTests {
     ])
   }
 
-  private func dynamicRequest() -> JSONValue {
+  private func dynamicRequest(id: Int64 = 900) -> JSONValue {
     .object([
-      "id": .integer(900), "method": .string("item/tool/call"),
+      "id": .integer(id), "method": .string("item/tool/call"),
       "params": .object([
         "callId": .string("fixture-callback"), "threadId": .string("thread_native"),
         "turnId": .string("turn_native"), "namespace": .string("computer-mcp"),
@@ -441,6 +1022,7 @@ struct CodexAppWorkOwnershipTests {
 
 private actor BlockingWorkHost: CodexHostTools {
   private(set) var started = false
+  private(set) var totalStarted = 0
   private var continuations: [CheckedContinuation<Void, Never>] = []
   var count: Int { continuations.count }
   func risk(named name: String, arguments: JSONValue, requestID: String, workspaceID: String?)
@@ -452,6 +1034,7 @@ private actor BlockingWorkHost: CodexHostTools {
     await withCheckedContinuation { continuation in
       continuations.append(continuation)
       started = true
+      totalStarted += 1
     }
     return .object(["done": .bool(true)])
   }

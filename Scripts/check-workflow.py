@@ -89,6 +89,8 @@ class MCPClient:
         self.tool_prefix = tool_prefix
         self.messages = queue.Queue(maxsize=1024)
         self.sequence = 0
+        self.last_invocation = None
+        self.work_snapshot = None
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
 
@@ -108,6 +110,9 @@ class MCPClient:
         self.process.stdin.flush()
 
     def request(self, method, params):
+        if method == "tools/call" and not self.tool_prefix:
+            self.last_invocation = str(uuid.uuid4())
+            params = dict(params, _meta={"io.github.computer-mcp/work-invocation": self.last_invocation})
         self.sequence += 1
         request_id = self.sequence
         self.send({"id": request_id, "method": method, "params": params})
@@ -122,6 +127,25 @@ class MCPClient:
                 raise RuntimeError(message["error"])
             return message["result"]
         raise TimeoutError(method)
+
+    def work(self):
+        assert not self.tool_prefix, "The Gateway consumes provider work privately"
+        uri = "computer-mcp://runtime/work/v1"
+        result = self.request("resources/read", {"uri": uri})
+        assert len(result["contents"]) == 1, result
+        content = result["contents"][0]
+        assert content["uri"] == uri and content["mimeType"] == "application/json", content
+        assert len(content["text"].encode()) <= 524288
+        value = json.loads(content["text"])
+        assert value["format_version"] == 1 and len(value["resources"]) <= 1024, value
+        assert str(uuid.UUID(value["instance_id"])) == value["instance_id"], value
+        if self.work_snapshot:
+            assert value["instance_id"] == self.work_snapshot["instance_id"]
+            assert value["revision"] >= self.work_snapshot["revision"]
+            if value["revision"] == self.work_snapshot["revision"]:
+                assert value == self.work_snapshot, "Unchanged revision changed work"
+        self.work_snapshot = value
+        return value["resources"]
 
     def call(self, suffix, **arguments):
         result = self.request("tools/call", {"name": self.tool_prefix + "codex.app." + suffix, "arguments": arguments})
@@ -255,6 +279,11 @@ metrics_exporter = "none"
                         "thread.release", "thread.reclaim", "goal.set", "goal.get", "goal.clear", "turn.start",
                         "turn.steer", "events.read", "approvals.list", "approvals.respond", "runtime.stop"}
             assert {client.tool_prefix + "codex.app." + name for name in required} <= names
+            if not gateway:
+                for tool in catalog:
+                    assert tool["_meta"]["io.github.computer-mcp/work"] == {
+                        "format_version": 1, "uri": "computer-mcp://runtime/work/v1"}
+                assert client.work() == [], "Discovery started native work"
             diagnostic_result = client.request("tools/call", {
                 "name": client.tool_prefix + "codex.diagnostics.snapshot", "arguments": {"limit": 10}})
             assert diagnostic_result.get("isError") is False, diagnostic_result
@@ -268,10 +297,15 @@ metrics_exporter = "none"
             receipt["steps"].append("diagnostics→adapter persistence→host data explicitly unavailable")
             assert client.call("thread.list")["data"] == []
             started = client.call("thread.start")
+            thread_origin = client.last_invocation
             thread_id = started["thread"]["id"]
             assert thread_id in client.call("thread.loaded.list")["data"]
+            if not gateway:
+                rows = [row for row in client.work() if row["kind"] == "codex.app.thread"]
+                assert len(rows) == 1 and rows[0]["acquired_by"] == thread_origin, rows
             receipt["steps"].append("thread/list→start→loaded/list")
             turn = client.call("turn.start", thread_id=thread_id, prompt="Return the fixture response.")
+            turn_origin = client.last_invocation
             turn_id = turn["turn"]["id"]
             cursor = 0
             deadline = time.monotonic() + 30
@@ -294,6 +328,9 @@ metrics_exporter = "none"
                     assert approval["kind"] == "command_execution", approval
                     assert Path(approval["workspace_path"]).resolve() == workspace, approval
                     assert approval["thread_id"] == thread_id, approval
+                    if not gateway:
+                        rows = [row for row in client.work() if row["kind"] == "codex.app.server-request"]
+                        assert rows and all(row["acquired_by"] == turn_origin for row in rows), rows
                     client.call("approvals.respond", approval_id=approval["id"], response={"decision": "accept"})
                     approved += 1
                 if completed is None:
@@ -329,6 +366,9 @@ metrics_exporter = "none"
             assert forced["externally_claimable"] is True, forced
             stopped = client.call("status")
             receipt["first_owned_stop"] = verify_owned_stop(stopped)
+            if not gateway:
+                assert client.work() == [], "Confirmed process exit retained native work"
+                receipt["steps"].append("complete work resource→native creator/callback correlation→confirmed cleanup")
             process.stdin.close()
             assert process.wait(timeout=10) == 0
             client.reader.join(timeout=2)
@@ -353,6 +393,8 @@ metrics_exporter = "none"
             receipt["steps"].append("active turn→steer→reviewed interrupt/release→owned runtime stop")
             stopped = client.call("runtime.stop")
             receipt["final_owned_stop"] = verify_owned_stop(stopped)
+            if not gateway:
+                assert client.work() == [], "Final owned cleanup did not settle work"
             confirmed = True
             process.stdin.close()
             assert process.wait(timeout=10) == 0

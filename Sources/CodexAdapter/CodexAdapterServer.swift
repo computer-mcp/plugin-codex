@@ -45,15 +45,33 @@ package enum CodexAdapterServer {
   ) async throws {
     let tools = ProtocolTools(inventory: try .bundled())
     if appServer != nil { try CodexAppServerMethodCatalog.validate() }
+    let work = CodexWorkSnapshot {
+      let executionWork = try await execution.exec?.workResources() ?? []
+      let appWork = try await appServer?.appServer.workResources() ?? []
+      return executionWork + appWork
+    }
     let server = MCP.Server(
       name: "codex-mcp-adapter", version: CodexAdapterBuildInfo.version,
       instructions:
         "Execution tools retain their Codex session and call identifiers. Protocol declarations describe schemas, not execution support.",
-      capabilities: .init(tools: .init()))
+      capabilities: .init(resources: .init(subscribe: false, listChanged: false), tools: .init()))
     await server.withMethodHandler(MCP.ListTools.self) { params in
       guard params.cursor == nil else { throw MCPError.invalidParams("Unknown tools cursor.") }
       return MCP.ListTools.Result(
-        tools: ProtocolTools.definitions + execution.tools + (appServer?.tools ?? []))
+        tools: (ProtocolTools.definitions + execution.tools + (appServer?.tools ?? []))
+          .map(CodexWorkSnapshot.declaring))
+    }
+    await server.withMethodHandler(MCP.ListResources.self) { params in
+      guard params.cursor == nil else { throw MCPError.invalidParams("Unknown resources cursor.") }
+      return .init(resources: [
+        .init(name: "Runtime work", uri: CodexWorkSnapshot.uri, mimeType: "application/json")
+      ])
+    }
+    await server.withMethodHandler(MCP.ReadResource.self) { params in
+      guard params.uri == CodexWorkSnapshot.uri else {
+        throw MCPError.invalidParams("Unknown resource URI.")
+      }
+      return try await work.read()
     }
     await server.withMethodHandler(MCP.CallTool.self) { params in
       let invocation = try CodexWorkInvocation.parse(params._meta)
@@ -86,11 +104,13 @@ package enum CodexAdapterServer {
       await server.waitUntilCompleted()
     } catch {
       await server.stop()
+      await work.shutdown()
       await appServer?.shutdown()
       await execution.shutdown()
       throw error
     }
     await server.stop()
+    await work.shutdown()
     await appServer?.shutdown()
     await execution.shutdown()
   }

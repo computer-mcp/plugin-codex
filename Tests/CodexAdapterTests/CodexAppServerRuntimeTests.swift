@@ -1541,6 +1541,9 @@ struct AppServerProcessFixture {
       printf '{"id":%s,"result":{"codexHome":"%s","platformFamily":"unix","platformOs":"macos","userAgent":"Codex/computer-mcp-fixture"}}\n' "$id" "$fixture_dir"
       IFS= read -r line || exit 75
       printf '%s\n' "$line" >> "$fixture_dir/requests.log"
+      remote_status=disabled
+      if [ -f "$fixture_dir/initial-remote-status" ]; then remote_status=$(/bin/cat "$fixture_dir/initial-remote-status"); fi
+      printf '{"method":"remoteControl/status/changed","params":{"status":"%s","installationId":"fixture-installation","serverName":"fixture"}}\n' "$remote_status"
       if [ -f "$fixture_dir/approval-request.json" ]; then
         /bin/cat "$fixture_dir/approval-request.json"
         printf '\n'
@@ -1558,7 +1561,8 @@ struct AppServerProcessFixture {
       while IFS= read -r line; do
         printf '%s\n' "$line" >> "$fixture_dir/requests.log"
         case "$line" in
-          *'"id":900'*|*'"id":"900"'*)
+          *'"method":'*) ;;
+          *)
             printf '%s\n' "$line" >> "$fixture_dir/approval-response.log"
             continue
             ;;
@@ -1570,6 +1574,20 @@ struct AppServerProcessFixture {
           while [ -f "$fixture_dir/hold-notification-response" ]; do /bin/sleep 0.01; done
         fi
         case "$line" in
+          *remoteControl*enable*|*remoteControl*disable*)
+            printf '{"id":%s,"result":{"status":"disabled","installationId":"fixture-installation","serverName":"fixture"}}\n' "$id"
+            ;;
+          *account*login*start*)
+            login_id=11111111-1111-1111-1111-111111111111
+            if [ -f "$fixture_dir/login-id" ]; then login_id=$(/bin/cat "$fixture_dir/login-id"); fi
+            printf '{"id":%s,"result":{"type":"chatgpt","loginId":"%s","authUrl":"https://example.invalid/login"}}\\n' "$id" "$login_id"
+            ;;
+          *account*login*cancel*)
+            printf '{"id":%s,"result":{"status":"canceled"}}\\n' "$id"
+            ;;
+          *mcpServer*oauth*login*)
+            printf '{"id":%s,"result":{"authorizationUrl":"https://example.invalid/oauth"}}\\n' "$id"
+            ;;
           *thread*loaded*list*)
             if [ -f "$fixture_dir/hang-requests" ]; then
               : > "$fixture_dir/hang-request-received"
@@ -1595,10 +1613,30 @@ struct AppServerProcessFixture {
             printf '}\n'
             ;;
           *thread*unsubscribe*)
+            if [ -f "$fixture_dir/closed-threads-after-unsubscribe.jsonl" ]; then
+              /bin/cat "$fixture_dir/closed-threads-after-unsubscribe.jsonl"
+              /bin/rm "$fixture_dir/closed-threads-after-unsubscribe.jsonl"
+            fi
             if [ -f "$fixture_dir/loaded-threads-after-unsubscribe.json" ]; then
               /bin/cp "$fixture_dir/loaded-threads-after-unsubscribe.json" "$fixture_dir/loaded-threads.json"
             fi
             printf '{"id":%s,"result":{"status":"unsubscribed"}}\n' "$id"
+            ;;
+          *thread*queue*add*)
+            printf '{"id":%s,"result":{"queuedSubmission":{"id":"queued-native","clientUserMessageId":"queued-client","input":[]}}}\n' "$id"
+            ;;
+          *thread*queue*delete*)
+            printf '{"id":%s,"result":{"deleted":true}}\n' "$id"
+            ;;
+          *thread*archive*|*thread*realtime*start*|*thread*realtime*stop*)
+            printf '{"id":%s,"result":{}}\n' "$id"
+            ;;
+          *review*start*|*thread*queue*start*)
+            turn_id=turn_native
+            if [ -f "$fixture_dir/created-turn-id" ]; then turn_id=$(/bin/cat "$fixture_dir/created-turn-id"); fi
+            review_thread_id=thread_native
+            if [ -f "$fixture_dir/review-thread-id" ]; then review_thread_id=$(/bin/cat "$fixture_dir/review-thread-id"); fi
+            printf '{"id":%s,"result":{"reviewThreadId":"%s","turn":{"id":"%s","items":[],"status":"inProgress"}}}\\n' "$id" "$review_thread_id" "$turn_id"
             ;;
           *thread*start*|*thread*resume*)
             thread_id=thread_native
@@ -1772,6 +1810,19 @@ struct AppServerProcessFixture {
     let encoder = CanonicalJSONCoding.encoder(outputFormatting: [.sortedKeys])
     try encoder.encode(initial).write(to: loadedThreadsFile)
     try encoder.encode(afterUnsubscribe).write(to: loadedThreadsAfterUnsubscribeFile)
+    let closed = Set(initial).subtracting(afterUnsubscribe).sorted()
+    var notifications = Data()
+    for threadID in closed {
+      notifications.append(
+        try encoder.encode(
+          JSONValue.object([
+            "method": .string("thread/closed"),
+            "params": .object(["threadId": .string(threadID)]),
+          ])))
+      notifications.append(10)
+    }
+    try notifications.write(
+      to: directory.appendingPathComponent("closed-threads-after-unsubscribe.jsonl"))
   }
 
   func requests() throws -> [String] {

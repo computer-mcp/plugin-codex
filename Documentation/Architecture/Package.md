@@ -60,10 +60,42 @@ inputs and approvals share the same once-bound origin. An ordinary client's
 unbound work cannot later be claimed by a metadata-bearing reader or resume.
 Goal-created turns and callbacks retain the Goal's origin. Interleaved Goal
 notifications invalidate older observations before ownership can be released.
+The SDK's ordered raw inbound stream lets the adapter register a server request
+before applying subsequent completion notifications. Registered handlers run
+separately, so a slow host callback cannot hide later requests from the work
+ledger. Admission rejects requests beyond the pending-handler capacity while
+retaining active and uncertain owners.
 Server-request work belongs to its exact connection and remains live until both
 the SDK request lifecycle and any host callback have settled. Native process
 cleanup alone does not finish a host callback, and a new connection can reuse
 native request IDs without replacing callbacks from the previous connection.
+
+Inline and detached reviews and explicitly started queued submissions bind
+their returned turn identities to the creating invocation. Early input shares
+that binding, and a completion observed before the reply prevents resurrection.
+Unsubscribe acknowledgements remove subscriptions without declaring native work
+finished. Missing entries in a complete loaded-thread listing retain uncertain
+ownership until closure; partial pages never replace the complete known set.
+Native archive, delete and revert may report closure after a shutdown timeout,
+so those operations retain their previous thread owner until process cleanup.
+Graceful handoff cannot reap a runtime that still owns unrelated native handles,
+login attempts, callbacks or other thread activity.
+
+Account and MCP OAuth login attempts outlive their initiating RPCs. Account
+completion matches the exact login ID, including completion before the reply;
+cancel or replacement acknowledgements do not release unfinished attempts.
+MCP login completion matches both server name and optional thread identity.
+Because that notification carries no attempt ID, overlapping attempts for the
+same scope are rejected until completion. Confirmed process cleanup releases
+only the affected generation's login work.
+
+Realtime sessions use the same admission and completion ownership boundary.
+A stop acknowledgement does not replace the matching closed notification.
+Remote-control initialization is retained until its initial status is known.
+Persisted native remote control belongs to the process creator; an explicit
+enable keeps its own invocation. Native disabled status only changes desired
+connectivity, so an enabled lifetime remains uncertain until process cleanup.
+These states prevent idle handoff from terminating unrelated background work.
 
 ## Execution and authority
 
@@ -76,6 +108,17 @@ and drains pipes through termination; the adapter exposes capture loss separatel
 from its bounded event history. MCP discovery does
 not eagerly connect any provider. The server invokes all shutdown paths
 when its northbound transport completes or fails.
+
+Every advertised tool declares the ordinary MCP work resource at
+`computer-mcp://runtime/work/v1`. Reads combine Exec and App Server owners into
+one bounded snapshot with a per-server instance UUID and a monotonically
+increasing revision. Unchanged resources keep the same revision. Missing origins,
+invalid identities, duplicate resources, unavailable providers and capacity
+overflow fail the whole observation; no partial or truncated work set is
+published. One read runs at a time. An overlapping reader receives a retryable
+error instead of a snapshot begun before its call. Shutdown joins the owned
+observation before shutting down providers. Discovery and reads start no native
+provider process.
 
 Exec reserves a session identity before native startup. Its owner retains the
 startup task until registration settles, counts that pending identity once
