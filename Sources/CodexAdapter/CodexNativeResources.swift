@@ -92,7 +92,7 @@ struct CodexNativeResources: Sendable {
       try CodexWorkResource(
         kind: "codex.app.\(key.kind)", id: entry.token.uuidString.lowercased(),
         acquiredBy: entry.workInvocation,
-        state: entry.state)
+        state: entry.state, handles: ["native_id": .string(key.id)])
     }.sorted { ($0.kind, $0.id) < ($1.kind, $1.id) }
   }
 

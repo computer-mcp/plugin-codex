@@ -270,6 +270,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     let generation: Int
     let threadID: String?
     let turnID: String?
+    var approvalID: String?
     var state: CodexWorkResource.State = .active
     var handlerActive = true
     var nativeSettled = false
@@ -404,25 +405,36 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     for id in loadedThreadIDs.union(subscribedThreadIDs) {
       let binding = threadBinding(id)
       if threadCleanupWork[binding.id] == nil {
-        rows.append(try binding.resource("codex.app.thread", state: state))
+        rows.append(
+          try binding.resource(
+            "codex.app.thread", state: state, handles: ["thread_id": .string(id)]))
       }
     }
     rows += try threadCleanupWork.values.map {
-      try $0.binding.resource("codex.app.thread", state: .uncertain)
+      try $0.binding.resource(
+        "codex.app.thread", state: .uncertain, handles: ["thread_id": .string($0.threadID)])
     }
     for (threadID, turnID) in activeTurnIDs {
       rows.append(
-        try turnBinding(threadID: threadID, turnID: turnID).resource("codex.app.turn", state: state)
+        try turnBinding(threadID: threadID, turnID: turnID).resource(
+          "codex.app.turn", state: state,
+          handles: ["thread_id": .string(threadID), "turn_id": .string(turnID)])
       )
     }
     rows += try goalWork.map { threadID, work in
       try work.resource(
-        "codex.app.goal", state: uncertainGoalWork.contains(threadID) ? .uncertain : state)
+        "codex.app.goal", state: uncertainGoalWork.contains(threadID) ? .uncertain : state,
+        handles: ["thread_id": .string(threadID)])
     }
     rows += try pendingCallWork.values.map { try $0.resource("codex.app.call") }
-    rows += try serverRequestWork.values.map {
-      try $0.binding.resource(
-        "codex.app.server-request", state: state == .uncertain ? state : $0.state)
+    rows += try serverRequestWork.map { key, work in
+      var handles: [String: JSONValue] = ["request_id": .string(key.requestID)]
+      if let id = work.threadID { handles["thread_id"] = .string(id) }
+      if let id = work.turnID { handles["turn_id"] = .string(id) }
+      if let id = work.approvalID { handles["approval_id"] = .string(id) }
+      return try work.binding.resource(
+        "codex.app.server-request", state: state == .uncertain ? state : work.state,
+        handles: handles)
     }
     if let startup = connectionStartup {
       rows.append(try startup.work.resource("codex.app.startup"))
@@ -432,7 +444,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     } else if let cleanupWork, unconfirmedTransport != nil {
       rows.append(try cleanupWork.resource("codex.app.cleanup", state: .uncertain))
     }
-    return rows.sorted { ($0.kind, $0.id) < ($1.kind, $1.id) }
+    return try rows.map { try $0.addingHandles(["runtime_id": .string(runtimeID)]) }
+      .sorted { ($0.kind, $0.id) < ($1.kind, $1.id) }
   }
 
   private func threadBinding(_ id: String) -> CodexWorkBinding {
@@ -1815,6 +1828,9 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
 
     pendingApprovalHandles[id] = handle
+    let workKey = ServerRequestWorkKey(
+      connection: ObjectIdentifier(connection), requestID: upstreamRequestID)
+    serverRequestWork[workKey]?.approvalID = id
     await eventBuffer.append(kind: "approval_requested", payload: record.json)
 
     approvalTimeoutTasks[id] = Task { [weak self] in

@@ -72,14 +72,15 @@ struct CodexNativeResourcesTests {
         try resources.prepare(method: start, params: params, generation: 2)
       })
     let owner = try CodexWorkResource(
-      kind: "codex.app." + kind, id: created.token.uuidString.lowercased(), acquiredBy: origin)
+      kind: "codex.app." + kind, id: created.token.uuidString.lowercased(), acquiredBy: origin,
+      handles: ["native_id": .string("native-handle")])
     #expect(try resources.workResources() == [owner])
     let stopping = try CodexWorkInvocation.$current.withValue(UUID()) {
       try resources.prepare(method: stop, params: params, generation: 2)
     }
     resources.uncertain(stopping)
     let unknown = try CodexWorkResource(
-      kind: owner.kind, id: owner.id, acquiredBy: origin, state: .uncertain)
+      kind: owner.kind, id: owner.id, acquiredBy: origin, state: .uncertain, handles: owner.handles)
     #expect(try resources.workResources() == [unknown])
     resources.completed(stopping, rejected: true)
     #expect(try resources.workResources() == [unknown])
@@ -106,6 +107,8 @@ struct CodexNativeResourcesTests {
     let secondOwner = try #require(resources.workResources().first)
     #expect(secondOwner.acquiredBy == origin)
     #expect(secondOwner.id != firstOwner.id)
+    #expect(firstOwner.handles == ["native_id": .string("reused")])
+    #expect(secondOwner.handles == firstOwner.handles)
     resources.uncertain(first)
     resources.uncertain(stopping)
     resources.completed(first, rejected: true)

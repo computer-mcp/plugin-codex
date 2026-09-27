@@ -48,10 +48,14 @@ struct CodexWorkBinding: Sendable {
 
   init(origin: CodexWorkOrigin = .init()) { self.origin = origin }
 
-  func resource(_ kind: String, state: CodexWorkResource.State = .active) throws
+  func resource(
+    _ kind: String, state: CodexWorkResource.State = .active,
+    handles: [String: JSONValue] = [:]
+  ) throws
     -> CodexWorkResource
   {
-    try CodexWorkResource(kind: kind, id: id, acquiredBy: origin.value, state: state)
+    try CodexWorkResource(
+      kind: kind, id: id, acquiredBy: origin.value, state: state, handles: handles)
   }
 }
 
@@ -65,8 +69,12 @@ struct CodexWorkResource: Equatable, Sendable {
   let id: String
   let acquiredBy: UUID
   let state: State
+  let handles: [String: JSONValue]
 
-  init(kind: String, id: String, acquiredBy: UUID?, state: State = .active) throws {
+  init(
+    kind: String, id: String, acquiredBy: UUID?, state: State = .active,
+    handles: [String: JSONValue] = [:]
+  ) throws {
     guard let acquiredBy else {
       throw MCPError.internalError("Work ownership is unavailable for an unbound \(kind) resource.")
     }
@@ -74,13 +82,40 @@ struct CodexWorkResource: Equatable, Sendable {
     self.id = id
     self.acquiredBy = acquiredBy
     self.state = state
+    guard handles.count <= 16,
+      handles.allSatisfy({ name, value in
+        guard name != "id", Self.validIdentifier(name) else { return false }
+        switch value {
+        case .string(let text): return Self.validIdentifier(text)
+        case .integer: return true
+        default: return false
+        }
+      })
+    else { throw MCPError.internalError("Work continuation handles are invalid.") }
+    self.handles = handles
   }
 
   var json: JSONValue {
-    .object([
+    var fields: [String: JSONValue] = [
       "kind": .string(kind), "id": .string(id),
       "acquired_by": .string(acquiredBy.uuidString.lowercased()),
       "state": .string(state.rawValue),
-    ])
+    ]
+    if !handles.isEmpty { fields["handles"] = .object(handles) }
+    return .object(fields)
+  }
+
+  func addingHandles(_ additions: [String: JSONValue]) throws -> Self {
+    guard additions.allSatisfy({ handles[$0.key] == nil || handles[$0.key] == $0.value }) else {
+      throw MCPError.internalError("Work continuation handles cannot be rebound.")
+    }
+    return try .init(
+      kind: kind, id: id, acquiredBy: acquiredBy, state: state,
+      handles: handles.merging(additions, uniquingKeysWith: { current, _ in current }))
+  }
+
+  private static func validIdentifier(_ value: String) -> Bool {
+    !value.isEmpty && value.utf8.count <= 1024
+      && !value.unicodeScalars.contains { $0.value < 32 || (127...159).contains($0.value) }
   }
 }

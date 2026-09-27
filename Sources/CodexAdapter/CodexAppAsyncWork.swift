@@ -164,7 +164,17 @@ struct CodexAppAsyncWork: Sendable {
         "codex.app.work_unavailable: Native background work exceeds tracked capacity.")
     }
     return try entries.values.map { entry in
-      try entry.binding.resource(entry.scope.kind, state: entry.state)
+      var handles: [String: JSONValue] = [:]
+      switch entry.scope {
+      case .account:
+        if let id = entry.loginID { handles["login_id"] = .string(id) }
+      case .mcp(let name, let threadID):
+        handles["name"] = .string(name)
+        if let threadID { handles["thread_id"] = .string(threadID) }
+      case .realtime(let threadID):
+        handles["thread_id"] = .string(threadID)
+      }
+      return try entry.binding.resource(entry.scope.kind, state: entry.state, handles: handles)
     }
   }
 

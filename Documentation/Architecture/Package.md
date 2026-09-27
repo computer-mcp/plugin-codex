@@ -120,6 +120,17 @@ error instead of a snapshot begun before its call. Shutdown joins the owned
 observation before shutting down providers. Discovery and reads start no native
 provider process.
 
+Work rows may expose bounded `handles` containing the native identifiers needed
+for continuation. The primary `id` identifies an acquired lifetime, so reuse of
+a native handle produces a different primary ID. App Server rows include
+`runtime_id`; thread, turn, queue, login, request and approval aliases come from
+their existing lifecycle records. Late acknowledgements can add identifiers
+without changing the acquisition. Commands, processes, filesystem watches and
+event subscriptions expose `native_id`; Exec sessions use their primary ID.
+Aliases preserve string versus exact integer identity, remain through uncertain
+cleanup and confer no permission. Whole-report resource and byte bounds also
+apply to aliases.
+
 Exec reserves a session identity before native startup. Its owner retains the
 startup task until registration settles, counts that pending identity once
 against capacity, and cancels and joins it during shutdown. A handle returned

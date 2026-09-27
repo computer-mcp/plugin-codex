@@ -5,6 +5,44 @@ import Testing
 @testable import CodexAdapter
 
 struct CodexWorkSnapshotTests {
+  @Test func aliasesPreserveExactIdentifiersAndAdvanceSnapshotRevision() async throws {
+    let source = WorkSource()
+    let snapshot = CodexWorkSnapshot { try await source.collect() }
+    let original = try resource("lifetime")
+    await source.set([original])
+    let initial = try await payload(snapshot.read())
+    let handles: [String: JSONValue] = [
+      "native_id": .integer(9_007_199_254_740_993), "thread_id": .string("opaque"),
+    ]
+    let enriched = try original.addingHandles(handles)
+    #expect(enriched.id == original.id && enriched.acquiredBy == original.acquiredBy)
+    #expect(enriched.json.objectValue?["handles"] == .object(handles))
+    await source.set([enriched])
+    let changed = try await payload(snapshot.read())
+    #expect(initial["revision"] == .integer(0))
+    #expect(changed["revision"] == .integer(1))
+    #expect(changed["resources"] == .array([enriched.json]))
+    #expect(try await payload(snapshot.read()) == changed)
+    #expect(throws: MCPError.self) {
+      try enriched.addingHandles(["native_id": .string("9007199254740993")])
+    }
+    await snapshot.shutdown()
+  }
+
+  @Test func invalidAliasesCannotPublishOwnedIdentifiers() throws {
+    let invalid: [[String: JSONValue]] = [
+      ["id": .string("shadow")], ["native": .null], ["native": .bool(true)],
+      ["native": .number(1.5)], ["native": .string("")], ["native": .string("bad\nvalue")],
+      ["bad\nname": .string("value")], ["native": .string(String(repeating: "x", count: 1025))],
+      Dictionary(uniqueKeysWithValues: (0...16).map { ("alias\($0)", .string("value")) }),
+    ]
+    for handles in invalid {
+      #expect(throws: MCPError.self) {
+        try CodexWorkResource(kind: "work", id: "lifetime", acquiredBy: UUID(), handles: handles)
+      }
+    }
+  }
+
   @Test func revisionsChangeOnlyForCompleteChangedObservations() async throws {
     let source = WorkSource()
     let snapshot = CodexWorkSnapshot { try await source.collect() }

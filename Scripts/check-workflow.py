@@ -304,6 +304,9 @@ metrics_exporter = "none"
             if not gateway:
                 rows = [row for row in client.work() if row["kind"] == "codex.app.thread"]
                 assert len(rows) == 1 and rows[0]["acquired_by"] == thread_origin, rows
+                assert rows[0]["handles"]["thread_id"] == thread_id, rows
+                runtime_id = rows[0]["handles"]["runtime_id"]
+                assert str(uuid.UUID(runtime_id)).lower() == runtime_id.lower(), rows
             receipt["steps"].append("thread/list→start→loaded/list")
             turn = client.call("turn.start", thread_id=thread_id, prompt="Return the fixture response.")
             turn_origin = client.last_invocation
@@ -332,6 +335,11 @@ metrics_exporter = "none"
                     if not gateway:
                         rows = [row for row in client.work() if row["kind"] == "codex.app.server-request"]
                         assert rows and all(row["acquired_by"] == turn_origin for row in rows), rows
+                        owned = [row for row in rows if row["handles"].get("approval_id") == approval["id"]]
+                        assert len(owned) == 1, rows
+                        assert owned[0]["handles"]["thread_id"] == thread_id, owned
+                        assert owned[0]["handles"]["turn_id"] == turn_id, owned
+                        assert owned[0]["handles"]["runtime_id"] == runtime_id, owned
                     client.call("approvals.respond", approval_id=approval["id"], response={"decision": "accept"})
                     approved += 1
                 if completed is None:

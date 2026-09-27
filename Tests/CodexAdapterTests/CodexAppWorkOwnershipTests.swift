@@ -15,10 +15,19 @@ struct CodexAppWorkOwnershipTests {
       let first = try #require(try await runtime.workResources().first)
       #expect(first.kind == "codex.app.thread")
       #expect(first.acquiredBy == threadCreator)
+      #expect(
+        first.handles == [
+          "thread_id": .string("thread_native"), "runtime_id": .string(runtime.runtimeID),
+        ])
       _ = try await invoke(runtime, "turn/start", params: turnParams(), creator: turnCreator)
       let rows = try await runtime.workResources()
       #expect(rows.count == 2)
       #expect(rows.first { $0.kind == "codex.app.turn" }?.acquiredBy == turnCreator)
+      #expect(
+        rows.first { $0.kind == "codex.app.turn" }?.handles == [
+          "thread_id": .string("thread_native"), "turn_id": .string("turn_native"),
+          "runtime_id": .string(runtime.runtimeID),
+        ])
       #expect(rows.first { $0.kind == "codex.app.thread" } == first)
       _ = try await invoke(runtime, "thread/unsubscribe", params: threadParams())
       #expect(try await runtime.workResources() == rows)
@@ -36,6 +45,7 @@ struct CodexAppWorkOwnershipTests {
       let replacement = try #require(try await runtime.workResources().first)
       #expect(replacement.id != first.id)
       #expect(replacement.acquiredBy == replacementCreator)
+      #expect(replacement.handles == first.handles)
     }
   }
 
@@ -305,6 +315,11 @@ struct CodexAppWorkOwnershipTests {
       let queued = try #require(
         try await runtime.workResources().first { $0.kind == "codex.app.queued-input" })
       #expect(queued.acquiredBy == creator)
+      #expect(
+        queued.handles == [
+          "thread_id": .string("thread_native"), "client_id": .string("queued-client"),
+          "submission_id": .string("queued-native"), "runtime_id": .string(runtime.runtimeID),
+        ])
       await #expect(throws: (any Error).self) {
         try await invoke(runtime, "thread/queue/add", params: queueParams())
       }
@@ -435,6 +450,11 @@ struct CodexAppWorkOwnershipTests {
       let input = try #require(
         await runtime.pendingRequests().objectValue?["requests"]?.arrayValue?.first)
       let id = try #require(input.objectValue?["request_id"]?.stringValue)
+      #expect(
+        rows.first { $0.kind == "codex.app.server-request" }?.handles == [
+          "request_id": .string(id), "thread_id": .string("thread_native"),
+          "turn_id": .string("turn_native"), "runtime_id": .string(runtime.runtimeID),
+        ])
       await #expect(throws: (any Error).self) {
         try await runtime.respond(requestID: id, response: .object(["answers": .string("invalid")]))
       }
@@ -619,6 +639,7 @@ struct CodexAppWorkOwnershipTests {
       let params = JSONValue.object(["type": .string("chatgpt")])
       _ = try await invoke(runtime, "account/login/start", params: params, creator: firstCreator)
       let first = try #require(try await runtime.workResources().first)
+      #expect(first.handles["login_id"] == .string(firstID))
       _ = try await invoke(
         runtime, "account/login/cancel", params: .object(["loginId": .string(firstID)]))
       #expect(try await runtime.workResources() == [first])
@@ -631,6 +652,7 @@ struct CodexAppWorkOwnershipTests {
         runtime, "account/login/cancel", params: .object(["loginId": .string(firstID)]))
       try await until { try await runtime.workResources().count == 1 }
       #expect(try await runtime.workResources().first?.acquiredBy == secondCreator)
+      #expect(try await runtime.workResources().first?.handles["login_id"] == .string(secondID))
       try inject(fixture, [loginCompletion(id: secondID)])
       _ = try await invoke(
         runtime, "account/login/cancel", params: .object(["loginId": .string(secondID)]))

@@ -106,8 +106,13 @@ struct CodexQueuedWork: Sendable {
   }
 
   func workResources() throws -> [CodexWorkResource] {
-    try entries.values.filter { $0.turnID == nil }.map {
-      try $0.binding.resource("codex.app.queued-input", state: $0.state)
+    try entries.filter { $0.value.turnID == nil }.map { key, entry in
+      var handles: [String: JSONValue] = [
+        "thread_id": .string(key.threadID), "client_id": .string(key.clientID),
+      ]
+      if let id = entry.submissionID { handles["submission_id"] = .string(id) }
+      return try entry.binding.resource(
+        "codex.app.queued-input", state: entry.state, handles: handles)
     }
   }
 
