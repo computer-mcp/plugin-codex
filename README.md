@@ -31,6 +31,12 @@ Native tools preserve request extensions, response fields and exact signed
 authorization. Higher-level thread, approval and worktree workflows remain
 available alongside the native tools.
 
+Thread reads return metadata by default. Use `codex.app.thread.turns.list`
+and `codex.app.thread.items.list` for bounded history pages with native cursors.
+Explicit full-history reads remain available through `include_turns: true`;
+large histories can exceed transport, output or timeout limits. See the
+[long-thread workflow](Documentation/Reference/Workflows.md#reading-long-threads).
+
 ## Build and run
 
 Building requires macOS 14 or newer and Swift 6.2 or newer.

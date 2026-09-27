@@ -196,6 +196,12 @@ struct CodexAppServerProvider: Sendable {
         method: "thread/read",
         params: try Self.threadReadParams(in: object)
       )
+    case "codex.app.thread.turns.list", "codex.app.thread.items.list":
+      let items = name == "codex.app.thread.items.list"
+      result = try await tryAppServer().call(
+        method: items ? "thread/items/list" : "thread/turns/list",
+        params: try Self.threadHistoryParams(in: object, items: items)
+      )
     case "codex.app.thread.recent":
       guard let recentThreadReader else {
         throw CodexToolError.disabled(
@@ -754,10 +760,11 @@ struct CodexAppServerProvider: Sendable {
   private static func threadResumeParams(in object: [String: JSONValue]) throws -> JSONValue {
     try validateKeys(
       in: object,
-      allowed: ["thread_id", "model", "personality", "service_tier"]
+      allowed: ["thread_id", "model", "personality", "service_tier", "include_turns"]
     )
     var params: [String: JSONValue] = [
-      "threadId": .string(try requiredIdentifier("thread_id", in: object))
+      "threadId": .string(try requiredIdentifier("thread_id", in: object)),
+      "excludeTurns": .bool(!(try optionalBool("include_turns", in: object) ?? false)),
     ]
     try copyOptionalString("model", to: "model", from: object, into: &params)
     try copyOptionalString("personality", to: "personality", from: object, into: &params)
@@ -812,17 +819,42 @@ struct CodexAppServerProvider: Sendable {
     try validateKeys(in: object, allowed: ["thread_id", "include_turns"])
     return .object([
       "threadId": .string(try requiredIdentifier("thread_id", in: object)),
-      "includeTurns": .bool(try optionalBool("include_turns", in: object) ?? true),
+      "includeTurns": .bool(try optionalBool("include_turns", in: object) ?? false),
     ])
+  }
+
+  private static func threadHistoryParams(
+    in object: [String: JSONValue], items: Bool
+  ) throws -> JSONValue {
+    let method = items ? "thread/items/list" : "thread/turns/list"
+    var params: [String: JSONValue] = [
+      "threadId": .string(try requiredIdentifier("thread_id", in: object)),
+      "limit": .integer(
+        Int64(try boundedInt("limit", in: object, default: items ? 50 : 20, range: 1...100))),
+      "sortDirection": .string(try optionalString("sort_direction", in: object) ?? "desc"),
+    ]
+    try copyOptionalString("cursor", to: "cursor", from: object, into: &params)
+    if items {
+      try copyOptionalString("turn_id", to: "turnId", from: object, into: &params)
+    } else {
+      params["itemsView"] = .string(try optionalString("items_view", in: object) ?? "notLoaded")
+    }
+    let value = JSONValue.object(params)
+    guard let descriptor = CodexAppServerMethodCatalog.method(named: method) else {
+      throw CodexToolError.disabled("The SDK does not adopt \(method).")
+    }
+    try descriptor.validate(params: value)
+    return value
   }
 
   private static func threadForkParams(in object: [String: JSONValue]) throws -> JSONValue {
     try validateKeys(
       in: object,
-      allowed: ["thread_id", "model", "ephemeral", "service_tier"]
+      allowed: ["thread_id", "model", "ephemeral", "service_tier", "include_turns"]
     )
     var params: [String: JSONValue] = [
-      "threadId": .string(try requiredIdentifier("thread_id", in: object))
+      "threadId": .string(try requiredIdentifier("thread_id", in: object)),
+      "excludeTurns": .bool(!(try optionalBool("include_turns", in: object) ?? false)),
     ]
     try copyOptionalString("model", to: "model", from: object, into: &params)
     try copyOptionalBool("ephemeral", to: "ephemeral", from: object, into: &params)
@@ -1445,13 +1477,14 @@ struct CodexAppServerProvider: Sendable {
     ),
     tool(
       "codex.app.thread.reclaim",
-      "Explicitly resume a persisted thread under the current Computer MCP runtime after workspace validation. A writer conflict is reported without terminating external Codex applications.",
+      "Explicitly resume a persisted thread under the current Computer MCP runtime after workspace validation. Returns metadata and live resume state by default; include_turns=true requests full history. A writer conflict is reported without terminating external Codex applications.",
       objectSchema(
         properties: [
           "thread_id": stringSchema(),
           "model": stringSchema(),
           "personality": stringSchema(),
           "service_tier": stringSchema(),
+          "include_turns": booleanSchema(),
         ],
         required: ["thread_id"]
       ),
@@ -1468,7 +1501,8 @@ struct CodexAppServerProvider: Sendable {
       )
     ),
     tool(
-      "codex.app.thread.read", "Read one Codex thread after verifying its workspace.",
+      "codex.app.thread.read",
+      "Read thread metadata by default. Use thread.turns.list and thread.items.list for bounded history. Explicit include_turns=true requests full history and remains subject to transport, output and timeout limits.",
       objectSchema(
         properties: [
           "thread_id": stringSchema(),
@@ -1476,6 +1510,25 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["thread_id"]
       )
+    ),
+    tool(
+      "codex.app.thread.turns.list",
+      "Read a page of turns, newest first by default, without loading items. Default limit 20, maximum 100. Pass the returned nextCursor unchanged as cursor with the same thread and sort direction; items_view can request native summary or full detail.",
+      objectSchema(
+        properties: [
+          "thread_id": stringSchema(), "cursor": stringSchema(),
+          "limit": integerSchema(minimum: 1, maximum: 100),
+          "sort_direction": stringSchema(), "items_view": stringSchema(),
+        ], required: ["thread_id"])
+    ),
+    tool(
+      "codex.app.thread.items.list",
+      "Read a page of thread items, newest first by default. Default limit 50, maximum 100. Optional turn_id selects one turn. Pass nextCursor unchanged as cursor with the same thread, turn and sort direction. Oversized pages fail explicitly; retry the same cursor with a smaller limit.",
+      objectSchema(
+        properties: [
+          "thread_id": stringSchema(), "turn_id": stringSchema(), "cursor": stringSchema(),
+          "limit": integerSchema(minimum: 1, maximum: 100), "sort_direction": stringSchema(),
+        ], required: ["thread_id"])
     ),
     tool(
       "codex.app.thread.recent",
@@ -1495,13 +1548,15 @@ struct CodexAppServerProvider: Sendable {
       )
     ),
     tool(
-      "codex.app.thread.fork", "Fork a Codex thread in the bound workspace.",
+      "codex.app.thread.fork",
+      "Fork a Codex thread in the bound workspace. Returns metadata and live fork state by default; include_turns=true requests full history.",
       objectSchema(
         properties: [
           "thread_id": stringSchema(),
           "model": stringSchema(),
           "ephemeral": booleanSchema(),
           "service_tier": stringSchema(),
+          "include_turns": booleanSchema(),
         ],
         required: ["thread_id"]
       ),

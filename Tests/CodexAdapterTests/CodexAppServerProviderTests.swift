@@ -6,6 +6,78 @@ import Testing
 
 @Suite(.serialized)
 struct CodexAppServerProviderTests {
+  @Test
+  func threadHistoryDefaultsToMetadataAndBoundedNativePages() async throws {
+    let provider = makeProvider()
+    for includeTurns in [nil, false, true] as [Bool?] {
+      var arguments: [String: JSONValue] = ["thread_id": .string("thread-1")]
+      if let includeTurns { arguments["include_turns"] = .bool(includeTurns) }
+      let result = try await provider.call(
+        name: "codex.app.thread.read", arguments: .object(arguments))
+      #expect(
+        result.structuredContent?.objectValue?["result"]?.objectValue?["params"]?
+          .objectValue?["includeTurns"] == .bool(includeTurns ?? false))
+    }
+    for (tool, method) in [
+      ("codex.app.thread.reclaim", "thread/resume"), ("codex.app.thread.fork", "thread/fork"),
+    ] {
+      for includeTurns in [nil, false, true] as [Bool?] {
+        var arguments: [String: JSONValue] = ["thread_id": .string("thread-1")]
+        if let includeTurns { arguments["include_turns"] = .bool(includeTurns) }
+        let result = try await provider.call(name: tool, arguments: .object(arguments))
+        let params = try #require(
+          result.structuredContent?.objectValue?["result"]?.objectValue?["params"])
+        #expect(params.objectValue?["excludeTurns"] == .bool(!(includeTurns ?? false)))
+        try #require(CodexAppServerMethodCatalog.method(named: method)).validate(
+          params: JSONValue.encoded(params))
+      }
+    }
+    for (tool, method, limit) in [
+      ("codex.app.thread.turns.list", "thread/turns/list", 20),
+      ("codex.app.thread.items.list", "thread/items/list", 50),
+    ] {
+      let result = try await provider.call(
+        name: tool, arguments: .object(["thread_id": .string("thread-1")]))
+      let body = try #require(result.structuredContent?.objectValue?["result"]?.objectValue)
+      let params = try #require(body["params"]?.objectValue)
+      #expect(body["method"] == .string(method))
+      #expect(params["limit"] == .int(limit))
+      #expect(params["sortDirection"] == .string("desc"))
+      #expect(params["itemsView"] == (method == "thread/turns/list" ? .string("notLoaded") : nil))
+      for invalid in [JSONValue.integer(0), .integer(101), .number(1.5), .string("20")] {
+        await #expect(throws: CodexToolError.self) {
+          try await provider.call(
+            name: tool,
+            arguments: .object([
+              "thread_id": .string("thread-1"), "limit": invalid,
+            ]))
+        }
+      }
+    }
+    let cursor = "opaque/+cursor==:9007199254740993"
+    let result = try await provider.call(
+      name: "codex.app.thread.items.list",
+      arguments: .object([
+        "thread_id": .string("thread-1"), "turn_id": .string("turn-7"),
+        "cursor": .string(cursor), "sort_direction": .string("asc"), "limit": .integer(1),
+      ]))
+    #expect(
+      result.structuredContent?.objectValue?["result"]?.objectValue?["params"]
+        == .object([
+          "threadId": .string("thread-1"), "turnId": .string("turn-7"),
+          "cursor": .string(cursor), "sortDirection": .string("asc"), "limit": .int(1),
+        ]))
+    for field in ["sort_direction", "items_view"] {
+      await #expect(throws: CodexToolError.self) {
+        try await provider.call(
+          name: "codex.app.thread.turns.list",
+          arguments: .object([
+            "thread_id": .string("thread-1"), field: .string("unsupported"),
+          ]))
+      }
+    }
+  }
+
   @Test(.timeLimit(.minutes(2)))
   func mcpWorkflowUsesOriginalRuntimeAndPersistsRelease() async throws {
     let fixture = try AppServerProcessFixture()

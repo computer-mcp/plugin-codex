@@ -6,6 +6,35 @@ import Testing
 @Suite(.serialized)
 final class CodexRecentThreadReaderTests {
   @Test
+  func cursorRetainsItsSnapshotAcrossAppendAndReaderReconnect() throws {
+    let fixture = try RecentThreadFixture(recordCount: 1_000)
+    defer { fixture.remove() }
+    let limits = CodexRecentThreadLimits(maxReadBytes: 16_384)
+    let first = try fixture.reader.read(
+      threadID: fixture.threadID, beforeCursor: nil, limits: limits)
+    let cursor = try #require(first.objectValue?["next_before_cursor"]?.stringValue)
+    let before = try fixture.reader.read(
+      threadID: fixture.threadID, beforeCursor: cursor, limits: limits)
+    let writer = try FileHandle(forWritingTo: fixture.rollout)
+    try writer.seekToEnd()
+    try writer.write(
+      contentsOf: Data(
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"appended\"}}\n"
+          .utf8))
+    try writer.close()
+    let reconnected = CodexRecentThreadReader(
+      metadata: fixture.metadata, allowedRolloutRoot: fixture.root)
+    let after = try reconnected.read(
+      threadID: fixture.threadID, beforeCursor: cursor, limits: limits)
+    for field in ["recent_turns", "recent_items", "recent_messages", "next_before_cursor", "goal"] {
+      #expect(before.objectValue?[field] == after.objectValue?[field])
+    }
+    #expect(
+      before.objectValue?["bounds"]?.objectValue?["page_bytes_read"]
+        == after.objectValue?["bounds"]?.objectValue?["page_bytes_read"])
+  }
+
+  @Test
   func testLargePersistedThreadReadIsBoundedAndPaginatesWithoutOverlap() throws {
     let fixture = try RecentThreadFixture(recordCount: 30_000)
     defer { fixture.remove() }

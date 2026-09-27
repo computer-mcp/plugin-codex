@@ -102,6 +102,41 @@ RPC execution metadata uses `codex.app.methods.*`; version-specific schema
 inspection uses `codex.protocol.methods.*`. Inspecting a schema does not
 enable that RPC or start a vendor process.
 
+## Reading long threads
+
+`codex.app.thread.read` returns metadata without turns by default. Use
+`codex.app.thread.turns.list` with `thread_id` to read turn metadata (default
+20 turns, newest first, without items), then `codex.app.thread.items.list`
+to read items (default 50, newest first). Both accept `limit` from 1 to 100,
+`cursor` and `sort_direction`. Item pages optionally accept `turn_id`; turn
+pages accept the native `items_view` values `notLoaded`, `summary` or `full`.
+
+For example, read one turn's items with
+`{"thread_id":"<thread>","turn_id":"<turn>","limit":10}`. The result's
+`data` holds the page and `nextCursor` is the native continuation. Pass that
+cursor unchanged on the next request with the same thread, turn filter and
+sort direction. A cursor is not authorization: every request still checks
+thread ownership. Cursors follow the installed vendor's history semantics;
+they do not freeze an actively changing thread.
+
+Successful pages retain their complete fields and continuation. If a page
+exceeds the adapter output budget, `codex.app.history_page_too_large` reports
+an error instead of returning a truncated page. Keep the input cursor and
+retry with a smaller limit. For turns, use `items_view: "notLoaded"` and load
+items separately. A single oversized item can still exceed the budget;
+`codex.app.thread.recent` offers a bounded persisted summary with visible
+read/output limits and a snapshot-bound `next_before_cursor`.
+
+Explicit `include_turns: true` on `thread.read` retains full-history behavior,
+including its timeout, transport and output limits. Inspection does not require
+`thread.reclaim`: reclaim acquires a writer and remains a separate operation.
+`thread.reclaim` and `thread.fork` also omit turns from their response by
+default, using native `excludeTurns: true`; their `include_turns: true` option
+requests full history. Writer conflicts retain their native ownership meaning
+and are not repaired by reconnecting or force-stopping another client.
+Native tools also expose `thread/read`, `thread/turns/list` and
+`thread/items/list` with the SDK's complete schemas and parameter names.
+
 ## Workspace and diagnostic availability
 
 Managed-worktree plans are bound to the source workspace and a live parent

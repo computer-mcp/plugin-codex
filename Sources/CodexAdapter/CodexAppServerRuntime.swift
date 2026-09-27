@@ -770,6 +770,17 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       params: normalizedRequest,
       response: visibleResponse
     )
+    if method == "thread/turns/list" || method == "thread/items/list" {
+      // A truncated page loses both records and its continuation. The caller
+      // keeps its input cursor and can retry a smaller page without skipping data.
+      guard try JSONEncoder().encode(visibleResponse).count <= outputBounds.maxStructuredBytes
+      else {
+        throw CodexToolError.executionFailed(
+          "codex.app.history_page_too_large: Retry the same cursor with a smaller limit or itemsView=notLoaded for turns. If a single item exceeds the output budget, use codex.app.thread.recent for an explicitly bounded summary."
+        )
+      }
+      return visibleResponse
+    }
     return outputBounds.json(visibleResponse)
   }
 

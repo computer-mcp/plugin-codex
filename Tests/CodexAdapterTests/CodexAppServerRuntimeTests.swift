@@ -8,6 +8,60 @@ import Testing
 
 @Suite(.serialized)
 final class CodexAppServerRuntimeTests {
+  @Test
+  func historyPagesPreserveCursorsAndExtensionsOrFailWithoutTruncating() async throws {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    let runtime = fixture.makeRuntime()
+    let responseFile = fixture.directory.appendingPathComponent("history-page.json")
+    let page: JSONValue = .object([
+      "data": .array([
+        .object(["id": .string("item-1"), "futureItem": .integer(9_007_199_254_740_993)])
+      ]),
+      "nextCursor": .string("native-opaque/+=="), "futurePage": .bool(true),
+    ])
+    do {
+      _ = try await runtime.call(method: "thread/loaded/list", params: .object([:]))
+      try JSONEncoder().encode(page).write(to: responseFile)
+      let arguments: JSONValue = .object([
+        "threadId": .string("thread_fixture"), "cursor": .string("input-opaque/+=="),
+        "limit": .integer(1),
+      ])
+      for method in ["thread/turns/list", "thread/items/list"] {
+        #expect(try await runtime.call(method: method, params: arguments) == page)
+      }
+      let oversized: JSONValue = .object([
+        "data": .array([
+          .object([
+            "id": .string("item-1"), "text": .string(String(repeating: "x", count: 1_048_576)),
+          ])
+        ]),
+        "nextCursor": .string("must-not-advance"),
+      ])
+      try JSONEncoder().encode(oversized).write(to: responseFile)
+      do {
+        _ = try await runtime.call(method: "thread/items/list", params: arguments)
+        Issue.record("An oversized page must not succeed as a truncated cursorless preview.")
+      } catch {
+        #expect(error.localizedDescription.contains("codex.app.history_page_too_large"))
+      }
+      try JSONEncoder().encode(page).write(to: responseFile)
+      #expect(try await runtime.call(method: "thread/items/list", params: arguments) == page)
+      let requests = try fixture.requests().map {
+        try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+      }
+      #expect(
+        requests.filter { $0.objectValue?["method"] == .string("thread/items/list") }.allSatisfy {
+          $0.objectValue?["params"] == arguments
+        })
+      #expect(try fixture.processIDs().count == 1)
+      await runtime.shutdown()
+    } catch {
+      await runtime.shutdown()
+      throw error
+    }
+  }
+
   @Test(arguments: [false, true])
   func testUnavailableExecutableReportsFailedStartup(missingInterpreter: Bool) async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -1483,6 +1537,11 @@ struct AppServerProcessFixture {
               esac
             fi
             printf '{"id":%s,"result":{"data":%s,"nextCursor":null}}\n' "$id" "$loaded"
+            ;;
+          *thread*turns*list*|*thread*items*list*)
+            printf '{"id":%s,"result":' "$id"
+            /bin/cat "$fixture_dir/history-page.json"
+            printf '}\n'
             ;;
           *thread*unsubscribe*)
             if [ -f "$fixture_dir/loaded-threads-after-unsubscribe.json" ]; then
