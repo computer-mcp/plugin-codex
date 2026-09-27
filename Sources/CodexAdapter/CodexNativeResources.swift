@@ -16,6 +16,8 @@ struct CodexNativeResources: Sendable {
   private struct Entry: Sendable {
     let generation: Int
     let token: UUID
+    let workInvocation: UUID?
+    var state: CodexWorkResource.State = .active
   }
   private var entries: [Key: Entry] = [:]
   var count: Int { entries.count }
@@ -57,7 +59,8 @@ struct CodexNativeResources: Sendable {
           "codex.app.resource_busy: Native handle is reserved or resource capacity is reached.")
       }
       let token = UUID()
-      entries[key] = Entry(generation: generation, token: token)
+      entries[key] = Entry(
+        generation: generation, token: token, workInvocation: CodexWorkInvocation.current)
       return Ticket(key: key, generation: generation, token: token, starts: true, ends: ends)
     }
     guard let entry = entries[key], entry.generation == generation else {
@@ -73,6 +76,24 @@ struct CodexNativeResources: Sendable {
       entry.token == ticket.token
     else { return }
     entries.removeValue(forKey: ticket.key)
+  }
+
+  mutating func uncertain(_ ticket: Ticket?) {
+    guard let ticket, let entry = entries[ticket.key], entry.generation == ticket.generation,
+      entry.token == ticket.token
+    else { return }
+    entries[ticket.key]?.state = .uncertain
+  }
+
+  func workResources() throws -> [CodexWorkResource] {
+    try entries.map { key, entry in
+      // Callers may reuse a native handle after release; the reservation token
+      // identifies this ownership lifetime across complete work snapshots.
+      try CodexWorkResource(
+        kind: "codex.app.\(key.kind)", id: entry.token.uuidString.lowercased(),
+        acquiredBy: entry.workInvocation,
+        state: entry.state)
+    }.sorted { ($0.kind, $0.id) < ($1.kind, $1.id) }
   }
 
   mutating func processExited(handle: String, generation: Int) {

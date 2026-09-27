@@ -2493,6 +2493,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     } catch {
       if let nativeError = error as? CodexAppServerClientError, case .jsonRPCError = nativeError {
         nativeResources.completed(ticket, rejected: true)
+      } else {
+        nativeResources.uncertain(ticket)
       }
       // An uncertain send retains its handle; it cannot be replayed onto a new connection.
       throw error

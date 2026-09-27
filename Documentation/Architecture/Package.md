@@ -45,7 +45,10 @@ cannot use another generation's handles. Uncertain sends retain reservations;
 only successful terminal responses, matching process-exit events or confirmed
 process-group cleanup release them. A supervisor's exit alone is not cleanup
 evidence. Late notifications and server requests from retired connections do
-not modify the active connection's state.
+not modify the active connection's state. Each reservation captures its creating
+work-invocation UUID; follow-up requests retain that origin. Its reservation token
+identifies the ownership lifetime separately from the reusable native handle.
+Late replies cannot release or change a replacement reservation's state.
 
 ## Execution and authority
 
