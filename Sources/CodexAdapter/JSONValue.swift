@@ -4,6 +4,7 @@ import Foundation
 package enum JSONValue: Codable, Equatable, Sendable {
   case string(String)
   case number(Double)
+  case integer(Int64)
   case bool(Bool)
   case object([String: JSONValue])
   case array([JSONValue])
@@ -14,7 +15,14 @@ package enum JSONValue: Codable, Equatable, Sendable {
 
     if container.decodeNil() {
       self = .null
+    } else if let value = try? container.decode(Int64.self) {
+      self = .integer(value)
     } else if let value = try? container.decode(Double.self) {
+      guard value.isFinite, value.rounded() != value else {
+        throw DecodingError.dataCorruptedError(
+          in: container,
+          debugDescription: "JSON integer is outside the supported signed 64-bit range.")
+      }
       self = .number(value)
     } else if let value = try? container.decode(Bool.self) {
       self = .bool(value)
@@ -43,6 +51,8 @@ package enum JSONValue: Codable, Equatable, Sendable {
       try container.encode(value)
     case .number(let value):
       try container.encode(value)
+    case .integer(let value):
+      try container.encode(value)
     case .bool(let value):
       try container.encode(value)
     case .object(let value):
@@ -64,14 +74,16 @@ package enum JSONValue: Codable, Equatable, Sendable {
 
   /// Returns the underlying number if this value is a number.
   package var numberValue: Double? {
-    if case .number(let value) = self {
-      return value
+    switch self {
+    case .number(let value): return value
+    case .integer(let value): return Double(value)
+    default: return nil
     }
-    return nil
   }
 
   /// Returns the underlying number as an integer when it is integral.
   package var intValue: Int? {
+    if case .integer(let value) = self { return Int(exactly: value) }
     guard let numberValue else {
       return nil
     }
@@ -85,6 +97,21 @@ package enum JSONValue: Codable, Equatable, Sendable {
       return nil
     }
     return Int(rounded)
+  }
+
+  package static func == (lhs: Self, rhs: Self) -> Bool {
+    switch (lhs, rhs) {
+    case (.integer(let lhs), .integer(let rhs)): lhs == rhs
+    case (.number(let lhs), .number(let rhs)): lhs == rhs
+    case (.integer(let lhs), .number(let rhs)): Int64(exactly: rhs) == lhs
+    case (.number(let lhs), .integer(let rhs)): Int64(exactly: lhs) == rhs
+    case (.string(let lhs), .string(let rhs)): lhs == rhs
+    case (.bool(let lhs), .bool(let rhs)): lhs == rhs
+    case (.object(let lhs), .object(let rhs)): lhs == rhs
+    case (.array(let lhs), .array(let rhs)): lhs == rhs
+    case (.null, .null): true
+    default: false
+    }
   }
 
   /// Returns the underlying Boolean if this value is a Boolean.

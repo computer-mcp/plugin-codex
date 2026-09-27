@@ -6,6 +6,42 @@ import Testing
 
 @Suite(.serialized)
 struct CodexAppServerProcessTransportTests {
+  @Test(.timeLimit(.minutes(1)))
+  func supervisorExitDoesNotProveChildGroupCleanup() async throws {
+    let transport = try ManagedLineProcess(
+      configuration: .init(
+        executable: "/usr/bin/python3",
+        arguments: [
+          "-c",
+          "import os,time; print(os.getpid(),flush=True); os.close(1); os.close(2); time.sleep(3)",
+        ],
+        workingDirectory: FileManager.default.temporaryDirectory,
+        terminationGraceMilliseconds: 10, killGraceMilliseconds: 100))
+    var lines = transport.inboundLines.makeAsyncIterator()
+    let ready = try #require(try await lines.next())
+    let child = try #require(Int32(ready))
+    let running = await transport.snapshot()
+    let supervisor = try #require(running.supervisorProcessID)
+    #expect(Darwin.kill(supervisor, SIGKILL) == 0)
+    let deadline = ContinuousClock.now + .seconds(2)
+    while !(await transport.snapshot().hasExited), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    let orphaned = await transport.snapshot()
+    #expect(orphaned.hasExited)
+    #expect(orphaned.cleanupConfirmed == false)
+    #expect(orphaned.state == .failed)
+    await transport.close()
+    #expect(Darwin.kill(child, 0) == 0)
+    #expect(await transport.snapshot().cleanupConfirmed == false)
+    let cleanupDeadline = ContinuousClock.now + .seconds(4)
+    while await transport.snapshot().cleanupConfirmed != true, ContinuousClock.now < cleanupDeadline
+    {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(await transport.snapshot().cleanupConfirmed == true)
+  }
+
   @Test
   func oversizedTrailingFrameFailsAfterAValidLine() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -44,6 +44,7 @@ package enum CodexAdapterServer {
     appServer: CodexAppServerProvider? = nil
   ) async throws {
     let tools = ProtocolTools(inventory: try .bundled())
+    if appServer != nil { try CodexAppServerMethodCatalog.validate() }
     let server = MCP.Server(
       name: "codex-mcp-adapter", version: CodexAdapterBuildInfo.version,
       instructions:

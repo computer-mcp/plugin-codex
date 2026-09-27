@@ -18,8 +18,18 @@ App Server exposes thread/turn and Goal operations, approvals, user input,
 events, runtime ownership and release, recent-thread inspection, acceptance
 runs, worktree leases and operational diagnostics. Managed-worktree planning
 and receipts use the adapter's database; provisioning and removal require a
-connected host workspace service. `codex.app.methods.list` and `describe` describe its
-callable RPC surface; `codex.app.methods.call` uses the same runtime validation.
+connected host workspace service.
+
+Every SDK-adopted stable request also has a `codex.app.native.*` tool with its
+complete native parameter schema. For example, `codex.app.native.fs.readFile`
+takes `{"params":{"path":"/absolute/path"}}`. `codex.app.methods.list` and
+`describe` report stability and operation risk; `codex.app.methods.call` shares
+the native runtime validation and accepts experimental methods with
+`experimental: true` when the runtime enables experimental API support.
+Native tools preserve request extensions, response fields and exact signed
+64-bit integers. Powerful operations still require the host's corresponding
+authorization. Higher-level thread, approval and worktree workflows remain
+available alongside the native tools.
 
 ## Build and run
 

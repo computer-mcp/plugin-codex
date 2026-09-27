@@ -15,10 +15,23 @@ struct ProtocolInventory: Sendable {
       let messages: Int
     }
     let codexVersion: String
+    let adoptionSHA256: String
     let files: [String: File]
   }
 
+  struct Adoption: Decodable, Sendable {
+    struct Exclusion: Decodable, Sendable {
+      let method: String
+      let reason: String
+    }
+    let schema: String
+    let upstreamTag: String
+    let adopted: [String: [String]]
+    let excluded: [Exclusion]
+  }
+
   let receipt: Receipt
+  let adoption: Adoption
   private let schemas: [String: AppServerSchema]
 
   init(directory: URL) throws {
@@ -47,6 +60,27 @@ struct ProtocolInventory: Sendable {
       }
     }
     self.schemas = schemas
+    let adoptionData = try Self.read(
+      directory.appendingPathComponent("adoption.json"), limit: 65_536)
+    guard AppServerSchema.digest(adoptionData) == receipt.adoptionSHA256 else {
+      throw SchemaError.invalid("SDK adoption integrity mismatch.")
+    }
+    adoption = try JSONDecoder().decode(Adoption.self, from: adoptionData)
+    guard adoption.schema == "swift-codex.codex-app-server-method-adoption.v1",
+      adoption.upstreamTag == "rust-v\(receipt.codexVersion)",
+      Set(adoption.adopted.keys) == Set(Channel.allCases.map(\.rawValue))
+    else { throw SchemaError.invalid("Invalid SDK adoption metadata.") }
+    var adopted = Set<String>()
+    for channel in Channel.allCases {
+      for method in adoption.adopted[channel.rawValue] ?? [] {
+        guard adopted.insert(method).inserted,
+          schemas[Self.filename(channel, .clientRequest)]?.message(named: method) != nil
+        else { throw SchemaError.invalid("Invalid adopted request: \(method).") }
+      }
+    }
+    guard Set(adoption.excluded.map(\.method)).isDisjoint(with: adopted) else {
+      throw SchemaError.invalid("An SDK request cannot be adopted and excluded.")
+    }
   }
 
   static func bundled() throws -> Self {

@@ -64,6 +64,28 @@ struct CodexAppServerProviderTests {
       #expect(goal.objectValue?["goal"]?.objectValue?["tokenBudget"] == .int(50_000))
       _ = try await invoke("codex.app.goal.get", ["thread_id": .string("thread_fixture")])
       _ = try await invoke("codex.app.goal.clear", ["thread_id": .string("thread_fixture")])
+      try Data("9007199254740993".utf8).write(
+        to: fixture.directory.appendingPathComponent("goal-token-budget"))
+      let nativeGoal = try await invoke(
+        "codex.app.native.thread.goal.set",
+        [
+          "params": .object([
+            "threadId": .string("thread_fixture"),
+            "objective": .string("Verify exact integer transport."),
+            "tokenBudget": .int(9_007_199_254_740_993),
+          ])
+        ])
+      #expect(
+        nativeGoal.objectValue?["goal"]?.objectValue?["tokenBudget"] == .int(9_007_199_254_740_993))
+      let nativeRequests = try fixture.requests().map {
+        try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+      }
+      #expect(
+        nativeRequests.contains {
+          $0.objectValue?["method"] == .string("thread/goal/set")
+            && $0.objectValue?["params"]?.objectValue?["tokenBudget"]
+              == .integer(9_007_199_254_740_993)
+        })
       var approvalID: String?
       for _ in 0..<500 {
         let approvals = try await invoke("codex.app.approvals.list", ["state": .string("pending")])
@@ -147,6 +169,30 @@ struct CodexAppServerProviderTests {
     let result = call.objectValue?["structuredContent"]?.objectValue?["result"]?.objectValue
     #expect((result?["method"]) == (.string("thread/start")))
     #expect((result?["params"]?.objectValue?["model"]) == (.string("gpt-test")))
+  }
+
+  @Test
+  func experimentalCallsRequireExplicitAdmissionAndRemainDistinctFromStableTools() async throws {
+    let provider = makeProvider()
+    #expect(provider.tools.filter { $0.name.hasPrefix("codex.app.native.") }.count == 96)
+    #expect(!provider.tools.contains { $0.name == "codex.app.native.mock.experimentalMethod" })
+    await #expect(throws: CodexToolError.self) {
+      try await provider.call(
+        name: "codex.app.methods.call",
+        arguments: .object([
+          "method": .string("mock/experimentalMethod"),
+          "params": .object(["value": .string("probe")]),
+        ]))
+    }
+    let result = try await provider.call(
+      name: "codex.app.methods.call",
+      arguments: .object([
+        "method": .string("mock/experimentalMethod"), "experimental": .bool(true),
+        "params": .object(["value": .string("probe")]),
+      ]))
+    #expect(
+      result.structuredContent?.objectValue?["result"]?.objectValue?["method"]
+        == .string("mock/experimentalMethod"))
   }
 
   @Test

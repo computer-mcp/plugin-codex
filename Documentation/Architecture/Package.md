@@ -30,6 +30,23 @@ protocol initialization and request correlation. Domain ownership, input validat
 Typed validation checks known native approval and interaction contracts; the
 SDK sends the original JSON response, preserving unknown fields.
 
+The SDK's adoption resource determines the native request inventory. The
+plugin derives complete MCP input schemas and validates requests with the
+SDK's generated stable or experimental `ClientRequest` type before sending
+the original JSON through the SDK connection. `CodexAppServerMethodCatalog`
+owns operation-risk classification; an adopted request without a policy fails
+catalog construction and CI. Stable native tools use `codex.app.native.*`;
+experimental requests require the explicit experimental call path. Protocol
+inspection remains separate from execution admission.
+
+Interactive commands, processes, filesystem watches and MCP event streams
+retain handles bound to the exact connection generation. Follow-up calls
+cannot use another generation's handles. Uncertain sends retain reservations;
+only successful terminal responses, matching process-exit events or confirmed
+process-group cleanup release them. A supervisor's exit alone is not cleanup
+evidence. Late notifications and server requests from retired connections do
+not modify the active connection's state.
+
 ## Execution and authority
 
 `CodexAppServerProvider` maps the App Server and persisted-domain tools to

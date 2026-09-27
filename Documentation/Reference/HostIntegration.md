@@ -28,6 +28,13 @@ native request. The host decides whether the caller may invoke Codex; it does
 not replace Codex's sandbox or approval policy. Codex callbacks into host tools
 remain subject to current host authorization and confirmation.
 
+Native tool metadata declares `io.github.computer-mcp/risk`; the generic
+`codex.app.methods.call` declares `full-shell` because its selected method can
+execute arbitrary commands. Hosts can use these declarations to impose a
+minimum risk, never to reduce a configured restriction or grant access.
+`codex.app.methods.list` provides the same per-method classification for
+configuration review. MCP annotations remain advisory.
+
 Native approval responses use official response objects, including session
 scope, amendments, refusal and cancellation. Responses bind to their original
 SDK server request and can be consumed only once. Host destructive operations

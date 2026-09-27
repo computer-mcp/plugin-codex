@@ -48,7 +48,7 @@ enum CodexApprovalRedactor {
       return .array(result)
     case .string(let value):
       return .string(redactString(value))
-    case .number, .bool, .null:
+    case .number, .integer, .bool, .null:
       return value
     }
   }

@@ -1503,7 +1503,9 @@ struct AppServerProcessFixture {
             printf '{"id":%s,"result":{"turn":{"id":"turn_native","items":[],"status":"inProgress"}}}\n' "$id"
             ;;
           *thread*goal*set*)
-            printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"active","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":50000,"tokensUsed":1250,"updatedAt":2}}}\n' "$id"
+            budget=50000
+            if [ -f "$fixture_dir/goal-token-budget" ]; then budget=$(/bin/cat "$fixture_dir/goal-token-budget"); fi
+            printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"active","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":%s,"tokensUsed":1250,"updatedAt":2}}}\n' "$id" "$budget"
             ;;
           *thread*goal*get*)
             printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"active","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":50000,"tokensUsed":1250,"updatedAt":2}}}\n' "$id"
@@ -1756,7 +1758,7 @@ private func replaceWorkspacePlaceholder(_ value: JSONValue, with workspace: Str
         }
       )
     )
-  case .number, .bool, .null:
+  case .number, .integer, .bool, .null:
     return value
   }
 }

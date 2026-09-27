@@ -41,10 +41,24 @@ struct CodexAppServerProvider: Sendable {
   var tools: [MCP.Tool] {
     Self.definitions.filter {
       localControlAllowed || $0.name != "codex.app.ownership.reconcile.perform"
-    }
+    } + CodexAppServerMethodCatalog.methods.filter { $0.channel == .stable }.map(\.tool)
   }
 
   func call(name: String, arguments: JSONValue?) async throws -> MCP.CallTool.Result {
+    try CodexAppServerMethodCatalog.validate()
+    if let method = CodexAppServerMethodCatalog.methods.first(where: {
+      $0.channel == .stable && $0.toolName == name
+    }) {
+      let object = arguments?.objectValue ?? [:]
+      guard arguments == nil || arguments?.objectValue != nil,
+        Set(object.keys).isSubset(of: method.takesParams ? ["params"] : [])
+      else {
+        throw CodexToolError.invalidArguments(
+          "Native tool arguments must match its declared schema.")
+      }
+      try validateNativeLease(method: method.method, params: object["params"])
+      return try Self.result(await appServer.call(method: method.method, params: object["params"]))
+    }
     guard let tool = Self.definitions.first(where: { $0.name == name }) else {
       throw CodexToolError.unknownTool(name)
     }
@@ -146,19 +160,13 @@ struct CodexAppServerProvider: Sendable {
     case "codex.app.methods.call":
       let method = try Self.requiredString("method", in: object)
       let params = object["params"]
-      if method == "turn/start" {
-        guard let threadID = params?.objectValue?["threadId"]?.stringValue else {
-          throw CodexToolError.invalidArguments(
-            "codex.app.thread_id_required: turn/start requires a non-empty threadId."
-          )
-        }
-        try CodexWorktreeLeaseManager.validate(
-          database: database,
-          workspaceID: owner?.workspaceID,
-          leaseID: nil,
-          threadID: threadID
-        )
+      guard let descriptor = CodexAppServerMethodCatalog.method(named: method) else {
+        throw CodexToolError.invalidArguments("Unknown adopted SDK method: \(method).")
       }
+      guard descriptor.channel != .experimental || object["experimental"] == .bool(true) else {
+        throw CodexToolError.invalidArguments("Experimental methods require experimental=true.")
+      }
+      try validateNativeLease(method: method, params: params)
       result = try await tryAppServer().call(
         method: method,
         params: params
@@ -574,6 +582,10 @@ struct CodexAppServerProvider: Sendable {
 
     default: throw CodexToolError.unknownTool(name)
     }
+    return try Self.result(result)
+  }
+
+  private static func result(_ result: JSONValue) throws -> MCP.CallTool.Result {
     let text = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
     let structured = try JSONDecoder().decode(
       MCP.Value.self,
@@ -581,6 +593,19 @@ struct CodexAppServerProvider: Sendable {
     return try .init(
       content: [.text(text: text, annotations: nil, _meta: nil)],
       structuredContent: structured, isError: false)
+  }
+
+  private func validateNativeLease(method: String, params: JSONValue?) throws {
+    guard
+      [
+        "turn/start", "thread/shellCommand", "review/start", "thread/queue/start",
+        "thread/revert", "thread/approveGuardianDeniedAction",
+      ].contains(method),
+      let threadID = params?.objectValue?["threadId"]?.stringValue
+    else { return }
+    try CodexWorktreeLeaseManager.validate(
+      database: database, workspaceID: owner?.workspaceID,
+      leaseID: nil, threadID: threadID)
   }
 
   func shutdown() async { await appServer.shutdown() }
@@ -642,6 +667,8 @@ struct CodexAppServerProvider: Sendable {
             "description": .string(method.description),
             "takes_params": .bool(method.takesParams),
             "risk": .string(method.risk.rawValue),
+            "channel": .string(method.channel.rawValue),
+            "tool": method.channel == .stable ? .string(method.toolName) : .null,
           ])
         }
       )
@@ -651,7 +678,7 @@ struct CodexAppServerProvider: Sendable {
   private static func appMethodDescription(method: String) throws -> JSONValue {
     guard let descriptor = CodexAppServerMethodCatalog.method(named: method) else {
       throw CodexToolError.invalidArguments(
-        "codex.app.method_not_allowed: App Server method '\(method)' is not in the reviewed allowlist."
+        "codex.app.method_not_allowed: App Server method '\(method)' is not adopted by the SDK."
       )
     }
     return .object([
@@ -659,6 +686,10 @@ struct CodexAppServerProvider: Sendable {
       "description": .string(descriptor.description),
       "takes_params": .bool(descriptor.takesParams),
       "risk": .string(descriptor.risk.rawValue),
+      "channel": .string(descriptor.channel.rawValue),
+      "params_schema": descriptor.parameterSchema ?? .null,
+      "requires_params": .bool(descriptor.parametersRequired),
+      "native_tool": descriptor.channel == .stable ? .string(descriptor.toolName) : .null,
       "call_context": .object([
         "tool": .string("codex.app.methods.call"),
         "method": .string(descriptor.method),
@@ -1058,7 +1089,7 @@ struct CodexAppServerProvider: Sendable {
         "codex.argument_invalid: '\(key)' must be an integer between \(range.lowerBound) and \(range.upperBound)."
       )
     }
-    result[targetKey] = .number(Double(value))
+    result[targetKey] = .integer(Int64(value))
   }
 
   private static func copyOptionalObject(
@@ -1362,7 +1393,7 @@ struct CodexAppServerProvider: Sendable {
     ),
     tool(
       "codex.app.methods.list",
-      "List reviewed Codex App Server RPC methods. Authentication, configuration mutation, marketplace mutation, raw shell, filesystem bypass, and remote pairing methods are never included.",
+      "List SDK-adopted Codex App Server methods, their stability channel, typed tool and operation risk.",
       emptySchema
     ),
     tool(
@@ -1376,6 +1407,7 @@ struct CodexAppServerProvider: Sendable {
       objectSchema(
         properties: [
           "method": stringSchema(),
+          "experimental": booleanSchema(),
           "params": .object([
             "type": .string("object"),
             "additionalProperties": .bool(true),
@@ -1886,7 +1918,9 @@ struct CodexAppServerProvider: Sendable {
       outputSchema: .object([
         "type": .string("object"), "properties": .object(["result": .object([:])]),
         "required": .array([.string("result")]), "additionalProperties": .bool(false),
-      ]))
+      ]),
+      _meta: name == "codex.app.methods.call"
+        ? .init(additionalFields: ["io.github.computer-mcp/risk": .string("full-shell")]) : nil)
   }
 
   private static func objectSchema(

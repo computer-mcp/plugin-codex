@@ -39,6 +39,33 @@ inspect vendor configuration and available models. Thread and turn parameters
 may explicitly select native sandbox, approval policy and directory; unsupported
 vendor inputs return a vendor error, never a silent downgrade.
 
+Use `codex.app.native.<method>` for each adopted stable request, replacing `/`
+with `.` in the native method name. Pass native arguments under `params`;
+parameterless methods take an empty tool-argument object. The tool schema
+includes every native parameter and its referenced definitions. SDK request
+types validate required fields and known value shapes; original extension
+fields pass through. Responses retain the usual `structuredContent.result`
+envelope and notifications appear in `codex.app.events.read`. Signed 64-bit
+JSON integers remain exact through MCP and App Server transport; integers
+outside that range fail explicitly.
+
+`codex.app.methods.describe` returns a request's full parameter schema, risk
+and stability channel. Experimental requests use `codex.app.methods.call`
+with `experimental: true` and require the runtime's `experimental_api` setting.
+SDK-excluded lifecycle/internal methods are not executable through this path.
+Native account-token refresh and device-attestation callbacks require an
+external credential or attestation owner; the adapter rejects those callbacks
+explicitly instead of inventing credentials or proof.
+
+Native turn starts and other thread execution paths check existing worktree
+leases. Use the higher-level leased-turn workflow when a lease is active.
+Interactive command/process, filesystem-watch and event-stream handles belong
+to the connection that created them. A replacement connection cannot operate
+an old handle. A failed stop or uncertain request is not proof of cleanup.
+Runtime status reports `cleanup-pending` when owned process-group cleanup is
+unconfirmed; new connection admission remains closed until a later check
+confirms that group is gone.
+
 The configured executable can be an absolute path, a path relative to the
 workspace, or a name on the child process PATH. Resolution and launch share the
 same environment. Missing programs fail explicitly without loading shell profiles.

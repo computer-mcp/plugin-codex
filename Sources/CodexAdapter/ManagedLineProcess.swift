@@ -25,6 +25,7 @@ struct ManagedLineProcessSnapshot: Codable, Equatable, Sendable {
   let pendingWrites: Int
   let hasExited: Bool
   let lastError: String?
+  var cleanupConfirmed: Bool? = nil
 
   private enum CodingKeys: String, CodingKey {
     case state
@@ -40,6 +41,7 @@ struct ManagedLineProcessSnapshot: Codable, Equatable, Sendable {
     case pendingWrites = "pending_writes"
     case hasExited = "has_exited"
     case lastError = "last_error"
+    case cleanupConfirmed = "cleanup_confirmed"
   }
 
 }
@@ -223,7 +225,7 @@ final class ManagedLineProcess: @unchecked Sendable {
   private func waitForExit(milliseconds: Int) async -> Bool {
     let deadline = ContinuousClock.now + .milliseconds(max(0, milliseconds))
     repeat {
-      if await state.hasFinished() {
+      if await state.cleanupIsConfirmed() {
         return true
       }
       if ContinuousClock.now >= deadline {
@@ -378,10 +380,11 @@ final class ManagedLineProcess: @unchecked Sendable {
         trap '' HUP INT
         trap 'cleanup_timer; exit 0' TERM
         while kill -0 "$owner_pid" 2>/dev/null; do
+          if ! kill -0 -- -"$child" 2>/dev/null; then exit 0; fi
           /bin/sleep 0.1
         done
         terminate_group
-      ) &
+      ) </dev/null >/dev/null 2>&1 &
       watchdog=$!
 
       wait "$child"
@@ -674,7 +677,8 @@ private actor ManagedLineProcessState {
   func canSignalOwnedProcess() -> Bool { processID != nil || hasFinished() }
 
   func signalChildGroup(_ signal: Int32) -> Bool {
-    guard let processID, processID > 1 else { return false }
+    // The live supervisor pins the child identity. Its exit does not authorize signalling a reused group.
+    guard !hasFinished(), let processID, processID > 1 else { return false }
     return Darwin.kill(-processID, signal) == 0 || errno == ESRCH
   }
 
@@ -722,7 +726,7 @@ private actor ManagedLineProcessState {
   }
 
   func failTerminationTimeout() {
-    guard !hasFinished() else { return }
+    guard !cleanupIsConfirmed() else { return }
     state = .failed
     let error = ManagedLineProcessError.terminationTimedOut(processID: processID)
     lastError = Self.safeMessage(error)
@@ -735,9 +739,15 @@ private actor ManagedLineProcessState {
     launchFinished && execution == nil
   }
 
+  func cleanupIsConfirmed() -> Bool {
+    guard hasFinished() else { return false }
+    guard let processID else { return supervisorProcessID == nil }
+    return Darwin.kill(-processID, 0) == -1 && errno == ESRCH
+  }
+
   func snapshot() -> ManagedLineProcessSnapshot {
     ManagedLineProcessSnapshot(
-      state: state,
+      state: hasFinished() && !cleanupIsConfirmed() ? .failed : state,
       processID: processID,
       supervisorProcessID: supervisorProcessID,
       parentProcessID: ownerProcessID,
@@ -749,7 +759,9 @@ private actor ManagedLineProcessState {
       terminationEscalated: terminationEscalated,
       pendingWrites: pendingWrites,
       hasExited: hasFinished(),
-      lastError: lastError
+      lastError: hasFinished() && !cleanupIsConfirmed()
+        ? "Supervisor exited; child process-group cleanup is unconfirmed." : lastError,
+      cleanupConfirmed: cleanupIsConfirmed()
     )
   }
 

@@ -22,6 +22,7 @@ struct CodexAppServerProcessSnapshot: Codable, Equatable, Sendable {
   let signal: Int32?
   let terminationEscalated: Bool
   let lastError: String?
+  var cleanupConfirmed: Bool? = nil
 
   private enum CodingKeys: String, CodingKey {
     case state
@@ -35,6 +36,7 @@ struct CodexAppServerProcessSnapshot: Codable, Equatable, Sendable {
     case signal
     case terminationEscalated = "termination_escalated"
     case lastError = "last_error"
+    case cleanupConfirmed = "cleanup_confirmed"
   }
 
   var json: JSONValue {
@@ -140,6 +142,7 @@ final class ManagedCodexAppServerTransport: CodexAppServerLinePeer, Sendable {
       exitCode: value.exitCode,
       signal: value.signal,
       terminationEscalated: value.terminationEscalated,
-      lastError: value.lastError)
+      lastError: value.lastError,
+      cleanupConfirmed: value.cleanupConfirmed)
   }
 }
