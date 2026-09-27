@@ -278,7 +278,8 @@ metrics_exporter = "none"
             required = {"thread.start", "thread.list", "thread.read", "thread.loaded.list", "thread.fork",
                         "thread.release", "thread.reclaim", "goal.set", "goal.get", "goal.clear", "turn.start",
                         "turn.steer", "events.read", "approvals.list", "approvals.respond", "runtime.stop"}
-            assert {client.tool_prefix + "codex.app." + name for name in required} <= names
+            missing = {client.tool_prefix + "codex.app." + name for name in required} - names
+            assert not missing, {"missing_tools": sorted(missing), "listed_tools": sorted(names)}
             if not gateway:
                 for tool in catalog:
                     assert tool["_meta"]["io.github.computer-mcp/work"] == {
