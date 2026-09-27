@@ -19,7 +19,7 @@ struct CodexAppServerProviderTests {
       "codex.app.methods.call", "codex.app.thread.start", "codex.app.thread.reclaim",
       "codex.app.thread.fork", "codex.app.thread.release", "codex.app.turn.start",
       "codex.app.turn.steer", "codex.app.turn.interrupt", "codex.app.review.start",
-      "codex.app.requests.respond", "codex.app.approvals.respond",
+      "codex.app.requests.respond", "codex.app.approvals.respond", "codex.app.goal.set",
     ] {
       let tool = try #require(tools.first { $0.name == name })
       #expect(tool._meta?["io.github.computer-mcp/risk"] == .string("full-shell"))
@@ -28,7 +28,7 @@ struct CodexAppServerProviderTests {
       let tool = try #require(tools.first { $0.name == name })
       #expect(tool._meta?["io.github.computer-mcp/risk"] == .string("read-only"))
     }
-    let goal = try #require(tools.first { $0.name == "codex.app.goal.set" })
+    let goal = try #require(tools.first { $0.name == "codex.app.goal.clear" })
     #expect(
       goal._meta?["io.github.computer-mcp/risk"] == .string("workspace-write"))
   }

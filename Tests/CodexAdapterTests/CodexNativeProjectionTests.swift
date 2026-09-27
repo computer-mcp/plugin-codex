@@ -11,7 +11,8 @@ struct CodexNativeProjectionTests {
     "thread/queue/add", "thread/queue/update", "thread/queue/start", "thread/realtime/start",
     "thread/realtime/appendAudio", "thread/realtime/appendSpeech", "thread/realtime/appendText",
     "thread/realtime/stop", "thread/settings/update", "turn/settings/update",
-    "thread/approveGuardianDeniedAction", "config/mcpServer/reload",
+    "thread/approveGuardianDeniedAction", "config/mcpServer/reload", "thread/goal/set",
+    "thread/inject_items", "thread/decrement_elicitation",
   ])
   func nativeExecutionAndContinuationCannotAdvertiseRestrictedRisk(method: String) throws {
     let descriptor = try #require(CodexAppServerMethodCatalog.method(named: method))
@@ -25,7 +26,7 @@ struct CodexNativeProjectionTests {
   func narrowNativeEffectsKeepTheirOwnClassification() throws {
     for (method, risk) in [
       ("fs/readFile", CodexOperationRisk.readOnly), ("thread/read", .readOnly),
-      ("thread/name/set", .workspaceWrite), ("thread/goal/set", .workspaceWrite),
+      ("thread/name/set", .workspaceWrite), ("thread/goal/clear", .workspaceWrite),
       ("fs/writeFile", .externalWrite), ("fs/remove", .destructive),
       ("command/exec/terminate", .destructive), ("process/kill", .destructive),
       ("command/exec/resize", .workspaceWrite), ("process/resizePty", .workspaceWrite),

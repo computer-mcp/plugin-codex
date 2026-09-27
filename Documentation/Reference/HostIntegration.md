@@ -32,8 +32,10 @@ Execution tool metadata declares `io.github.computer-mcp/risk`. Starting or
 continuing a model task, answering approvals or interactive requests, and
 native lifecycle operations that can invoke configured command hooks declare
 `full-shell`. This includes thread startup/resume/fork, turn steering, manual
-compaction, archive/delete and turn interruption. Queued and realtime inputs
-and native execution-policy updates use the same floor. Explicit native sandbox
+compaction, archive/delete and turn interruption. Setting an active Goal,
+injecting model-visible history, releasing an elicitation hold, queued and
+realtime inputs, and native execution-policy updates use the same floor because
+they can start or steer continued work. Explicit native sandbox
 settings do not lower the floor: the host does not enforce a vendor sandbox.
 The generic `codex.app.methods.call` also declares `full-shell` because its
 selected method can execute arbitrary commands. Hosts use these declarations as a

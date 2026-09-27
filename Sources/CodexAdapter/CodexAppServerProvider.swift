@@ -1614,7 +1614,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["thread_id"]
       ),
-      risk: .workspaceWrite
+      risk: .fullShell
     ),
     tool(
       "codex.app.goal.clear",

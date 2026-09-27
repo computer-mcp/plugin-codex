@@ -140,10 +140,10 @@ enum CodexAppServerMethodCatalog {
       "thread/queue/list", "thread/realtime/listVoices", "thread/search",
       "thread/searchOccurrences", "thread/timeline/list", "mock/experimentalMethod":
       return .readOnly
-    case "thread/goal/clear", "thread/goal/set", "thread/inject_items", "thread/metadata/update",
+    case "thread/goal/clear", "thread/metadata/update",
       "thread/name/set", "thread/rollback", "thread/section/move", "thread/unarchive",
       "thread/unsubscribe", "threadSection/create", "threadSection/update",
-      "thread/decrement_elicitation", "thread/increment_elicitation", "thread/memoryMode/set",
+      "thread/increment_elicitation", "thread/memoryMode/set",
       "thread/queue/delete", "thread/queue/reorder", "command/exec/resize", "process/resizePty":
       return .workspaceWrite
     case "account/login/cancel", "account/login/start", "account/logout",
@@ -166,7 +166,8 @@ enum CodexAppServerMethodCatalog {
     // Model continuations and native lifecycle hooks can execute user-configured
     // commands. Parameter-level sandbox settings do not lower the host floor.
     case "config/mcpServer/reload", "review/start", "thread/archive", "thread/compact/start",
-      "thread/delete", "thread/fork", "thread/queue/add", "thread/queue/start",
+      "thread/delete", "thread/fork", "thread/goal/set", "thread/inject_items",
+      "thread/decrement_elicitation", "thread/queue/add", "thread/queue/start",
       "thread/queue/update", "thread/realtime/appendAudio", "thread/realtime/appendSpeech",
       "thread/realtime/appendText", "thread/realtime/start", "thread/realtime/stop",
       "thread/resume", "thread/settings/update", "thread/start", "turn/interrupt",
