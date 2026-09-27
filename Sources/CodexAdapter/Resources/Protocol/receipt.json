@@ -1,5 +1,14 @@
 {
   "codexVersion": "0.154.0",
+  "sdk": {
+    "version": "0.2.2",
+    "revision": "63913b732da36233591e68db3772483c35fbae07"
+  },
+  "upstream": {
+    "tag": "rust-v0.154.0",
+    "commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340"
+  },
+  "adoptionSHA256": "a4b439ce69cb5993b2907c480fe7caf338a6e15dab2892746c0ad320cff794c3",
   "files": {
     "stable/ClientRequest.json": {
       "sha256": "da767fedd73502ceb644f5d7974927e1a6b7f1917b092aaa029e81949abf0125",

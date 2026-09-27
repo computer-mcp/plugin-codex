@@ -75,12 +75,21 @@ The [documentation index](Documentation/README.md) and
 
 ## Protocol inputs
 
-The bundled inventory was exported by Codex 0.154.0. Reproduce it using that
-version's `app-server generate-json-schema --out EXPORT_ROOT/stable` and
-`app-server generate-json-schema --experimental --out EXPORT_ROOT/experimental`.
-Run `node Scripts/import-schema.mjs EXPORT_ROOT 0.154.0`, or add `--check`
-to verify byte-for-byte drift. Do not edit generated JSON by hand.
-Schema receipt integrity is not publisher signature verification.
+The bundled inventory and adoption metadata derive from the exact swift-codex
+commit in `Package.resolved`. swift-codex owns the upstream schema lock,
+generation and adoption decisions. Regenerate the downstream resources after
+resolving dependencies:
+
+```sh
+node Scripts/import-schema.mjs
+node Scripts/import-schema.mjs --check
+node --test Tests/schema-import.test.mjs
+```
+
+An optional SDK repository path supplies Git objects for the locked commit;
+uncommitted files in that repository are never imported. The receipt binds the
+SDK revision, upstream identity and derived resource digests. Do not edit the
+resources by hand. Resource integrity is not publisher signature verification.
 
 `codex-mcp-adapter compare-schema BASELINE_JSON_DIRECTORY CURRENT_JSON_DIRECTORY`
 reports all four message directions, source digests, method and schema changes,
