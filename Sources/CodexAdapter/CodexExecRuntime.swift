@@ -109,7 +109,8 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   private let client: any CodexExecClientAdapter
   private let threadOwnerIndex: CodexThreadOwnerIndex?
   private var sessions: [String: Session] = [:]
-  private var pendingLaunches = 0
+  private var pendingLaunches: [String: Task<JSONValue, Error>] = [:]
+  private var isShutdown = false
 
   init(
     configuration: CodexConfig,
@@ -142,12 +143,11 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   func start(prompt: String, model: String? = nil, options: JSONValue? = nil) async throws
     -> JSONValue
   {
+    try checkSessionAdmission()
     let validatedPrompt = try Self.validatedPrompt(prompt, required: true)
     let validatedModel = try Self.validatedModel(model)
     let native = try CodexExecOptions(
       options, model: validatedModel, configuration: configuration, workspaceURL: workspaceURL)
-    try reserveSessionSlot()
-
     let request = CodexExecRunRequest(
       promptInput: native.stdin.map { .textWithStdinContext(prompt: validatedPrompt, stdin: $0) }
         ?? .text(validatedPrompt),
@@ -156,26 +156,15 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
       outputSchemaFile: native.outputSchemaFile,
       outputLastMessageFile: native.outputLastMessageFile
     )
-    let handle: any CodexExecProcessHandleAdapter
-    do {
-      handle = try await client.run(request)
-    } catch {
-      pendingLaunches -= 1
-      throw Self.runtimeError(for: error)
-    }
-    pendingLaunches -= 1
-
-    return await register(
-      handle: handle,
-      operation: .start,
-      requestedUpstreamSessionID: nil,
-      model: validatedModel
-    )
+    return try await launch(
+      operation: .start, requestedUpstreamSessionID: nil, model: validatedModel
+    ) { [client] in try await client.run(request) }
   }
 
   func resume(
     upstreamSessionID: String, prompt: String?, model: String? = nil, options: JSONValue? = nil
   ) async throws -> JSONValue {
+    try checkSessionAdmission()
     let validatedSessionID = try Self.validatedUpstreamSessionID(upstreamSessionID)
     try threadOwnerIndex?.check(threadID: validatedSessionID)
     let validatedPrompt = try Self.validatedPrompt(prompt, required: false)
@@ -183,7 +172,6 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
       options, model: Self.validatedModel(model), configuration: configuration,
       workspaceURL: workspaceURL)
     try threadOwnerIndex?.claim(threadID: validatedSessionID)
-    try reserveSessionSlot()
     let request = CodexExecResumeRequest(
       selector: .sessionID(validatedSessionID),
       promptInput: native.stdin.map { input in
@@ -194,21 +182,10 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
       outputSchemaFile: native.outputSchemaFile,
       outputLastMessageFile: native.outputLastMessageFile
     )
-    let handle: any CodexExecProcessHandleAdapter
-    do {
-      handle = try await client.resume(request)
-    } catch {
-      pendingLaunches -= 1
-      throw Self.runtimeError(for: error)
-    }
-    pendingLaunches -= 1
-
-    return await register(
-      handle: handle,
-      operation: .resume,
-      requestedUpstreamSessionID: validatedSessionID,
+    return try await launch(
+      operation: .resume, requestedUpstreamSessionID: validatedSessionID,
       model: native.request.model
-    )
+    ) { [client] in try await client.resume(request) }
   }
 
   func list() -> JSONValue {
@@ -294,19 +271,50 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   }
 
   func shutdown() async {
+    isShutdown = true
+    let launches = Array(pendingLaunches.values)
+    for launch in launches { launch.cancel() }
+    for launch in launches { _ = await launch.result }
     let owned = sessions.values.filter { !$0.state.isTerminal }
     for session in owned { _ = try? await cancel(sessionID: session.id) }
     for session in owned { await session.waitTask?.value }
-    pendingLaunches = 0
+  }
+
+  private func launch(
+    operation: Operation, requestedUpstreamSessionID: String?, model: String?,
+    request: @escaping @Sendable () async throws -> any CodexExecProcessHandleAdapter
+  ) async throws -> JSONValue {
+    try reserveSessionSlot()
+    let id = UUID().uuidString.lowercased()
+    // The owner can cancel and join startup even before the SDK supplies a process handle.
+    let task = Task {
+      do {
+        try Task.checkCancellation()
+        let handle = try await request()
+        return await register(
+          sessionID: id, handle: handle, operation: operation,
+          requestedUpstreamSessionID: requestedUpstreamSessionID,
+          model: model)
+      } catch {
+        throw Self.runtimeError(for: error)
+      }
+    }
+    pendingLaunches[id] = task
+    defer { pendingLaunches.removeValue(forKey: id) }
+    return try await withTaskCancellationHandler {
+      try await task.value
+    } onCancel: {
+      task.cancel()
+    }
   }
 
   private func register(
+    sessionID: String,
     handle: any CodexExecProcessHandleAdapter,
     operation: Operation,
     requestedUpstreamSessionID: String?,
     model: String?
   ) async -> JSONValue {
-    let sessionID = UUID().uuidString.lowercased()
     let now = Date()
     let eventBuffer = CodexEventBuffer(
       capacity: configuration.maxEventsPerSession,
@@ -351,6 +359,10 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
       registered.streamTask = streamTask
       registered.waitTask = waitTask
       sessions[sessionID] = registered
+    }
+    if isShutdown || Task.isCancelled {
+      _ = try? await cancel(sessionID: sessionID)
+      await waitTask.value
     }
     return sessionSummary(sessions[sessionID] ?? session)
   }
@@ -472,11 +484,21 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     )
   }
 
+  private func checkSessionAdmission() throws {
+    guard !isShutdown else {
+      throw CodexExecRuntimeError(
+        code: "codex.exec.stopped", message: "The Exec runtime has stopped accepting sessions.")
+    }
+    try Task.checkCancellation()
+  }
+
   private func reserveSessionSlot() throws {
-    while sessions.count + pendingLaunches >= configuration.maxSessions {
+    try checkSessionAdmission()
+    let unregistered = pendingLaunches.keys.filter { sessions[$0] == nil }.count
+    while sessions.count + unregistered >= configuration.maxSessions {
       guard
         let evicted = sessions.values
-          .filter({ $0.state.isTerminal && $0.cleanupConfirmed })
+          .filter({ $0.state.isTerminal && $0.cleanupConfirmed && pendingLaunches[$0.id] == nil })
           .min(by: {
             if $0.updatedAt == $1.updatedAt {
               return $0.id < $1.id
@@ -492,7 +514,6 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
       }
       sessions.removeValue(forKey: evicted.id)
     }
-    pendingLaunches += 1
   }
 
   private func session(named sessionID: String) throws -> Session {
@@ -596,6 +617,9 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   private static func unredactedRuntimeError(for error: Error) -> CodexExecRuntimeError {
     if let error = error as? CodexExecRuntimeError {
       return error
+    }
+    if error is CancellationError {
+      return .init(code: "codex.exec.cancelled", message: "Exec launch was cancelled.")
     }
     guard let error = error as? CodexExecError else {
       return CodexExecRuntimeError(

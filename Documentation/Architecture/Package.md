@@ -59,6 +59,13 @@ from its bounded event history. MCP discovery does
 not eagerly connect any provider. The server invokes all shutdown paths
 when its northbound transport completes or fails.
 
+Exec reserves a session identity before native startup. Its owner retains the
+startup task until registration settles, counts that pending identity once
+against capacity, and cancels and joins it during shutdown. A handle returned
+after cancellation is still registered and cleaned through the normal process
+waiter. Shutdown closes new admission; cancellation never substitutes for
+observed process cleanup.
+
 `CodexLaunchContext` records the initial workspace and verified host subject.
 The host authorizes every invocation against its current policy; launch metadata
 does not freeze permissions or grant control-plane access. Native Codex

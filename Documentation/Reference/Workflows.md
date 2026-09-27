@@ -179,6 +179,13 @@ dropped stdout/stderr bytes. Capture-budget failure is explicit; preserved outpu
 must not be treated as complete. Adapter text truncation and missed event cursors
 are separate, visible limits.
 
+Exec shutdown also covers native requests still starting. It refuses new
+start/resume calls before claiming thread ownership and waits for admitted
+startup and owned process cleanup outcomes.
+If a cancelled startup supplies a late process handle, the adapter cleans that
+handle before returning. Cancellation of a start request after it has returned
+does not replace the explicit session cancel operation.
+
 ## Subject-bound adapter storage
 
 Host-launched adapter records are kept under `subjects/<scope-digest>/codex.sqlite`
