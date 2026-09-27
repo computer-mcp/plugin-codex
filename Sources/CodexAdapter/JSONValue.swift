@@ -50,7 +50,18 @@ package enum JSONValue: Codable, Equatable, Sendable {
     case .string(let value):
       try container.encode(value)
     case .number(let value):
-      try container.encode(value)
+      if let integer = Int64(exactly: value) {
+        try container.encode(integer)
+      } else {
+        guard !value.isFinite || value.rounded() != value else {
+          throw EncodingError.invalidValue(
+            value,
+            .init(
+              codingPath: encoder.codingPath,
+              debugDescription: "JSON integer is outside the supported signed 64-bit range."))
+        }
+        try container.encode(value)
+      }
     case .integer(let value):
       try container.encode(value)
     case .bool(let value):
@@ -72,7 +83,7 @@ package enum JSONValue: Codable, Equatable, Sendable {
     return nil
   }
 
-  /// Returns the underlying number if this value is a number.
+  /// Returns a floating-point approximation. Use intValue for integer identities.
   package var numberValue: Double? {
     switch self {
     case .number(let value): return value

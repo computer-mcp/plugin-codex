@@ -59,7 +59,7 @@ struct CodexOutputBounds: Sendable {
     )
     return .object([
       "encoding": .string("json"),
-      "original_bytes": .number(Double(data.count)),
+      "original_bytes": .integer(Int64(data.count)),
       "preview": .string(preview.value),
       "truncated": .bool(true),
     ])
@@ -84,7 +84,7 @@ struct CodexBufferedEvent: Sendable {
 
   var json: JSONValue {
     .object([
-      "cursor": .number(Double(cursor)),
+      "cursor": .integer(Int64(cursor)),
       "timestamp": .string(timestamp.formatted(Self.timestampFormat)),
       "kind": .string(kind),
       "payload": payload,
@@ -148,15 +148,15 @@ actor CodexEventBuffer {
       ?? max(afterCursor, firstRetainedCursor - 1)
     let remaining = max(available.count - rows.count, 0)
     return .object([
-      "after_cursor": .number(Double(afterCursor)),
-      "next_cursor": .number(Double(resultCursor)),
+      "after_cursor": .integer(Int64(afterCursor)),
+      "next_cursor": .integer(Int64(resultCursor)),
       "events": .array(rows),
-      "missed_events": .number(Double(missed)),
-      "returned_events": .number(Double(rows.count)),
-      "remaining_events": .number(Double(remaining)),
+      "missed_events": .integer(Int64(missed)),
+      "returned_events": .integer(Int64(rows.count)),
+      "remaining_events": .integer(Int64(remaining)),
       "result_truncated": .bool(remaining > 0),
-      "encoded_event_bytes": .number(Double(encodedEventBytes)),
-      "max_output_bytes": .number(Double(bounds.maxOutputBytes)),
+      "encoded_event_bytes": .integer(Int64(encodedEventBytes)),
+      "max_output_bytes": .integer(Int64(bounds.maxOutputBytes)),
     ])
   }
 }

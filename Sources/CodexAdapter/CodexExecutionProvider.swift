@@ -297,10 +297,10 @@ struct CodexExecutionProvider: Sendable {
   private static func integerSchema(minimum: Int, maximum: Int? = nil) -> JSONValue {
     var schema: [String: JSONValue] = [
       "type": .string("integer"),
-      "minimum": .number(Double(minimum)),
+      "minimum": .integer(Int64(minimum)),
     ]
     if let maximum {
-      schema["maximum"] = .number(Double(maximum))
+      schema["maximum"] = .integer(Int64(maximum))
     }
     return .object(schema)
   }

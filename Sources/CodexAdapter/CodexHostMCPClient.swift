@@ -240,7 +240,7 @@ extension CodexHostMCPClient {
     guard (1...1000).contains(limit) else {
       throw CodexToolError.invalidArguments("Host diagnostic limit must be 1...1000.")
     }
-    let value = try await service("host.diagnostics.snapshot", ["limit": .number(Double(limit))])
+    let value = try await service("host.diagnostics.snapshot", ["limit": .integer(Int64(limit))])
     guard let object = value.objectValue,
       let returnedOwner = object["owner"],
       try JSONDecoder().decode(CodexRuntimeOwner.self, from: JSONEncoder().encode(returnedOwner))

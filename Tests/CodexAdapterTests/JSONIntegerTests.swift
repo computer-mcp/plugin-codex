@@ -29,6 +29,25 @@ struct JSONIntegerTests {
     }
   }
 
+  @Test(arguments: [Int64.min, 9_007_199_254_740_993, Int64.max])
+  func SDKDecimalStoragePreservesIntegralValues(value: Int64) throws {
+    let native = AppServerJSON.object(["nested": .array([.number(.decimal(Decimal(value)))])])
+    #expect(try ProtocolTools.mcpValue(native) == .object(["nested": .array([.int(Int(value))])]))
+  }
+
+  @Test func SDKDecimalRangeAndFractionAreExplicit() throws {
+    #expect(
+      try ProtocolTools.mcpValue(.number(.decimal(Decimal(string: "1.25")!))) == .double(1.25))
+    #expect(throws: DecodingError.self) {
+      try ProtocolTools.mcpValue(.number(.decimal(Decimal(string: "9223372036854775808")!)))
+    }
+    #expect(throws: EncodingError.self) {
+      try JSONEncoder().encode(JSONValue.number(Double(Int64.max)))
+    }
+    let encoded = try JSONEncoder().encode(JSONValue.number(Double(Int64.min)))
+    #expect(String(decoding: encoded, as: UTF8.self) == String(Int64.min))
+  }
+
   @Test func numericIdentityDoesNotRoundIntegers() throws {
     #expect(JSONValue.integer(9_007_199_254_740_993) != .number(9_007_199_254_740_992))
     #expect(JSONValue.integer(2) == .number(2))

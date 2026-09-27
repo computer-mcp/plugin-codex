@@ -222,7 +222,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
       .map(sessionSummary)
     return .object([
       "sessions": .array(rows),
-      "max_sessions": .number(Double(configuration.maxSessions)),
+      "max_sessions": .integer(Int64(configuration.maxSessions)),
     ])
   }
 
@@ -252,7 +252,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     if let finalMessage = session.finalMessage {
       let bounded = outputBounds.text(finalMessage)
       result["final_message"] = .string(bounded.value)
-      result["final_message_original_bytes"] = .number(Double(bounded.originalBytes))
+      result["final_message_original_bytes"] = .integer(Int64(bounded.originalBytes))
       result["final_message_truncated"] = .bool(bounded.truncated)
     } else {
       result["final_message"] = .null
@@ -667,8 +667,8 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   private static func outputCaptureJSON(_ capture: CodexExecOutputCapture) -> JSONValue {
     .object([
       "complete": .bool(capture.isComplete),
-      "stdout_dropped_bytes": .number(Double(capture.stdoutDroppedBytes)),
-      "stderr_dropped_bytes": .number(Double(capture.stderrDroppedBytes)),
+      "stdout_dropped_bytes": .integer(Int64(capture.stdoutDroppedBytes)),
+      "stderr_dropped_bytes": .integer(Int64(capture.stderrDroppedBytes)),
     ])
   }
 
@@ -678,12 +678,12 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     case .exited(let code):
       exit = .object([
         "kind": .string("exited"),
-        "code": .number(Double(code)),
+        "code": .integer(Int64(code)),
       ])
     case .signaled(let signal):
       exit = .object([
         "kind": .string("signaled"),
-        "signal": .number(Double(signal)),
+        "signal": .integer(Int64(signal)),
       ])
     }
     let stderr = outputBounds.text(termination.capturedStderrText)
@@ -695,7 +695,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
         termination.effectiveWorkingDirectory.map { .string($0.path) } ?? .null,
       "exit": exit,
       "stderr": .string(stderr.value),
-      "stderr_original_bytes": .number(Double(stderr.originalBytes)),
+      "stderr_original_bytes": .integer(Int64(stderr.originalBytes)),
       "stderr_truncated": .bool(stderr.truncated),
     ])
   }
@@ -705,7 +705,7 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
     return .object([
       "code": .string(error.code),
       "message": .string(message.value),
-      "message_original_bytes": .number(Double(message.originalBytes)),
+      "message_original_bytes": .integer(Int64(message.originalBytes)),
       "message_truncated": .bool(message.truncated),
     ])
   }
