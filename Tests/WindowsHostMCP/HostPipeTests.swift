@@ -1,5 +1,6 @@
 #if os(Windows)
   import Foundation
+  import HostProcess
   import MCP
   import Testing
   import WinSDK
@@ -38,6 +39,59 @@
       await server.stop()
       await clientTransport.disconnect()
       await serverTransport.disconnect()
+    }
+
+    @Test(
+      "Independent child uses only inherited callback pipes and keeps standard streams separate")
+    func independentChild() async throws {
+      let pair = try PipePair()
+      let transport = try MCPInheritedPipeTransport(takingOwnershipOf: pair.left)
+      let child = try NativeHostChild(endpoint: pair.right)
+      let pid = child.pid
+      #expect(pid != GetCurrentProcessId())
+      let server = Server(
+        name: "independent-host", version: "1", capabilities: .init(tools: .init()))
+      await server.withMethodHandler(CallTool.self) { request in
+        #expect(request.arguments?["pid"] == .int(Int(pid)))
+        return try CallTool.Result(
+          content: [], structuredContent: .object(["echo": request.arguments?["value"] ?? .null]))
+      }
+      do {
+        try await server.start(transport: transport)
+        #expect(try await child.wait() == 0)
+        #expect(child.output(standardError: false) == "fixture-stdout\n")
+        #expect(child.output(standardError: true) == "fixture-stderr\n")
+        #expect(!child.excludedEventWasInherited)
+      } catch {
+        #expect(child.stop())
+        await server.stop()
+        await transport.disconnect()
+        throw error
+      }
+      await server.stop()
+      await transport.disconnect()
+    }
+
+    @Test("Stopping an independent child blocked in initialization releases peer EOF")
+    func stoppedChildReleasesEndpoint() async throws {
+      let pair = try PipePair()
+      let transport = try MCPInheritedPipeTransport(takingOwnershipOf: pair.left)
+      let child = try NativeHostChild(endpoint: pair.right)
+      do {
+        try await transport.connect()
+        var iterator = await transport.receive().makeAsyncIterator()
+        let request = try #require(try await iterator.next())
+        #expect(String(decoding: request, as: UTF8.self).contains("initialize"))
+        #expect(child.stop())
+        #expect(try await child.wait() != 0)
+        #expect(try await iterator.next() == nil)
+        #expect(!child.excludedEventWasInherited)
+      } catch {
+        #expect(child.stop())
+        await transport.disconnect()
+        throw error
+      }
+      await transport.disconnect()
     }
 
     @Test("Connected transport consumes original endpoints and concurrent close reaches peer EOF")
@@ -176,6 +230,83 @@
       left = MCPInheritedPipeEndpoint(input: request.0, output: response.1)
       right = MCPInheritedPipeEndpoint(input: response.0, output: request.1)
     }
+  }
+
+  /// The native fixture owns one Job Object and never borrows the test runner's standard streams.
+  private final class NativeHostChild {
+    private let process: OpaquePointer
+    private let excluded: MCPInheritedPipeHandle
+    var pid: UInt32 { hmcp_pid(process) }
+
+    init(endpoint: MCPInheritedPipeEndpoint) throws {
+      defer {
+        endpoint.input.close()
+        endpoint.output.close()
+      }
+      var security = SECURITY_ATTRIBUTES()
+      security.nLength = DWORD(MemoryLayout<SECURITY_ATTRIBUTES>.size)
+      security.bInheritHandle = true
+      let event = try #require(CreateEventW(&security, true, false, nil))
+      excluded = MCPInheritedPipeHandle(takingOwnershipOf: event)
+      let environment = ProcessInfo.processInfo.environment
+      let executable = try #require(environment["HOST_PIPE_FIXTURE_PATH"])
+      var values = environment.filter {
+        ![
+          "COMPUTER_MCP_HOST_CONTEXT", "COMPUTER_MCP_HOST_FD",
+          MCPInheritedPipeEndpoint.readEnvironmentKey, MCPInheritedPipeEndpoint.writeEnvironmentKey,
+        ]
+        .contains($0.key.uppercased())
+      }
+      values["COMPUTER_MCP_HOST_CONTEXT"] = "bound-by-fixture-host"
+      values["FIXTURE_EXCLUDED_EVENT"] = String(UInt(bitPattern: event))
+      var failure: UInt32 = 0
+      process = try endpoint.input.withHandle { input in
+        try endpoint.output.withHandle { output in
+          #expect(
+            SetHandleInformation(input, DWORD(HANDLE_FLAG_INHERIT), DWORD(HANDLE_FLAG_INHERIT)))
+          #expect(
+            SetHandleInformation(output, DWORD(HANDLE_FLAG_INHERIT), DWORD(HANDLE_FLAG_INHERIT)))
+          values[MCPInheritedPipeEndpoint.readEnvironmentKey] = String(UInt(bitPattern: input))
+          values[MCPInheritedPipeEndpoint.writeEnvironmentKey] = String(UInt(bitPattern: output))
+          var block =
+            Array(
+              values.sorted { $0.key.lowercased() < $1.key.lowercased() }
+                .map { "\($0.key)=\($0.value)" }.joined(separator: "\0").utf16) + [0, 0]
+          let launched = executable.withCString(encodedAs: UTF16.self) { path in
+            hmcp_launch(path, &block, UInt(bitPattern: input), UInt(bitPattern: output), &failure)
+          }
+          return try #require(launched, "Native child launch failed: \(failure)")
+        }
+      }
+    }
+
+    var excludedEventWasInherited: Bool {
+      (try? excluded.withHandle { WaitForSingleObject($0, 0) }) != DWORD(WAIT_TIMEOUT)
+    }
+
+    func wait() async throws -> UInt32 {
+      let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+      while true {
+        var exit: UInt32 = 0
+        switch hmcp_poll(process, &exit) {
+        case 1: return exit
+        case 0: break
+        default: throw MCPError.internalError("Cannot observe fixture process exit")
+        }
+        guard ContinuousClock.now < deadline else {
+          throw MCPError.internalError("Fixture process exit timed out")
+        }
+        try await Task.sleep(for: .milliseconds(10))
+      }
+    }
+
+    func stop() -> Bool { hmcp_stop(process) != 0 }
+    func output(standardError: Bool) -> String {
+      var bytes = [UInt8](repeating: 0, count: 1024)
+      let count = hmcp_output(process, standardError ? 1 : 0, &bytes, bytes.count)
+      return String(decoding: bytes.prefix(count), as: UTF8.self)
+    }
+    deinit { hmcp_destroy(process) }
   }
 
   /// A duplicate is transferred exactly once; failed admission leaves cleanup with the fixture.

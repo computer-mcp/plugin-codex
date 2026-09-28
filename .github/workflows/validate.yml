@@ -9,10 +9,15 @@ on:
         description: 'Exact swift-codex candidate commit for the isolated Windows source audit; empty runs normal packaging'
         required: false
         type: string
+      windows_validation_scope:
+        description: 'Windows candidate checks; all remains the complete adapter gate'
+        type: choice
+        options: [all, host-mcp]
+        default: all
 permissions:
   contents: read
 concurrency:
-  group: validate-${{ github.ref }}
+  group: validate-${{ github.ref }}-${{ inputs.windows_validation_scope || 'all' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   package:
@@ -80,7 +85,7 @@ jobs:
           retention-days: 14
 
   windows-candidate:
-    if: ${{ inputs.windows_sdk_revision != '' }}
+    if: ${{ inputs.windows_sdk_revision != '' && inputs.windows_validation_scope != 'host-mcp' }}
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -106,7 +111,7 @@ jobs:
           if-no-files-found: error
 
   windows-process:
-    if: ${{ inputs.windows_sdk_revision != '' }}
+    if: ${{ inputs.windows_sdk_revision != '' && inputs.windows_validation_scope != 'host-mcp' }}
     runs-on: windows-2022
     timeout-minutes: 30
     steps:

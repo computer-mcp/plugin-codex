@@ -19,7 +19,8 @@ $evidence = Join-Path $root 'evidence'
 $consumer = Join-Path $root 'consumer'
 $sources = Join-Path $consumer 'Sources/HostPipe'
 $tests = Join-Path $consumer 'Tests/HostPipeTests'
-New-Item -ItemType Directory -Path $evidence, $sources, $tests | Out-Null
+$childSources = Join-Path $consumer 'Sources/HostPipeFixture'
+New-Item -ItemType Directory -Path $evidence, $sources, $tests, $childSources | Out-Null
 $candidateDirectory = Join-Path $sdk 'Tests/DependencyCandidates/MCPTransport'
 $metadata = Get-Content (Join-Path $candidateDirectory 'upstream.json') -Raw | ConvertFrom-Json
 $patch = Join-Path $candidateDirectory 'windows-transports.patch'
@@ -44,12 +45,16 @@ $manifest = (Get-Content (Join-Path $fixture 'Package.swift.template') -Raw).Rep
     '__MCP_PATH__', $mcp.Replace('\', '/').Replace('"', '\"'))
 $manifest | Set-Content (Join-Path $consumer 'Package.swift')
 Copy-Item (Join-Path $fixture 'HostPipeTests.swift') $tests
+Copy-Item (Join-Path $fixture 'HostPipeFixture.swift') $childSources
+Copy-Item (Join-Path $fixture 'HostProcess') (Join-Path $consumer 'Sources/HostProcess') -Recurse
 Copy-Item (Join-Path $consumer 'Package.swift') $evidence
 $source = Join-Path $repository 'Sources/CodexAdapter/MCPInheritedPipeTransport.swift'
 $copy = Join-Path $sources 'MCPInheritedPipeTransport.swift'
 Copy-Item $source $copy
+Copy-Item $source $childSources
 $sourceHash = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
-if ((Get-FileHash $copy -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceHash) {
+if ((Get-FileHash $copy -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceHash -or
+    (Get-FileHash (Join-Path $childSources 'MCPInheritedPipeTransport.swift') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceHash) {
     throw 'Host transport source copy changed'
 }
 [pscustomobject]@{
@@ -59,6 +64,7 @@ if ((Get-FileHash $copy -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceHa
     source = 'Sources/CodexAdapter/MCPInheritedPipeTransport.swift'
     sourceSHA256 = $sourceHash
     evidenceClass = 'native-inherited-host-mcp-transport'
+    independentChild = $true
     completeAdapter = $false
     authenticatedModel = $false
 } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'inputs.json')
@@ -75,19 +81,34 @@ if (!(Test-Path (Join-Path $testing 'Testing.dll')) -or !(Test-Path (Join-Path $
     throw 'Missing selected SDK testing runtimes'
 }
 $originalPath = $env:PATH
+$originalFixture = $env:HOST_PIPE_FIXTURE_PATH
 $results = @()
 try {
     $env:PATH = "$testing;$xctest;$originalPath"
     foreach ($configuration in @('debug', 'release')) {
+        $buildLog = Join-Path $evidence "$configuration-fixture.log"
+        swift build --package-path $consumer --product HostPipeFixture -c $configuration *> $buildLog
+        $fixtureCode = $LASTEXITCODE
+        if ($fixtureCode -ne 0) {
+            Get-Content $buildLog -Tail 60
+            $results += [pscustomobject]@{ configuration = $configuration; fixtureExitCode = $fixtureCode; testExitCode = $fixtureCode }
+            $results | ConvertTo-Json | Set-Content (Join-Path $evidence 'results.json')
+            continue
+        }
+        $binaryPath = swift build --package-path $consumer --show-bin-path -c $configuration
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot locate native child executable' }
+        $env:HOST_PIPE_FIXTURE_PATH = Join-Path ($binaryPath | Select-Object -Last 1) 'HostPipeFixture.exe'
+        if (!(Test-Path $env:HOST_PIPE_FIXTURE_PATH -PathType Leaf)) { throw 'Native child executable is missing' }
         $log = Join-Path $evidence "$configuration-tests.log"
         swift test --package-path $consumer --no-parallel -c $configuration -Xswiftc -enable-testing *> $log
         $code = $LASTEXITCODE
         Get-Content $log -Tail 60
-        $results += [pscustomobject]@{ configuration = $configuration; testExitCode = $code }
+        $results += [pscustomobject]@{ configuration = $configuration; fixtureExitCode = $fixtureCode; testExitCode = $code }
         $results | ConvertTo-Json | Set-Content (Join-Path $evidence 'results.json')
     }
 } finally {
     $env:PATH = $originalPath
+    $env:HOST_PIPE_FIXTURE_PATH = $originalFixture
     $lock = Join-Path $consumer 'Package.resolved'
     if (Test-Path $lock) { Copy-Item $lock $evidence }
 }

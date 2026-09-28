@@ -7,10 +7,17 @@ exercise actual anonymous pipes, standard MCP calls and exact integers,
 endpoint ownership transfer, concurrent close/EOF, inherited-handle admission,
 rejected environment/handle inputs and pre-cancelled receive cleanup.
 
-The test process duplicates inheritable handles to exercise child-side admission.
-Host process creation and its explicit inheritance list require separate launch
-acceptance; this suite does not claim that launch, a complete adapter artifact,
-or authenticated model execution. The process suite independently checks that
+An independent native child consumes the same production transport. The fixture
+host launches it suspended, assigns an owned Job Object, and passes exactly the
+paired callback handles plus separate standard streams through
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Tests verify the native child PID, exact
+integer callback, standard-stream isolation, exclusion of another inheritable
+event, and peer EOF after terminating a child blocked in initialization. The
+fixture host closes its child-side copies immediately after launch.
+
+These tests exercise native launch and transport ownership. They do not claim
+a complete adapter artifact, a Windows Computer MCP host application, or
+authenticated model execution. The process suite independently checks that
 callback metadata is stripped from vendor environments.
 
 Run with an unchanged SDK candidate checkout and a fresh output directory:
@@ -18,3 +25,7 @@ Run with an unchanged SDK candidate checkout and a fresh output directory:
 ```powershell
 ./Scripts/test-windows-host-mcp.ps1 -SDKPath <sdk-checkout> -OutputDirectory <new-output>
 ```
+
+The validation workflow accepts `windows_validation_scope: host-mcp` with an
+exact SDK candidate revision to run this gate independently. Its default `all`
+scope retains the complete source, database, process and transport checks.

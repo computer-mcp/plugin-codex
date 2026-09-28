@@ -16,5 +16,13 @@ let package = Package(
         .product(name: "SystemPackage", package: "swift-system"),
         .product(name: "Logging", package: "swift-log"),
       ]),
-    .testTarget(name: "HostPipeTests", dependencies: ["HostPipe"]),
+    .executableTarget(
+      name: "HostPipeFixture",
+      dependencies: [
+        .product(name: "MCP", package: "swift-sdk"),
+        .product(name: "SystemPackage", package: "swift-system"),
+        .product(name: "Logging", package: "swift-log"),
+      ]),
+    .target(name: "HostProcess"),
+    .testTarget(name: "HostPipeTests", dependencies: ["HostPipe", "HostProcess"]),
   ])
