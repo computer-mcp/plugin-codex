@@ -1,0 +1,28 @@
+name: Notify official plugin catalog
+on:
+  release:
+    types: [published, edited, released, unpublished, deleted]
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      CATALOG_DISPATCH_TOKEN:
+        description: Existing receiver-scoped Actions write authority
+        required: true
+    outputs:
+      run_url:
+        description: Accepted central run; verify its deployment separately
+        value: ${{ jobs.notify.outputs.run_url }}
+permissions: {}
+jobs:
+  notify:
+    if: github.repository_id == '1368122608'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      run_url: ${{ steps.catalog.outputs.run-url }}
+    steps:
+      - name: Request complete catalog reconciliation
+        id: catalog
+        uses: computer-mcp/computer-mcp.github.io/.github/actions/notify-catalog@e2a150570bbec9d2e4297b050defe05185ea56b4
+        with:
+          token: ${{ secrets.CATALOG_DISPATCH_TOKEN }}
