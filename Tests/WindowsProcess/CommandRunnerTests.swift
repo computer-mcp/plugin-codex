@@ -22,7 +22,8 @@ struct CommandRunnerTests {
     }.value
     let value = try JSONDecoder().decode(JSONValue.self, from: result.stdout)
     #expect(value.objectValue?["arguments"] == .array(arguments.map(JSONValue.string)))
-    #expect(value.objectValue?["cwd"]?.stringValue == directory.path)
+    let reportedDirectory = try #require(value.objectValue?["cwd"]?.stringValue)
+    #expect(try directoryIdentity(reportedDirectory) == directoryIdentity(directory.path))
     #expect(value.objectValue?["value"] == .string("覆盖"))
     #expect(value.objectValue?["input"] == .string(""))
     #expect(result.exitCode == 0 && !result.timedOut)
@@ -183,6 +184,28 @@ struct CommandRunnerTests {
   }
 
   private struct ReadinessTimeout: Error {}
+
+  private struct DirectoryIdentity: Equatable {
+    let volume: UInt64
+    let file: Data
+  }
+
+  private func directoryIdentity(_ path: String) throws -> DirectoryIdentity {
+    let handle = try #require(
+      CreateFileW(
+        Array(path.utf16) + [0], DWORD(FILE_READ_ATTRIBUTES),
+        DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE), nil, DWORD(OPEN_EXISTING),
+        DWORD(FILE_FLAG_BACKUP_SEMANTICS), nil))
+    try #require(handle != INVALID_HANDLE_VALUE)
+    defer { CloseHandle(handle) }
+    var identity = FILE_ID_INFO()
+    try #require(
+      GetFileInformationByHandleEx(
+        handle, FileIdInfo, &identity, DWORD(MemoryLayout.size(ofValue: identity))))
+    return DirectoryIdentity(
+      volume: identity.VolumeSerialNumber, file: withUnsafeBytes(of: identity.FileId) { Data($0) })
+  }
+
   private final class Observation {
     let handle: HANDLE
     init(_ handle: HANDLE) { self.handle = handle }
