@@ -1,4 +1,7 @@
-param([Parameter(Mandatory = $true)][string]$SDKRevision)
+param(
+    [Parameter(Mandatory = $true)][string]$SDKRevision,
+    [switch]$DatabaseOnly
+)
 
 $ErrorActionPreference = 'Stop'
 if ($SDKRevision -cnotmatch '^[0-9a-f]{40}$') { throw 'SDK candidate must be an exact commit SHA' }
@@ -41,7 +44,8 @@ $adapterRevision = git rev-parse HEAD
     adapterRevision = $adapterRevision
     sdkCandidateRevision = $actualSDK
     mcpCandidate = $metadata
-    evidenceClass = 'native-source-build-with-explicit-editable-candidates'
+    evidenceClass = if ($DatabaseOnly) { 'native-database-lifetime' } else { 'native-source-build-with-explicit-editable-candidates' }
+    completeAdapter = -not $DatabaseOnly.IsPresent
     shippingDependenciesChanged = $false
 } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'inputs.json')
 Copy-Item Package.resolved (Join-Path $evidence 'shipping-Package.resolved')
@@ -58,7 +62,10 @@ if ($LASTEXITCODE -ne 0) { throw 'MCP editable candidate admission failed' }
 $sqlite = & (Join-Path $PSScriptRoot 'build-windows-sqlite.ps1') -OutputDirectory (Join-Path $evidence 'sqlite')
 $buildArguments = @('-Xcc', "-I$($sqlite.includeDirectory)", '-Xlinker', "/LIBPATH:$($sqlite.libraryDirectory)")
 $results = @()
-foreach ($target in @('GRDB', 'Subprocess', 'ArgumentParser', 'MCP', 'CodexAppServerClient', 'CodexExec', 'CodexAdapter', 'CodexMCPAdapter')) {
+$targets = if ($DatabaseOnly) { @('GRDB') } else {
+    @('GRDB', 'Subprocess', 'ArgumentParser', 'MCP', 'CodexAppServerClient', 'CodexExec', 'CodexAdapter', 'CodexMCPAdapter')
+}
+foreach ($target in $targets) {
     $log = Join-Path $evidence "$target.log"
     swift build --target $target @buildArguments *> $log
     $code = $LASTEXITCODE

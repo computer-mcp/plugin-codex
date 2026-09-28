@@ -53,7 +53,7 @@
         name: "independent-host", version: "1", capabilities: .init(tools: .init()))
       await server.withMethodHandler(CallTool.self) { request in
         #expect(request.arguments?["pid"] == .int(Int(pid)))
-        return try CallTool.Result(
+        return CallTool.Result(
           content: [], structuredContent: .object(["echo": request.arguments?["value"] ?? .null]))
       }
       do {
@@ -128,7 +128,7 @@
         MCPInheritedPipeEndpoint.readEnvironmentKey: input.text,
         MCPInheritedPipeEndpoint.writeEnvironmentKey: output.text,
       ]
-      let endpoint = try #require(MCPInheritedPipeEndpoint.inherited(environment: environment))
+      let endpoint = try #require(try MCPInheritedPipeEndpoint.inherited(environment: environment))
       input.transfer()
       output.transfer()
       let transport = try MCPInheritedPipeTransport(takingOwnershipOf: endpoint)
