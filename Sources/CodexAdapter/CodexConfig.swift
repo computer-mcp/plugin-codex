@@ -1,5 +1,9 @@
 import Foundation
 
+#if os(Windows)
+  import WinSDK
+#endif
+
 package struct CodexConfig: Codable, Equatable, Sendable {
   package var enabled: Bool
   package var executable: String
@@ -141,24 +145,29 @@ package struct CodexConfig: Codable, Equatable, Sendable {
   }
 
   func resolvedExecutableURL(workspaceURL: URL, environment: [String: String]) throws -> URL {
-    let candidates: [URL]
-    if executable.contains("/") {
-      candidates = [
-        executable.hasPrefix("/")
-          ? URL(fileURLWithPath: executable)
-          : workspaceURL.appendingPathComponent(executable)
-      ]
-    } else if let path = environment["PATH"] {
-      candidates = path.split(separator: ":", omittingEmptySubsequences: false).map { entry in
-        let directory =
-          entry.hasPrefix("/")
-          ? URL(fileURLWithPath: String(entry), isDirectory: true)
-          : workspaceURL.appendingPathComponent(String(entry), isDirectory: true)
-        return directory.appendingPathComponent(executable)
+    #if os(Windows)
+      let candidates = try windowsExecutableCandidates(
+        workspaceURL: workspaceURL, environment: environment)
+    #else
+      let candidates: [URL]
+      if executable.contains("/") {
+        candidates = [
+          executable.hasPrefix("/")
+            ? URL(fileURLWithPath: executable)
+            : workspaceURL.appendingPathComponent(executable)
+        ]
+      } else if let path = environment["PATH"] {
+        candidates = path.split(separator: ":", omittingEmptySubsequences: false).map { entry in
+          let directory =
+            entry.hasPrefix("/")
+            ? URL(fileURLWithPath: String(entry), isDirectory: true)
+            : workspaceURL.appendingPathComponent(String(entry), isDirectory: true)
+          return directory.appendingPathComponent(executable)
+        }
+      } else {
+        candidates = []
       }
-    } else {
-      candidates = []
-    }
+    #endif
     for candidate in candidates {
       let url = candidate.standardizedFileURL
       var isDirectory: ObjCBool = false
@@ -172,6 +181,72 @@ package struct CodexConfig: Codable, Equatable, Sendable {
       "Cannot resolve configured Codex executable '\(executable)' in the launch workspace and PATH."
     )
   }
+
+  #if os(Windows)
+    private func windowsExecutableCandidates(workspaceURL: URL, environment: [String: String])
+      throws
+      -> [URL]
+    {
+      guard workspaceURL.isFileURL, !executable.isEmpty, !executable.utf16.contains(0) else {
+        throw ConfigurationError.invalid("Invalid Windows Codex executable or workspace.")
+      }
+      let workspace = workspaceURL.path.replacingOccurrences(of: "/", with: "\\")
+      guard Self.isWindowsAbsolutePath(workspace) else {
+        throw ConfigurationError.invalid("Codex launch workspace must be absolute.")
+      }
+      if executable.contains(where: { "/\\:".contains($0) }) {
+        return [try Self.windowsURL(executable, relativeTo: workspace)]
+      }
+      let entries = environment.filter { CodexProcessEnvironment.namesMatch($0.key, "PATH") }
+      guard entries.count <= 1 else {
+        throw ConfigurationError.invalid(
+          "Codex launch environment contains ambiguous Windows PATH names.")
+      }
+      guard let path = entries.first?.value else { return [] }
+      guard !path.utf16.contains(0) else {
+        throw ConfigurationError.invalid("Codex launch PATH contains a NUL character.")
+      }
+      let name = executable.lowercased().hasSuffix(".exe") ? executable : executable + ".exe"
+      return try path.split(separator: ";").compactMap { entry in
+        var directory = String(entry)
+        if directory.hasPrefix("\""), directory.hasSuffix("\""), directory.count >= 2 {
+          directory.removeFirst()
+          directory.removeLast()
+        }
+        // An empty entry does not add the ambient process directory to native discovery.
+        guard !directory.isEmpty else { return nil }
+        return try Self.windowsURL(directory + "\\" + name, relativeTo: workspace)
+      }
+    }
+
+    private static func windowsURL(_ input: String, relativeTo workspace: String) throws -> URL {
+      let path = input.replacingOccurrences(of: "/", with: "\\")
+      let absolute = isWindowsAbsolutePath(path)
+      guard !path.utf16.contains(0), !path.contains("\""),
+        absolute || (!path.hasPrefix("\\") && !path.contains(":"))
+      else {
+        throw ConfigurationError.invalid(
+          "Codex executable paths must be absolute or workspace-relative.")
+      }
+      let joined = absolute ? path : workspace + "\\" + path
+      guard joined.utf16.count < 32_767 else {
+        throw ConfigurationError.invalid("Codex executable path exceeds the Windows path limit.")
+      }
+      var buffer = [WCHAR](repeating: 0, count: 32_768)
+      let length = GetFullPathNameW(Array(joined.utf16) + [0], DWORD(buffer.count), &buffer, nil)
+      guard length > 0, length < buffer.count else {
+        throw ConfigurationError.invalid("Cannot normalize the configured Codex executable path.")
+      }
+      return URL(fileURLWithPath: String(decoding: buffer.prefix(Int(length)), as: UTF16.self))
+    }
+
+    private static func isWindowsAbsolutePath(_ path: String) -> Bool {
+      let prefix = Array(path.utf8.prefix(3))
+      return path.hasPrefix("\\\\")
+        || (prefix.count == 3 && ((65...90).contains(prefix[0]) || (97...122).contains(prefix[0]))
+          && prefix[1] == 58 && prefix[2] == 92)
+    }
+  #endif
 }
 
 package enum CodexSandboxMode: String, Codable, Equatable, Sendable {

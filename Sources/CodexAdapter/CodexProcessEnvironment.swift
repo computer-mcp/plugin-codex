@@ -173,7 +173,7 @@ internal enum CodexProcessEnvironment {
     #endif
   }
 
-  private static func namesMatch(_ lhs: String, _ rhs: String) -> Bool {
+  static func namesMatch(_ lhs: String, _ rhs: String) -> Bool {
     #if os(Windows)
       let left = Array(lhs.utf16)
       let right = Array(rhs.utf16)
