@@ -3,9 +3,6 @@ import Foundation
 #if canImport(SystemConfiguration)
   import SystemConfiguration
 #endif
-#if os(Windows)
-  import WinSDK
-#endif
 
 internal struct SystemNetworkProxySettings: Equatable, Sendable {
   internal var httpProxy: String?
@@ -175,18 +172,7 @@ internal enum CodexProcessEnvironment {
 
   static func namesMatch(_ lhs: String, _ rhs: String) -> Bool {
     #if os(Windows)
-      let left = Array(lhs.utf16)
-      let right = Array(rhs.utf16)
-      guard !left.isEmpty, !right.isEmpty,
-        left.count <= Int32.max, right.count <= Int32.max
-      else { return lhs == rhs }
-      return left.withUnsafeBufferPointer { l in
-        right.withUnsafeBufferPointer { r in
-          // Explicit lengths keep malformed NUL-suffixed keys visible to launch validation.
-          CompareStringOrdinal(l.baseAddress, Int32(l.count), r.baseAddress, Int32(r.count), true)
-            == CSTR_EQUAL
-        }
-      }
+      return WindowsProcessEnvironment.namesMatch(lhs, rhs)
     #else
       return lhs == rhs
     #endif

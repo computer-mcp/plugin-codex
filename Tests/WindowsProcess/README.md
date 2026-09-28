@@ -11,6 +11,12 @@ blocked stdin, configured frame bounds, natural root exit with descendants,
 external-owner death, and rejection of a terminated owner before child launch.
 Observations retain exact native process handles and check sibling isolation.
 
+Finite-command tests also exercise synchronous execution, argument quoting,
+Unicode working directories, environment overrides, stdin EOF, bounded output
+with continued drain, and descendant cleanup after cancellation, timeout and
+natural exit. Codex discovery and finite commands use the same Windows path and
+environment rules. Each test retains its own native process observations.
+
 These tests verify the adapter's lifecycle boundary. The complete adapter and
 all dependency targets retain their separate source audit. Fixture results do
 not establish standard-MCP packaging or authenticated model acceptance.

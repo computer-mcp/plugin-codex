@@ -25,9 +25,15 @@ $manifest = (Get-Content (Join-Path $fixture 'Package.swift.template') -Raw).Rep
     '__SDK_PATH__', $sdk.Replace('\', '/').Replace('"', '\"'))
 $manifest | Set-Content (Join-Path $consumer 'Package.swift')
 Copy-Item (Join-Path $fixture 'ManagedProcessTests.swift') $tests
+Copy-Item (Join-Path $fixture 'CommandRunnerTests.swift') $tests
 Copy-Item (Join-Path $consumer 'Package.swift') $evidence
 $sourceRecords = @()
-foreach ($name in @('ManagedLineProcess.swift', 'ManagedLineProcess+Windows.swift')) {
+foreach ($name in @(
+    'ManagedLineProcess.swift', 'ManagedLineProcess+Windows.swift',
+    'CommandRunner.swift', 'CommandRunner+Windows.swift', 'WindowsCommandProcess.swift',
+    'WindowsProcessJob.swift', 'WindowsFilePath.swift', 'WindowsExecutable.swift',
+    'WindowsProcessEnvironment.swift', 'CodexConfig.swift', 'JSONValue.swift'
+)) {
     $source = Join-Path $repository "Sources/CodexAdapter/$name"
     Copy-Item $source $sources
     $sourceRecords += [pscustomobject]@{
