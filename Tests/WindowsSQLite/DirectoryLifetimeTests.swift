@@ -6,7 +6,7 @@ import WinSDK
 @Suite("Windows database directory lifetime", .timeLimit(.minutes(1)))
 struct DirectoryLifetimeTests {
   @Test("A native GRDB connection retains private ancestry through close and release")
-  func connectionOwnsDirectory() throws {
+  func connectionOwnsDirectory() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "database 汉字 \(UUID())")
     let moved = root.appendingPathExtension("moved")
@@ -17,6 +17,11 @@ struct DirectoryLifetimeTests {
     let state = root.appendingPathComponent("state")
     let reference = Reference()
     try useAndClose(state: state, root: root, moved: moved, reference: reference)
+    // GRDB's queue-specific watchdog retains Database until Dispatch destroys the queue context.
+    let deadline = ContinuousClock.now + .seconds(3)
+    while !isReleased(reference), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(5))
+    }
     #expect(reference.directory == nil)
     try #require(MoveFileW(Array(root.path.utf16) + [0], Array(moved.path.utf16) + [0]))
     let reopened = try open(state: moved.appendingPathComponent("state"), reference: reference)
@@ -24,6 +29,8 @@ struct DirectoryLifetimeTests {
     #expect(value == Int64.max)
     try reopened.close()
   }
+
+  private func isReleased(_ reference: Reference) -> Bool { reference.directory == nil }
 
   private func useAndClose(state: URL, root: URL, moved: URL, reference: Reference) throws {
     let database = try open(state: state, reference: reference)
