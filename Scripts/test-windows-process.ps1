@@ -64,6 +64,18 @@ $xctest = Join-Path $developer "Library/XCTest-$version/usr/bin64"
 if (!(Test-Path (Join-Path $testing 'Testing.dll')) -or !(Test-Path (Join-Path $xctest 'XCTest.dll'))) {
     throw 'Missing selected SDK testing runtimes'
 }
+# These owners depend only on Foundation and WinSDK. Diagnose native API imports
+# before building the complete SDK fixture and running both runtime configurations.
+$filesystemSources = @('WindowsFilePath.swift', 'WindowsPrivateDirectory.swift', 'CodexWorktreeFileSystem.swift') |
+    ForEach-Object { Join-Path $sources $_ }
+swiftc -typecheck -swift-version 6 -strict-concurrency=complete -module-name CodexNativeFileSystem @filesystemSources *> (Join-Path $evidence 'filesystem-typecheck.log')
+$filesystemExit = $LASTEXITCODE
+[pscustomobject]@{ exitCode = $filesystemExit } | ConvertTo-Json | Set-Content (Join-Path $evidence 'filesystem-typecheck.json')
+if ($filesystemExit -ne 0) {
+    Get-Content (Join-Path $evidence 'filesystem-typecheck.log')
+    exit 1
+}
+
 $originalPath = $env:PATH
 $originalFixture = $env:CODEX_WINDOWS_FIXTURE
 $results = @()
