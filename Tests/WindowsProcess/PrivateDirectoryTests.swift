@@ -53,11 +53,13 @@ struct PrivateDirectoryTests {
     }
     let target = root.appendingPathComponent("state")
     var guardDirectory: WindowsPrivateDirectory? = try WindowsPrivateDirectory(target)
-    #expect(!MoveFileW(Array(root.path.utf16) + [0], Array(replacement.path.utf16) + [0]))
-    #expect(
+    try #require(!MoveFileW(Array(root.path.utf16) + [0], Array(replacement.path.utf16) + [0]))
+    #expect(GetLastError() == DWORD(ERROR_SHARING_VIOLATION))
+    try #require(
       !MoveFileW(
         Array(target.path.utf16) + [0],
         Array(target.appendingPathExtension("moved").path.utf16) + [0]))
+    #expect(GetLastError() == DWORD(ERROR_SHARING_VIOLATION))
     withExtendedLifetime(guardDirectory) {}
     guardDirectory = nil
     try #require(MoveFileW(Array(root.path.utf16) + [0], Array(replacement.path.utf16) + [0]))

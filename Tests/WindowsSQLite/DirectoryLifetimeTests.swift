@@ -16,22 +16,31 @@ struct DirectoryLifetimeTests {
     }
     let state = root.appendingPathComponent("state")
     let reference = Reference()
-    var database: DatabaseQueue? = try open(state: state, reference: reference)
-    try database?.write { db in
-      try db.execute(sql: "CREATE TABLE records (value INTEGER NOT NULL)")
-      try db.execute(sql: "INSERT INTO records VALUES (?)", arguments: [Int64.max])
-    }
-    #expect(reference.directory != nil)
-    #expect(!MoveFileW(Array(root.path.utf16) + [0], Array(moved.path.utf16) + [0]))
-    try database?.close()
-    #expect(reference.directory != nil)
-    database = nil
+    try useAndClose(state: state, root: root, moved: moved, reference: reference)
     #expect(reference.directory == nil)
     try #require(MoveFileW(Array(root.path.utf16) + [0], Array(moved.path.utf16) + [0]))
     let reopened = try open(state: moved.appendingPathComponent("state"), reference: reference)
     let value = try reopened.read { db in try Int64.fetchOne(db, sql: "SELECT value FROM records") }
     #expect(value == Int64.max)
     try reopened.close()
+  }
+
+  private func useAndClose(state: URL, root: URL, moved: URL, reference: Reference) throws {
+    let database = try open(state: state, reference: reference)
+    defer { withExtendedLifetime(database) {} }
+    try database.write { db in
+      try db.execute(sql: "CREATE TABLE records (value INTEGER NOT NULL)")
+      try db.execute(sql: "INSERT INTO records VALUES (?)", arguments: [Int64.max])
+    }
+    #expect(reference.directory != nil)
+    try #require(!MoveFileW(Array(root.path.utf16) + [0], Array(moved.path.utf16) + [0]))
+    try database.close()
+    #expect(reference.directory != nil)
+    try #require(
+      !MoveFileW(
+        Array(state.path.utf16) + [0], Array(state.appendingPathExtension("moved").path.utf16) + [0]
+      ))
+    #expect(GetLastError() == DWORD(ERROR_SHARING_VIOLATION))
   }
 
   private func open(state: URL, reference: Reference) throws -> DatabaseQueue {

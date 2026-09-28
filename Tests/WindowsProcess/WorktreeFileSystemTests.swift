@@ -38,10 +38,11 @@ struct WorktreeFileSystemTests {
       try FileSystem.sameDirectory(
         FileSystem.canonicalDirectory(common, relativeTo: target),
         source.appendingPathComponent(".git")))
-    #expect(
+    try #require(
       !MoveFileW(
         Array(parent.path.utf16) + [0],
         Array(parent.appendingPathExtension("moved").path.utf16) + [0]))
+    #expect(GetLastError() == DWORD(ERROR_SHARING_VIOLATION))
     let dirty = target.appendingPathComponent("untracked.txt")
     try Data("preserve".utf8).write(to: dirty)
     let refused = try runGit(["worktree", "remove", target.path], in: source)

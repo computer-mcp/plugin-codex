@@ -118,10 +118,12 @@
     }
 
     private static func open(_ path: String, inspectSecurity: Bool) -> HANDLE? {
-      // Deny rename/delete and new write handles while the owning database or operation is live.
+      // Attribute-only handles do not participate in data/delete sharing checks.
+      // Directory read access makes denial of rename/delete effective for this handle's lifetime.
       CreateFileW(
         Array(path.utf16) + [0],
-        DWORD(FILE_READ_ATTRIBUTES) | (inspectSecurity ? DWORD(READ_CONTROL) : 0),
+        DWORD(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
+          | (inspectSecurity ? DWORD(READ_CONTROL) : 0),
         DWORD(FILE_SHARE_READ), nil, DWORD(OPEN_EXISTING),
         DWORD(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT), nil)
     }

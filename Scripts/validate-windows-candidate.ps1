@@ -20,9 +20,9 @@ if ($LASTEXITCODE -ne 0) { throw 'SDK candidate checkout failed' }
 $actualSDK = git -C $sdk rev-parse HEAD
 if ($LASTEXITCODE -ne 0 -or $actualSDK -ne $SDKRevision) { throw 'SDK candidate revision mismatch' }
 
-$candidateDirectory = Join-Path $sdk 'Tests/DependencyCandidates/MCPHTTP'
+$candidateDirectory = Join-Path $sdk 'Tests/DependencyCandidates/MCPTransport'
 $metadata = Get-Content (Join-Path $candidateDirectory 'upstream.json') -Raw | ConvertFrom-Json
-$patch = Join-Path $candidateDirectory 'eventsource-availability.patch'
+$patch = Join-Path $candidateDirectory 'windows-transports.patch'
 if ((Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant() -ne $metadata.patchSHA256) {
     throw 'MCP candidate patch checksum mismatch'
 }
