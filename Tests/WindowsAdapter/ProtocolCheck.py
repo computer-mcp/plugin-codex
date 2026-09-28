@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tempfile
 import uuid
@@ -53,6 +54,25 @@ class ProcessObservation:
         if self.handle:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
+
+
+def remove_private_state(root):
+    """Git marks immutable object files read-only on Windows, even in a private home."""
+    repaired = 0
+
+    def remove_read_only(function, path, failure):
+        nonlocal repaired
+        error = failure[1]
+        mode = os.lstat(path).st_mode
+        if (not isinstance(error, PermissionError) or function is not os.unlink
+                or not stat.S_ISREG(mode) or mode & stat.S_IWRITE):
+            raise error
+        os.chmod(path, mode | stat.S_IWRITE)
+        function(path)
+        repaired += 1
+
+    shutil.rmtree(root, onerror=remove_read_only)
+    return repaired
 
 
 def run(adapter, codex, evidence_directory=None):
@@ -171,6 +191,7 @@ def run(adapter, codex, evidence_directory=None):
         for observation in observations:
             observation.close()
         receipt["success"] = confirmed
+        receipt["protocol_success"] = confirmed
         receipt["adapter_exit_code"] = process.poll() if process else None
         stderr_path = root / "adapter-stderr.log"
         if stderr_path.exists():
@@ -178,13 +199,23 @@ def run(adapter, codex, evidence_directory=None):
                 stderr_bytes = handle.read(16385)
             receipt["stderr"] = stderr_bytes[:16384].decode("utf-8", errors="replace")
             receipt["stderr_truncated"] = len(stderr_bytes) > 16384
-        if not confirmed:
-            print(json.dumps(receipt, indent=2), flush=True)
+        cleanup_error = None
         if confirmed:
-            shutil.rmtree(root)
-            receipt["private_state_removed"] = True
+            try:
+                receipt["read_only_files_removed"] = remove_private_state(root)
+                receipt["private_state_removed"] = True
+            except Exception as error:
+                cleanup_error = error
+                receipt["success"] = False
+                receipt["private_state_removed"] = False
+                receipt["failure_phase"] = "private-state cleanup"
+                receipt["error"] = str(error)[:4096]
         if evidence_directory is not None:
             (evidence_directory / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        if not receipt["success"]:
+            print(json.dumps(receipt, indent=2), flush=True)
+        if cleanup_error is not None:
+            raise RuntimeError(f"Native protocol passed but private-state cleanup failed at {root}") from cleanup_error
     return receipt
 
 
