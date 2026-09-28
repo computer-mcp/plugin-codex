@@ -1,0 +1,2 @@
+# Protocol provenance verifies original file bytes on every platform.
+Sources/CodexAdapter/Resources/Protocol/** -text
