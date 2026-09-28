@@ -23,6 +23,6 @@ jobs:
     steps:
       - name: Request complete catalog reconciliation
         id: catalog
-        uses: computer-mcp/computer-mcp.github.io/.github/actions/notify-catalog@e2a150570bbec9d2e4297b050defe05185ea56b4
+        uses: computer-mcp/computer-mcp.github.io/.github/actions/notify-catalog@fc27dd0f370d028a3e5021e3585274891f696578
         with:
           token: ${{ secrets.CATALOG_DISPATCH_TOKEN }}
