@@ -1,5 +1,4 @@
 import CodexAppServerRuntime
-import Darwin
 import Foundation
 
 struct CodexAppServerProcessSnapshot: Codable, Equatable, Sendable {
@@ -85,7 +84,7 @@ final class ManagedCodexAppServerTransport: CodexAppServerLinePeer, Sendable {
       terminationGraceMilliseconds: Int = 1_000,
       killGraceMilliseconds: Int = 2_000,
       maximumMessageBytes: Int = 16 * 1_024 * 1_024,
-      ownerProcessID: Int32 = getpid()
+      ownerProcessID: Int32 = ProcessInfo.processInfo.processIdentifier
     ) {
       self.executable = executable
       self.arguments = arguments

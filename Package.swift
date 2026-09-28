@@ -24,6 +24,9 @@ let package = Package(
         .product(name: "CodexAppServerClient", package: "swift-codex"),
         .product(name: "CodexAppServerProtocol", package: "swift-codex"),
         .product(name: "CodexAppServerRuntime", package: "swift-codex"),
+        .product(
+          name: "CodexAppServerStdio", package: "swift-codex",
+          condition: .when(platforms: [.windows])),
         .product(name: "CodexExec", package: "swift-codex"),
         .product(name: "Subprocess", package: "swift-subprocess"),
       ],

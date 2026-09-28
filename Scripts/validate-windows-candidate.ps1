@@ -108,4 +108,14 @@ if ($results.Where({ $_.target -eq 'GRDB' -and $_.exitCode -eq 0 }).Count -eq 1)
     }
 }
 [pscustomobject]@{ grdbTestExitCode = $databaseExit } | ConvertTo-Json | Set-Content (Join-Path $evidence 'database-results.json')
-if ($results.Where({ $_.exitCode -ne 0 }).Count -gt 0 -or $databaseExit -ne 0) { exit 1 }
+$processOutput = Join-Path $root 'process-consumer'
+$processExit = 1
+try {
+    & (Join-Path $PSScriptRoot 'test-windows-process.ps1') -SDKPath $sdk -OutputDirectory $processOutput
+    $processExit = $LASTEXITCODE
+} finally {
+    if (Test-Path (Join-Path $processOutput 'evidence')) {
+        Copy-Item (Join-Path $processOutput 'evidence') (Join-Path $evidence 'process') -Recurse
+    }
+}
+if ($results.Where({ $_.exitCode -ne 0 }).Count -gt 0 -or $databaseExit -ne 0 -or $processExit -ne 0) { exit 1 }
