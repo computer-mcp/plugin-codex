@@ -55,10 +55,12 @@ if ($LASTEXITCODE -ne 0) { throw 'SDK editable candidate admission failed' }
 swift package edit swift-sdk --path $mcp *> (Join-Path $evidence 'edit-mcp.log')
 if ($LASTEXITCODE -ne 0) { throw 'MCP editable candidate admission failed' }
 
+$sqlite = & (Join-Path $PSScriptRoot 'build-windows-sqlite.ps1') -OutputDirectory (Join-Path $evidence 'sqlite')
+$buildArguments = @('-Xcc', "-I$($sqlite.includeDirectory)", '-Xlinker', "/LIBPATH:$($sqlite.libraryDirectory)")
 $results = @()
 foreach ($target in @('GRDB', 'Subprocess', 'ArgumentParser', 'MCP', 'CodexAppServerClient', 'CodexExec', 'CodexAdapter', 'CodexMCPAdapter')) {
     $log = Join-Path $evidence "$target.log"
-    swift build --target $target *> $log
+    swift build --target $target @buildArguments *> $log
     $code = $LASTEXITCODE
     Get-Content $log -Tail 50
     $results += [pscustomobject]@{ target = $target; exitCode = $code }
