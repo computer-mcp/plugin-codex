@@ -75,6 +75,83 @@ foreach ($target in $targets) {
 }
 Copy-Item Package.resolved (Join-Path $evidence 'candidate-Package.resolved')
 
+$runtimeExit = $null
+if (!$DatabaseOnly -and $results.Where({ $_.target -eq 'CodexMCPAdapter' -and $_.exitCode -eq 0 }).Count -eq 1) {
+    # Target compilation does not link an executable or prove resource lookup.
+    swift build --product codex-mcp-adapter @buildArguments *> (Join-Path $evidence 'adapter-link.log')
+    $linkExit = $LASTEXITCODE
+    $runtimeExit = $linkExit
+    [pscustomobject]@{ configuration = 'debug'; linkExitCode = $linkExit } |
+        ConvertTo-Json | Set-Content (Join-Path $evidence 'linked-product-results.json')
+    Get-Content (Join-Path $evidence 'adapter-link.log') -Tail 50
+    if ($linkExit -eq 0) {
+        $built = swift build --show-bin-path
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot locate linked adapter' }
+        $product = Join-Path $evidence 'linked-product'
+        New-Item -ItemType Directory -Path $product | Out-Null
+        $binary = Join-Path $product 'codex-mcp-adapter.exe'
+        Copy-Item (Join-Path $built 'codex-mcp-adapter.exe') $binary
+        $resources = @(Get-ChildItem $built -Directory | Where-Object { $_.Name -match '\.(resources|bundle)$' })
+        if ($resources.Count -eq 0) { throw 'Missing SwiftPM resource directory' }
+        foreach ($resource in $resources) { Copy-Item $resource.FullName $product -Recurse }
+        $inventory = @(Get-ChildItem $product -File -Recurse | ForEach-Object {
+            [pscustomobject]@{
+                path = [System.IO.Path]::GetRelativePath($product, $_.FullName)
+                bytes = $_.Length
+                sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        })
+        $inventory | ConvertTo-Json | Set-Content (Join-Path $evidence 'linked-product-files.json')
+        $inspector = Get-Command llvm-readobj -ErrorAction SilentlyContinue
+        if ($inspector) {
+            & $inspector.Source --coff-imports $binary *> (Join-Path $evidence 'adapter-imports.txt')
+            if ($LASTEXITCODE -ne 0) { throw 'Native import inspection failed' }
+        }
+        & $binary --help *> (Join-Path $evidence 'adapter-help.txt')
+        if ($LASTEXITCODE -ne 0) { throw 'Relocated native adapter help failed' }
+        & $binary --version *> (Join-Path $evidence 'adapter-version.txt')
+        if ($LASTEXITCODE -ne 0) { throw 'Relocated native adapter version failed' }
+
+        $fixture = Join-Path $repository 'Tests/WindowsAdapter'
+        $codexMetadata = Get-Content (Join-Path $fixture 'codex-binary.json') -Raw | ConvertFrom-Json
+        Copy-Item (Join-Path $fixture 'codex-binary.json') $evidence
+        $codexDirectory = Join-Path $root 'codex-binary'
+        New-Item -ItemType Directory -Path $codexDirectory | Out-Null
+        $codexArchive = Join-Path $codexDirectory 'codex.zip'
+        Invoke-WebRequest -Uri $codexMetadata.archiveURL -OutFile $codexArchive -TimeoutSec 120 -MaximumRetryCount 2
+        if ((Get-FileHash $codexArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $codexMetadata.archiveSHA256) {
+            throw 'Native Codex archive checksum mismatch'
+        }
+        Expand-Archive -Path $codexArchive -DestinationPath $codexDirectory
+        $codexBinary = Join-Path $codexDirectory $codexMetadata.executable
+        if ((Get-FileHash $codexBinary -Algorithm SHA256).Hash.ToLowerInvariant() -ne $codexMetadata.executableSHA256) {
+            throw 'Native Codex executable checksum mismatch'
+        }
+        $codexVersion = & $codexBinary --version
+        if ($LASTEXITCODE -ne 0 -or $codexVersion -ne "codex-cli $($codexMetadata.version)") {
+            throw 'Unexpected native Codex version'
+        }
+        [pscustomobject]@{
+            version = $codexVersion
+            executableSHA256 = (Get-FileHash $codexBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+            installed = $false
+            bundled = $false
+        } | ConvertTo-Json | Set-Content (Join-Path $evidence 'codex-binary-receipt.json')
+        python (Join-Path $fixture 'ProtocolCheck.py') --adapter $binary --codex $codexBinary `
+            *> (Join-Path $evidence 'adapter-protocol.log')
+        $runtimeExit = $LASTEXITCODE
+        Get-Content (Join-Path $evidence 'adapter-protocol.log') -Tail 60
+        [pscustomobject]@{
+            configuration = 'debug'
+            linkExitCode = $linkExit
+            protocolExitCode = $runtimeExit
+            runtimeEnvironment = 'selected-toolchain'
+            authenticatedModel = $false
+            cleanMachineRelocation = $false
+        } | ConvertTo-Json | Set-Content (Join-Path $evidence 'linked-product-results.json')
+    }
+}
+
 $databaseExit = $null
 if ($results.Where({ $_.target -eq 'GRDB' -and $_.exitCode -eq 0 }).Count -eq 1) {
     $consumer = Join-Path $root 'database-consumer'
@@ -126,4 +203,5 @@ if ($results.Where({ $_.target -eq 'GRDB' -and $_.exitCode -eq 0 }).Count -eq 1)
     }
 }
 [pscustomobject]@{ grdbTestExitCode = $databaseExit } | ConvertTo-Json | Set-Content (Join-Path $evidence 'database-results.json')
-if ($results.Where({ $_.exitCode -ne 0 }).Count -gt 0 -or $databaseExit -ne 0) { exit 1 }
+if ($results.Where({ $_.exitCode -ne 0 }).Count -gt 0 -or $databaseExit -ne 0 -or
+    (!$DatabaseOnly -and ($null -eq $runtimeExit -or $runtimeExit -ne 0))) { exit 1 }
