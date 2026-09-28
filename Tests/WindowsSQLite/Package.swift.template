@@ -1,0 +1,12 @@
+// swift-tools-version: 6.2
+import PackageDescription
+
+let package = Package(
+  name: "WindowsDatabaseConsumer",
+  platforms: [.macOS(.v14)],
+  dependencies: [.package(path: "__GRDB_PATH__")],
+  targets: [
+    .testTarget(
+      name: "DatabaseTests",
+      dependencies: [.product(name: "GRDB", package: "GRDB.swift")])
+  ])

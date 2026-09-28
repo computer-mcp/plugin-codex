@@ -67,4 +67,45 @@ foreach ($target in @('GRDB', 'Subprocess', 'ArgumentParser', 'MCP', 'CodexAppSe
     $results | ConvertTo-Json | Set-Content (Join-Path $evidence 'results.json')
 }
 Copy-Item Package.resolved (Join-Path $evidence 'candidate-Package.resolved')
-if ($results.Where({ $_.exitCode -ne 0 }).Count -gt 0) { exit 1 }
+
+$databaseExit = $null
+if ($results.Where({ $_.target -eq 'GRDB' -and $_.exitCode -eq 0 }).Count -eq 1) {
+    $consumer = Join-Path $root 'database-consumer'
+    $tests = Join-Path $consumer 'Tests/DatabaseTests'
+    New-Item -ItemType Directory -Path $tests | Out-Null
+    $grdb = (Resolve-Path '.build/checkouts/GRDB.swift').Path
+    $grdbRevision = git -C $grdb rev-parse HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot identify resolved GRDB source' }
+    $lock = Get-Content Package.resolved -Raw | ConvertFrom-Json
+    $grdbPin = @($lock.pins | Where-Object { $_.identity -eq 'grdb.swift' })
+    if ($grdbPin.Count -ne 1 -or $grdbPin[0].state.revision -ne $grdbRevision) {
+        throw 'GRDB consumer source differs from the resolved lock'
+    }
+    $fixture = Join-Path $repository 'Tests/WindowsSQLite'
+    $manifest = (Get-Content (Join-Path $fixture 'Package.swift.template') -Raw).Replace(
+        '__GRDB_PATH__', $grdb.Replace('\', '/'))
+    $manifest | Set-Content (Join-Path $consumer 'Package.swift')
+    Copy-Item (Join-Path $fixture 'GRDBTests.swift') $tests
+    $grdbRevision | Set-Content (Join-Path $evidence 'grdb-revision.txt')
+    Copy-Item (Join-Path $consumer 'Package.swift') (Join-Path $evidence 'database-Package.swift')
+
+    $version = ((Get-Content (Join-Path $evidence 'toolchain.txt') -Raw) -split 'Swift version ')[1].Split(' ')[0].Trim()
+    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Cannot identify Swift testing runtime version' }
+    $developer = Split-Path (Split-Path $env:SDKROOT.TrimEnd([char[]]'\/'))
+    $testing = Join-Path $developer "Library/Testing-$version/usr/bin64"
+    $xctest = Join-Path $developer "Library/XCTest-$version/usr/bin64"
+    if (!(Test-Path (Join-Path $testing 'Testing.dll')) -or !(Test-Path (Join-Path $xctest 'XCTest.dll'))) {
+        throw 'Missing selected SDK testing runtimes'
+    }
+    $originalPath = $env:PATH
+    try {
+        $env:PATH = "$testing;$xctest;$originalPath"
+        swift test --package-path $consumer --no-parallel @buildArguments *> (Join-Path $evidence 'grdb-tests.log')
+        $databaseExit = $LASTEXITCODE
+        Get-Content (Join-Path $evidence 'grdb-tests.log') -Tail 50
+    } finally {
+        $env:PATH = $originalPath
+    }
+}
+[pscustomobject]@{ grdbTestExitCode = $databaseExit } | ConvertTo-Json | Set-Content (Join-Path $evidence 'database-results.json')
+if ($results.Where({ $_.exitCode -ne 0 }).Count -gt 0 -or $databaseExit -ne 0) { exit 1 }
