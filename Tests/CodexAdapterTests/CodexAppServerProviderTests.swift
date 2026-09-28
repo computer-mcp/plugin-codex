@@ -7,6 +7,18 @@ import Testing
 @Suite(.serialized)
 struct CodexAppServerProviderTests {
   @Test
+  func hostServiceConsumersDeclareTheirExactSemanticEffect() {
+    let expected = [
+      "codex.diagnostics.snapshot": "diagnostics.snapshot",
+      "codex.worktree.provision.perform": "workspaces.provision",
+      "codex.worktree.remove.perform": "workspaces.remove",
+    ]
+    for tool in makeProvider().tools {
+      #expect(tool._meta?["io.github.computer-mcp/host-action"]?.stringValue == expected[tool.name])
+    }
+  }
+
+  @Test
   func modelAndApprovalEntryPointsDeclareFullShellAcrossTheMCPCatalog() throws {
     let tools = makeProvider().tools
     for tool in tools {

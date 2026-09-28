@@ -43,6 +43,15 @@ minimum risk, never to reduce a configured restriction or grant access.
 `codex.app.methods.list` provides the same per-method classification for
 configuration review. MCP annotations remain advisory.
 
+The three private host-service consumers also declare
+`io.github.computer-mcp/host-action`: diagnostics uses `diagnostics.snapshot`,
+provisioning uses `workspaces.provision`, and removal uses `workspaces.remove`.
+The host binds the recognized effect to the admitted invocation and operation
+ticket together with the exact arguments. The declaration grants no authority;
+the host enforces its minimum risk and rejects a changed effect before dispatch.
+Released hosts that recognize the original Codex method names remain compatible.
+Codex's persisted worktree IDs retain their existing identity on either host.
+
 Metadata/history/event inspection declares `read-only`. Narrow filesystem and
 metadata mutations retain their effect classification. Exec cancellation and
 native process termination declare `destructive`; they retire owned work rather

@@ -1302,7 +1302,8 @@ struct CodexAppServerProvider: Sendable {
     tool(
       "codex.diagnostics.snapshot",
       "Read one redacted, workspace-scoped operational snapshot that correlates Codex runtimes, process and connection ownership, approvals, acceptance runs, worktree leases, cleanup state, and recent tool or Git audit receipts.",
-      objectSchema(properties: ["limit": integerSchema(minimum: 1, maximum: 1_000)])
+      objectSchema(properties: ["limit": integerSchema(minimum: 1, maximum: 1_000)]),
+      hostAction: "diagnostics.snapshot"
     ),
     tool(
       "codex.worktree.managed.list",
@@ -1345,7 +1346,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["plan_id", "expected_revision", "confirm_provision"]
       ),
-      risk: .workspaceWrite
+      risk: .workspaceWrite, hostAction: "workspaces.provision"
     ),
     tool(
       "codex.worktree.remove.plan",
@@ -1367,7 +1368,7 @@ struct CodexAppServerProvider: Sendable {
         ],
         required: ["managed_worktree_id", "expected_revision", "confirm_remove"]
       ),
-      risk: .destructive
+      risk: .destructive, hostAction: "workspaces.remove"
     ),
     tool(
       "codex.app.status", "Read the persistent Codex App Server connection status.", emptySchema),
@@ -1961,12 +1962,14 @@ struct CodexAppServerProvider: Sendable {
   ]
   private static func tool(
     _ name: String, _ description: String, _ inputSchema: JSONValue,
-    risk: CodexOperationRisk = .readOnly
+    risk: CodexOperationRisk = .readOnly, hostAction: String? = nil
   ) -> MCP.Tool {
     let title = name.split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" })
       .map { String($0.prefix(1)).uppercased() + $0.dropFirst() }.joined(separator: " ")
     let input = try! JSONDecoder().decode(
       MCP.Value.self, from: JSONEncoder().encode(inputSchema))
+    var metadata: [String: MCP.Value] = ["io.github.computer-mcp/risk": .string(risk.rawValue)]
+    if let hostAction { metadata["io.github.computer-mcp/host-action"] = .string(hostAction) }
     return .init(
       name: name, title: title, description: description, inputSchema: input,
       annotations: .init(
@@ -1977,7 +1980,7 @@ struct CodexAppServerProvider: Sendable {
         "type": .string("object"), "properties": .object(["result": .object([:])]),
         "required": .array([.string("result")]), "additionalProperties": .bool(false),
       ]),
-      _meta: .init(additionalFields: ["io.github.computer-mcp/risk": .string(risk.rawValue)]))
+      _meta: .init(additionalFields: metadata))
   }
 
   private static func objectSchema(
