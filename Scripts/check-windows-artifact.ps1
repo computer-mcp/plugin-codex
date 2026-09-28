@@ -53,6 +53,25 @@ Copy-Item (Join-Path $download 'inputs.json') $evidence
 Copy-Item (Join-Path $download 'linked-product-files.json') $evidence
 swift --version | Set-Content (Join-Path $evidence 'toolchain.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Swift runtime environment unavailable' }
+$runtimeDirectories = @($env:PATH -split ';' | Where-Object {
+    $_ -and (Test-Path (Join-Path $_ 'swiftCore.dll'))
+} | Select-Object -Unique)
+if ($runtimeDirectories.Count -eq 0) { throw 'Cannot locate selected Swift runtime' }
+$auditArguments = @('--executable', (Join-Path $product 'codex-mcp-adapter.exe'),
+    '--system-directory', (Join-Path $env:SystemRoot 'System32'),
+    '--output', (Join-Path $evidence 'runtime-dependencies.json'))
+foreach ($directory in $runtimeDirectories) { $auditArguments += @('--runtime-directory', $directory) }
+python (Join-Path $PSScriptRoot 'windows_runtime.py') @auditArguments
+if ($LASTEXITCODE -ne 0) { throw 'Recursive native runtime dependency audit failed' }
+$swift = (Get-Command swift).Source
+$swiftInstallation = Split-Path (Split-Path (Split-Path (Split-Path $swift)))
+$notices = @(Get-ChildItem $swiftInstallation -Recurse -File | Where-Object {
+    $_.Name -match '^(LICENSE|NOTICE|COPYING|ThirdParty)' -and $_.Length -lt 1048576
+} | ForEach-Object {
+    [pscustomobject]@{ path = $_.FullName; bytes = $_.Length
+        sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+})
+$notices | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $evidence 'runtime-notice-inventory.json')
 $definitionRevision = git rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify check definition' }
 [pscustomobject]@{
