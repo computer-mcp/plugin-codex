@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 #if canImport(CryptoKit)
@@ -104,6 +103,7 @@ enum CodexManagedWorktreeError: Error, LocalizedError, Sendable {
 }
 
 enum CodexManagedWorktreeManager {
+  private typealias FileSystem = CodexWorktreeFileSystem
   static func planProvision(
     database: CodexDatabase?,
     sourceWorkspaceID: String?,
@@ -159,13 +159,15 @@ enum CodexManagedWorktreeManager {
         )
       }
     }
-    let sourceRoot = sourceWorkspaceURL.standardizedFileURL.resolvingSymlinksInPath()
+    let sourceRoot = try canonicalURL(sourceWorkspaceURL.path, relativeTo: sourceWorkspaceURL)
     let repositoryRoot = try gitPath(
       ["rev-parse", "--show-toplevel"],
       workingDirectory: sourceRoot,
       runner: commandRunner
     )
-    guard canonicalURL(repositoryRoot, relativeTo: sourceRoot).path == sourceRoot.path else {
+    guard
+      try FileSystem.sameDirectory(canonicalURL(repositoryRoot, relativeTo: sourceRoot), sourceRoot)
+    else {
       throw CodexManagedWorktreeError.invalid(
         "the registered source workspace must be the Git repository root"
       )
@@ -194,7 +196,7 @@ enum CodexManagedWorktreeManager {
     guard isObjectID(headOID) else {
       throw CodexManagedWorktreeError.command("Git returned an invalid start commit.")
     }
-    let commonDirectory = canonicalURL(
+    let commonDirectory = try canonicalURL(
       try gitPath(
         ["rev-parse", "--git-common-dir"],
         workingDirectory: sourceRoot,
@@ -212,10 +214,10 @@ enum CodexManagedWorktreeManager {
       .appendingPathComponent(sourceComponent, isDirectory: true)
       .appendingPathComponent(id, isDirectory: true)
       .standardizedFileURL
-    guard target.path.hasPrefix(root.standardizedFileURL.path + "/") else {
+    guard try FileSystem.isDescendant(target, of: root) else {
       throw CodexManagedWorktreeError.invalid("derived worktree path escaped the managed root")
     }
-    guard !FileManager.default.fileExists(atPath: target.path) else {
+    guard try FileSystem.provisionPathIsAvailable(target) else {
       throw CodexManagedWorktreeError.invalid("derived worktree path already exists")
     }
     guard
@@ -300,10 +302,10 @@ enum CodexManagedWorktreeManager {
     let sourceRoot = URL(fileURLWithPath: record.sourceRepositoryRoot, isDirectory: true)
     let expectedRoot = managedRootURL(database: database, override: managedRoot)
     let target = URL(fileURLWithPath: record.path, isDirectory: true).standardizedFileURL
-    guard target.path.hasPrefix(expectedRoot.standardizedFileURL.path + "/") else {
+    guard try FileSystem.isDescendant(target, of: expectedRoot) else {
       throw CodexManagedWorktreeError.invalid("persisted path is outside the managed root")
     }
-    guard !FileManager.default.fileExists(atPath: target.path) else {
+    guard try FileSystem.provisionPathIsAvailable(target) else {
       throw CodexManagedWorktreeError.state("the planned worktree path already exists")
     }
     let resolvedOID = try gitText(
@@ -333,24 +335,19 @@ enum CodexManagedWorktreeManager {
     }
     var createdLease: CodexWorktreeLease?
     var createdGitWorktree = false
+    var protections: [FileSystem.Protection] = []
+    defer { withExtendedLifetime(protections) {} }
     do {
-      try prepareManagedRoot(expectedRoot)
-      try FileManager.default.createDirectory(
-        at: target.deletingLastPathComponent(),
-        withIntermediateDirectories: true,
-        attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
-      )
-      try validateManagedDirectory(
-        target.deletingLastPathComponent(),
-        containedIn: expectedRoot
-      )
+      protections.append(try FileSystem.prepareRoot(expectedRoot))
+      protections.append(
+        try FileSystem.prepareParent(target.deletingLastPathComponent(), containedIn: expectedRoot))
       _ = try git(
         ["worktree", "add", "-b", record.branch, target.path, record.headOID],
         workingDirectory: sourceRoot,
         runner: commandRunner
       )
       createdGitWorktree = true
-      let actualRoot = canonicalURL(
+      let actualRoot = try canonicalURL(
         try gitPath(
           ["rev-parse", "--show-toplevel"],
           workingDirectory: target,
@@ -358,7 +355,7 @@ enum CodexManagedWorktreeManager {
         ),
         relativeTo: target
       )
-      let actualCommon = canonicalURL(
+      let actualCommon = try canonicalURL(
         try gitPath(
           ["rev-parse", "--git-common-dir"],
           workingDirectory: target,
@@ -367,8 +364,8 @@ enum CodexManagedWorktreeManager {
         relativeTo: target
       )
       try validateManagedDirectory(target, containedIn: expectedRoot)
-      guard actualRoot.path == target.resolvingSymlinksInPath().path,
-        actualCommon.path == record.gitCommonDirectory
+      guard try FileSystem.sameDirectory(actualRoot, target.resolvingSymlinksInPath()),
+        try FileSystem.sameDirectory(actualCommon, URL(fileURLWithPath: record.gitCommonDirectory))
       else {
         throw CodexManagedWorktreeError.state(
           "Git did not create the exact planned worktree in the source repository"
@@ -429,8 +426,7 @@ enum CodexManagedWorktreeManager {
           _ = try git(
             ["worktree", "remove", target.path], workingDirectory: sourceRoot, runner: commandRunner
           )
-          var info = stat()
-          guard lstat(target.path, &info) != 0, errno == ENOENT else {
+          guard try FileSystem.isAbsent(target) else {
             throw CodexManagedWorktreeError.state("Git rollback did not remove the exact target")
           }
           // Delete only the exact branch value created by this operation; an independently
@@ -478,6 +474,12 @@ enum CodexManagedWorktreeManager {
     else {
       throw CodexManagedWorktreeError.unknown(managedWorktreeID)
     }
+    #if os(Windows)
+      let protection = try FileSystem.protectDirectory(
+        URL(fileURLWithPath: record.path).deletingLastPathComponent(),
+        containedIn: managedRootURL(database: database, override: managedRoot))
+      defer { withExtendedLifetime(protection) {} }
+    #endif
     if record.state == .removing {
       try validateRemovedWorktree(
         record, database: database, liveRuntimeStatus: liveRuntimeStatus,
@@ -552,6 +554,12 @@ enum CodexManagedWorktreeManager {
       cleanupOnly
         || (record.state == .removalPlanned && record.planExpiresAt.map({ $0 > now }) == true)
     else { throw CodexManagedWorktreeError.state("the removal plan is not current") }
+    #if os(Windows)
+      let protection = try FileSystem.protectDirectory(
+        URL(fileURLWithPath: record.path).deletingLastPathComponent(),
+        containedIn: managedRootURL(database: database, override: managedRoot))
+      defer { withExtendedLifetime(protection) {} }
+    #endif
     if cleanupOnly {
       try validateRemovedWorktree(
         record, database: database, liveRuntimeStatus: liveRuntimeStatus,
@@ -652,7 +660,7 @@ enum CodexManagedWorktreeManager {
     let root = managedRootURL(database: database, override: managedRoot).standardizedFileURL
     let target = URL(fileURLWithPath: record.path, isDirectory: true).standardizedFileURL
     try validateManagedDirectory(root, containedIn: root)
-    guard target.path.hasPrefix(root.path + "/"),
+    guard try FileSystem.isDescendant(target, of: root),
       FileManager.default.fileExists(atPath: target.path)
     else {
       throw CodexManagedWorktreeError.state(
@@ -660,7 +668,7 @@ enum CodexManagedWorktreeManager {
       )
     }
     try validateManagedDirectory(target, containedIn: root)
-    let actualRoot = canonicalURL(
+    let actualRoot = try canonicalURL(
       try gitPath(
         ["rev-parse", "--show-toplevel"],
         workingDirectory: target,
@@ -668,7 +676,7 @@ enum CodexManagedWorktreeManager {
       ),
       relativeTo: target
     )
-    let actualCommon = canonicalURL(
+    let actualCommon = try canonicalURL(
       try gitPath(
         ["rev-parse", "--git-common-dir"],
         workingDirectory: target,
@@ -676,8 +684,8 @@ enum CodexManagedWorktreeManager {
       ),
       relativeTo: target
     )
-    guard actualRoot.path == target.resolvingSymlinksInPath().path,
-      actualCommon.path == record.gitCommonDirectory
+    guard try FileSystem.sameDirectory(actualRoot, target.resolvingSymlinksInPath()),
+      try FileSystem.sameDirectory(actualCommon, URL(fileURLWithPath: record.gitCommonDirectory))
     else {
       throw CodexManagedWorktreeError.state(
         "the path is not the exact worktree recorded by Computer MCP"
@@ -717,22 +725,22 @@ enum CodexManagedWorktreeManager {
     }
     let root = managedRootURL(database: database, override: managedRoot).standardizedFileURL
     let target = URL(fileURLWithPath: record.path).standardizedFileURL
-    guard target.path.hasPrefix(root.path + "/") else {
+    guard try FileSystem.isDescendant(target, of: root) else {
       throw CodexManagedWorktreeError.state("metadata cleanup path escaped the managed root")
     }
     try validateManagedDirectory(root, containedIn: root)
     try validateManagedDirectory(target.deletingLastPathComponent(), containedIn: root)
-    var info = stat()
-    guard lstat(target.path, &info) != 0, errno == ENOENT else {
+    guard try FileSystem.isAbsent(target) else {
       throw CodexManagedWorktreeError.state(
         "metadata cleanup refuses an existing or unverified path")
     }
     let source = URL(fileURLWithPath: record.sourceRepositoryRoot)
-    let common = canonicalURL(
+    let common = try canonicalURL(
       try gitPath(
         ["rev-parse", "--git-common-dir"], workingDirectory: source, runner: commandRunner),
       relativeTo: source)
-    guard common.path == record.gitCommonDirectory else {
+    guard try FileSystem.sameDirectory(common, URL(fileURLWithPath: record.gitCommonDirectory))
+    else {
       throw CodexManagedWorktreeError.state("metadata cleanup source repository identity changed")
     }
     let inventory = try git(
@@ -742,58 +750,15 @@ enum CodexManagedWorktreeManager {
       return String(entry.dropFirst("worktree ".count))
     }
     guard
-      !paths.contains(where: { URL(fileURLWithPath: $0).standardizedFileURL.path == target.path })
+      try !paths.contains(where: { try FileSystem.samePath(URL(fileURLWithPath: $0), target) })
     else {
       throw CodexManagedWorktreeError.state(
         "Git still records the worktree; metadata-only cleanup is unsafe")
     }
   }
 
-  private static func prepareManagedRoot(_ root: URL) throws {
-    let fileManager = FileManager.default
-    if fileManager.fileExists(atPath: root.path) {
-      let values = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-      guard values.isDirectory == true, values.isSymbolicLink != true else {
-        throw CodexManagedWorktreeError.invalid(
-          "the managed worktree root must be a real directory"
-        )
-      }
-      let attributes = try fileManager.attributesOfItem(atPath: root.path)
-      if let owner = attributes[.ownerAccountID] as? NSNumber, owner.uint32Value != getuid() {
-        throw CodexManagedWorktreeError.invalid(
-          "the managed worktree root is owned by another user"
-        )
-      }
-    } else {
-      try fileManager.createDirectory(
-        at: root,
-        withIntermediateDirectories: true,
-        attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
-      )
-    }
-    try fileManager.setAttributes(
-      [.posixPermissions: NSNumber(value: Int16(0o700))],
-      ofItemAtPath: root.path
-    )
-  }
-
   private static func validateManagedDirectory(_ directory: URL, containedIn root: URL) throws {
-    let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-    guard values.isDirectory == true, values.isSymbolicLink != true else {
-      throw CodexManagedWorktreeError.invalid(
-        "managed worktree paths must be real directories, not symbolic links"
-      )
-    }
-    let resolvedDirectory = directory.standardizedFileURL.resolvingSymlinksInPath()
-    let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
-    guard
-      resolvedDirectory == resolvedRoot
-        || resolvedDirectory.path.hasPrefix(resolvedRoot.path + "/")
-    else {
-      throw CodexManagedWorktreeError.invalid(
-        "managed worktree path escaped the canonical managed root"
-      )
-    }
+    try FileSystem.validateDirectory(directory, containedIn: root)
   }
 
   private static func validateText(_ value: String, name: String, maximum: Int) throws {
@@ -860,7 +825,7 @@ enum CodexManagedWorktreeManager {
     runner: any CommandRunning
   ) throws -> CommandResult {
     try runner.run(
-      executable: "/usr/bin/git",
+      executable: FileSystem.gitExecutable,
       arguments: arguments,
       workingDirectory: workingDirectory,
       environment: ["GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"],
@@ -877,12 +842,8 @@ enum CodexManagedWorktreeManager {
     return .command(CodexApprovalRedactor.redactString(detail, maximumCharacters: 4_096))
   }
 
-  private static func canonicalURL(_ path: String, relativeTo base: URL) -> URL {
-    let url =
-      path.hasPrefix("/")
-      ? URL(fileURLWithPath: path, isDirectory: true)
-      : base.appendingPathComponent(path, isDirectory: true)
-    return url.standardizedFileURL.resolvingSymlinksInPath()
+  private static func canonicalURL(_ path: String, relativeTo base: URL) throws -> URL {
+    try FileSystem.canonicalDirectory(path, relativeTo: base)
   }
 
   private static func isObjectID(_ value: String) -> Bool {

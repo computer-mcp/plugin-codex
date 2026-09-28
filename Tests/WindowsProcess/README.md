@@ -23,6 +23,11 @@ of reparses, foreign owners and existing broader permissions. The separate
 GRDB audit verifies that connection configuration retains the production
 directory guard through close and release.
 
+Managed-worktree tests run the production finite-command runner against real Git
+repositories. They check private root inheritance, physical containment and
+identity, retained parent ownership, dirty removal refusal, reparse rejection,
+and absence verification without recreating missing content.
+
 These tests verify the adapter's lifecycle boundary. The complete adapter and
 all dependency targets retain their separate source audit. Fixture results do
 not establish standard-MCP packaging or authenticated model acceptance.

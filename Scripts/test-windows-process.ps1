@@ -27,6 +27,7 @@ $manifest | Set-Content (Join-Path $consumer 'Package.swift')
 Copy-Item (Join-Path $fixture 'ManagedProcessTests.swift') $tests
 Copy-Item (Join-Path $fixture 'CommandRunnerTests.swift') $tests
 Copy-Item (Join-Path $fixture 'PrivateDirectoryTests.swift') $tests
+Copy-Item (Join-Path $fixture 'WorktreeFileSystemTests.swift') $tests
 Copy-Item (Join-Path $consumer 'Package.swift') $evidence
 $sourceRecords = @()
 foreach ($name in @(
@@ -34,7 +35,7 @@ foreach ($name in @(
     'CommandRunner.swift', 'CommandRunner+Windows.swift', 'WindowsCommandProcess.swift',
     'WindowsProcessJob.swift', 'WindowsFilePath.swift', 'WindowsExecutable.swift',
     'WindowsProcessEnvironment.swift', 'CodexConfig.swift', 'JSONValue.swift',
-    'WindowsPrivateDirectory.swift'
+    'WindowsPrivateDirectory.swift', 'CodexWorktreeFileSystem.swift'
 )) {
     $source = Join-Path $repository "Sources/CodexAdapter/$name"
     Copy-Item $source $sources

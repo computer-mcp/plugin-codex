@@ -19,9 +19,34 @@
     // These non-inherited kernel handles are immutable, never exposed and closed only on deinit.
     private let handles: [HANDLE]
     private let security: PrivateSecurity
+    private let ancestor: WindowsPrivateDirectory?
+    private let requiresPrivateDACL: Bool
     let url: URL
 
-    init(_ url: URL) throws {
+    convenience init(_ url: URL) throws {
+      try self.init(url, createMissing: true, ancestor: nil, requiresPrivateDACL: true)
+    }
+
+    convenience init(existingDirectory url: URL) throws {
+      try self.init(url, createMissing: false, ancestor: nil, requiresPrivateDACL: true)
+    }
+
+    convenience init(existingDirectory url: URL, containedIn root: URL) throws {
+      try self.init(
+        url, createMissing: false, ancestor: WindowsPrivateDirectory(existingDirectory: root),
+        requiresPrivateDACL: false)
+    }
+
+    convenience init(creatingDirectory url: URL, containedIn root: URL) throws {
+      try self.init(
+        url, createMissing: true, ancestor: WindowsPrivateDirectory(existingDirectory: root),
+        requiresPrivateDACL: true)
+    }
+
+    private init(
+      _ url: URL, createMissing: Bool, ancestor: WindowsPrivateDirectory?,
+      requiresPrivateDACL: Bool
+    ) throws {
       guard let native = WindowsFilePath.native(url), WindowsFilePath.isAbsolute(native),
         let path = WindowsFilePath.absolute(native, cwd: native)
       else {
@@ -30,15 +55,17 @@
       }
       let prefixes = try Self.ancestors(path)
       let security = try PrivateSecurity()
+      let ancestorIdentity = try ancestor.map { try WindowsDirectoryIdentity($0.handles.last!) }
+      var foundAncestor = ancestor == nil
       var retained: [HANDLE] = []
       do {
         for (index, prefix) in prefixes.enumerated() {
           let final = index == prefixes.count - 1
-          var created = false
-          var handle = Self.open(prefix, inspectSecurity: final)
+          var inspectSecurity = final && requiresPrivateDACL
+          var handle = Self.open(prefix, inspectSecurity: inspectSecurity)
           if handle == nil || handle == INVALID_HANDLE_VALUE {
             let code = GetLastError()
-            guard index > 0,
+            guard createMissing, foundAncestor, index > 0,
               code == DWORD(ERROR_FILE_NOT_FOUND) || code == DWORD(ERROR_PATH_NOT_FOUND)
             else {
               throw WindowsPrivateDirectoryError.native("Open private directory ancestry", code)
@@ -53,7 +80,7 @@
                 throw WindowsPrivateDirectoryError.native("Create private directory", code)
               }
             }
-            created = true
+            inspectSecurity = true
             handle = Self.open(prefix, inspectSecurity: true)
           }
           guard let handle, handle != INVALID_HANDLE_VALUE else {
@@ -61,7 +88,15 @@
           }
           retained.append(handle)
           try Self.validateDirectory(handle)
-          if final || created { try security.validate(handle) }
+          if inspectSecurity { try security.validate(handle) }
+          if let ancestorIdentity, try WindowsDirectoryIdentity(handle) == ancestorIdentity {
+            foundAncestor = true
+          }
+        }
+        guard foundAncestor else {
+          throw WindowsPrivateDirectoryError.invalid(
+            "Managed directory ancestry does not contain the owned private root.")
+
         }
       } catch {
         for handle in retained.reversed() { CloseHandle(handle) }
@@ -69,6 +104,8 @@
       }
       handles = retained
       self.security = security
+      self.ancestor = ancestor
+      self.requiresPrivateDACL = requiresPrivateDACL
       self.url = URL(fileURLWithPath: path, isDirectory: true)
     }
 
@@ -76,7 +113,8 @@
 
     func validate() throws {
       for handle in handles { try Self.validateDirectory(handle) }
-      try security.validate(handles[handles.count - 1])
+      try ancestor?.validate()
+      if requiresPrivateDACL { try security.validate(handles[handles.count - 1]) }
     }
 
     private static func open(_ path: String, inspectSecurity: Bool) -> HANDLE? {
@@ -258,6 +296,22 @@
         defer { LocalFree(text) }
         return String(decodingCString: text, as: UTF16.self)
       }
+    }
+  }
+  struct WindowsDirectoryIdentity: Equatable {
+    private let volume: UInt64
+    private let fileID: Data
+
+    init(_ handle: HANDLE) throws {
+      var information = FILE_ID_INFO()
+      guard
+        GetFileInformationByHandleEx(
+          handle, FileIdInfo, &information, DWORD(MemoryLayout<FILE_ID_INFO>.size))
+      else {
+        throw WindowsPrivateDirectoryError.native("Read directory identity", GetLastError())
+      }
+      volume = information.VolumeSerialNumber
+      fileID = withUnsafeBytes(of: information.FileId.Identifier) { Data($0) }
     }
   }
 #endif
