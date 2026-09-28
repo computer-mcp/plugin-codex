@@ -55,7 +55,9 @@ class ProcessObservation:
             self.handle = None
 
 
-def run(adapter, codex):
+def run(adapter, codex, evidence_directory=None):
+    if evidence_directory is not None:
+        evidence_directory.mkdir(parents=True, exist_ok=False)
     root = Path(tempfile.mkdtemp(prefix="native-adapter-汉字-")).resolve()
     workspace = root / "workspace"
     state = root / "codex"
@@ -88,6 +90,7 @@ def run(adapter, codex):
     process = None
     observations = []
     confirmed = False
+    phase = "executable versions"
     try:
         for executable, key in [(adapter, "adapter_version"), (codex, "codex_version")]:
             receipt[key] = subprocess.run([str(executable), "--version"], env=environment,
@@ -97,10 +100,12 @@ def run(adapter, codex):
                 process = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                            stderr=stderr, text=True, encoding="utf-8", cwd=workspace, env=environment)
                 client = workflow.MCPClient(process)
+                phase = f"connection {attempt + 1} initialize"
                 initialized = client.request("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
                     "clientInfo": {"name": "native-adapter-protocol-check", "version": "1"}})
                 client.send({"method": "notifications/initialized", "params": {}})
                 client.request("ping", {})
+                phase = f"connection {attempt + 1} catalog"
                 catalog = client.request("tools/list", {})["tools"]
                 names = {tool["name"] for tool in catalog}
                 assert len(names) == len(catalog), "Duplicate tool names"
@@ -114,6 +119,7 @@ def run(adapter, codex):
                 assert result["persistence_available"] is True, result
                 assert result["host_diagnostics_available"] is False, result
                 assert client.call("thread.loaded.list")["data"] == []
+                phase = f"connection {attempt + 1} native lifecycle"
                 started = client.call("thread.start")
                 thread_id = started["thread"]["id"]
                 origin = client.last_invocation
@@ -150,7 +156,9 @@ def run(adapter, codex):
                     "owned_stop": stopped["process"], "adapter_exit_code": process.returncode})
         confirmed = True
     except Exception as error:
-        raise RuntimeError(f"Native protocol check failed; evidence retained at {root}: {error}") from error
+        receipt["failure_phase"] = phase
+        receipt["error"] = str(error)[:4096]
+        raise RuntimeError(f"Native protocol check failed during {phase}; evidence retained at {root}: {error}") from error
     finally:
         if process and process.poll() is None:
             if not process.stdin.closed:
@@ -162,9 +170,21 @@ def run(adapter, codex):
                 process.wait(timeout=5)
         for observation in observations:
             observation.close()
+        receipt["success"] = confirmed
+        receipt["adapter_exit_code"] = process.poll() if process else None
+        stderr_path = root / "adapter-stderr.log"
+        if stderr_path.exists():
+            with stderr_path.open("rb") as handle:
+                stderr_bytes = handle.read(16385)
+            receipt["stderr"] = stderr_bytes[:16384].decode("utf-8", errors="replace")
+            receipt["stderr_truncated"] = len(stderr_bytes) > 16384
+        if not confirmed:
+            print(json.dumps(receipt, indent=2), flush=True)
         if confirmed:
             shutil.rmtree(root)
             receipt["private_state_removed"] = True
+        if evidence_directory is not None:
+            (evidence_directory / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     return receipt
 
 
@@ -172,8 +192,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adapter", type=Path, required=True)
     parser.add_argument("--codex", type=Path, required=True)
+    parser.add_argument("--evidence-directory", type=Path)
     options = parser.parse_args()
     for executable in [options.adapter, options.codex]:
         if not executable.is_absolute() or not executable.is_file():
             parser.error("Executables must be existing absolute file paths")
-    print(json.dumps(run(options.adapter, options.codex), indent=2))
+    print(json.dumps(run(options.adapter, options.codex, options.evidence_directory), indent=2))

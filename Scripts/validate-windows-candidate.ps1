@@ -138,6 +138,7 @@ if (!$DatabaseOnly -and $results.Where({ $_.target -eq 'CodexMCPAdapter' -and $_
             bundled = $false
         } | ConvertTo-Json | Set-Content (Join-Path $evidence 'codex-binary-receipt.json')
         python (Join-Path $fixture 'ProtocolCheck.py') --adapter $binary --codex $codexBinary `
+            --evidence-directory (Join-Path $evidence 'adapter-protocol') `
             *> (Join-Path $evidence 'adapter-protocol.log')
         $runtimeExit = $LASTEXITCODE
         Get-Content (Join-Path $evidence 'adapter-protocol.log') -Tail 60

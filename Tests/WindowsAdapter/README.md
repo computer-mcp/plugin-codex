@@ -19,3 +19,12 @@ check is independent of the release archive and clean-machine runtime contract;
 it does not establish that an artifact contains all redistributable libraries.
 The same protocol check can run on macOS against existing candidate executables
 to validate its platform-neutral assertions.
+
+The `artifact` validation scope accepts a completed source-audit run and exact
+SDK revision. It verifies that run belongs to this repository and checks every
+linked payload file against the source inventory before executing the same bytes
+in a fresh runner. The receipt binds the binary/source revision separately from
+the check-definition revision. This supports runtime diagnosis and acceptance
+without rebuilding unchanged source; it never promotes a failed source run to
+a successful release. Failure evidence includes the phase, adapter exit status
+and bounded stderr. Private databases and credentials are not uploaded.

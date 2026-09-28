@@ -12,8 +12,12 @@ on:
       windows_validation_scope:
         description: 'Windows candidate checks; all remains the complete adapter gate'
         type: choice
-        options: [all, host-mcp, database]
+        options: [all, host-mcp, database, artifact]
         default: all
+      windows_artifact_run:
+        description: 'Completed source audit run whose exact linked Windows binary should be checked'
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -85,7 +89,7 @@ jobs:
           retention-days: 14
 
   windows-candidate:
-    if: ${{ inputs.windows_sdk_revision != '' && inputs.windows_validation_scope != 'host-mcp' }}
+    if: ${{ inputs.windows_sdk_revision != '' && inputs.windows_validation_scope != 'host-mcp' && inputs.windows_validation_scope != 'artifact' }}
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -152,7 +156,7 @@ jobs:
           if-no-files-found: error
 
   windows-host-mcp:
-    if: ${{ inputs.windows_sdk_revision != '' && inputs.windows_validation_scope != 'database' }}
+    if: ${{ inputs.windows_sdk_revision != '' && inputs.windows_validation_scope != 'database' && inputs.windows_validation_scope != 'artifact' }}
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -186,5 +190,36 @@ jobs:
         with:
           name: codex-plugin-windows-host-mcp-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/windows-host-mcp/evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  windows-artifact:
+    if: ${{ inputs.windows_validation_scope == 'artifact' && inputs.windows_sdk_revision != '' }}
+    runs-on: windows-2022
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
+      - name: Check the exact linked native adapter
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.windows_artifact_run }}
+          SDK_REVISION: ${{ inputs.windows_sdk_revision }}
+        run: ./Scripts/check-windows-artifact.ps1 -SourceRun $env:SOURCE_RUN -SDKRevision $env:SDK_REVISION
+      - name: Preserve native artifact acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-artifact-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/windows-artifact/evidence/
           include-hidden-files: true
           if-no-files-found: error
