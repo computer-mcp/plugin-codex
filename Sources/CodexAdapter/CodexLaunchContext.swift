@@ -19,13 +19,13 @@ struct CodexLaunchContext: Sendable {
         let host = try? JSONDecoder().decode(Host.self, from: Data(text.utf8)),
         host.formatVersion == 1,
         !host.workspace.id.isEmpty, !host.profileID.isEmpty, !host.caller.isEmpty,
-        host.workspace.rootPath.hasPrefix("/"), !host.workspace.rootPath.contains("\0")
+        Self.isAbsolutePath(host.workspace.rootPath), !host.workspace.rootPath.contains("\0")
       else {
         throw ConfigurationError.invalid("Invalid Computer MCP launch context.")
       }
       workspaceURL = URL(fileURLWithPath: host.workspace.rootPath).standardizedFileURL
       if let root = host.managedWorkspaceRoot {
-        guard root.hasPrefix("/"), root.utf8.count <= 16_384, !root.contains("\0") else {
+        guard Self.isAbsolutePath(root), root.utf8.count <= 16_384, !root.contains("\0") else {
           throw ConfigurationError.invalid("Invalid host-owned managed workspace root.")
         }
         managedWorktreeRoot = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
@@ -94,9 +94,11 @@ struct CodexLaunchContext: Sendable {
       let leaseScope = SHA256.hash(data: leaseIdentity).map { String(format: "%02x", $0) }.joined()
       let leaseDirectory = stateDirectory.appendingPathComponent(
         "worktree-leases", isDirectory: true)
-      try FileManager.default.createDirectory(
-        at: leaseDirectory, withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700])
+      #if !os(Windows)
+        try FileManager.default.createDirectory(
+          at: leaseDirectory, withIntermediateDirectories: true,
+          attributes: [.posixPermissions: 0o700])
+      #endif
       worktreeLeasePath = leaseDirectory.appendingPathComponent(leaseScope + ".sqlite").path
       threadOwnerIndex = try makeThreadOwnerIndex(stateDirectory: stateDirectory)
     } else {
@@ -104,9 +106,11 @@ struct CodexLaunchContext: Sendable {
       worktreeLeasePath = nil
       threadOwnerIndex = nil
     }
-    try FileManager.default.createDirectory(
-      at: storageDirectory, withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700])
+    #if !os(Windows)
+      try FileManager.default.createDirectory(
+        at: storageDirectory, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    #endif
     let database = try CodexDatabase(
       path: storageDirectory.appendingPathComponent("codex.sqlite").path,
       worktreeLeasePath: worktreeLeasePath)
@@ -132,14 +136,25 @@ struct CodexLaunchContext: Sendable {
       principalID, owner.profileID ?? "", owner.workspaceID ?? "",
     ])
     let scope = SHA256.hash(data: identity).map { String(format: "%02x", $0) }.joined()
-    try FileManager.default.createDirectory(
-      at: stateDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    #if !os(Windows)
+      try FileManager.default.createDirectory(
+        at: stateDirectory, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    #endif
     let codexHome =
       ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
       ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     return try CodexThreadOwnerIndex(
       path: stateDirectory.appendingPathComponent("thread-owners.sqlite").path, subject: scope,
       codexHome: codexHome)
+  }
+
+  private static func isAbsolutePath(_ path: String) -> Bool {
+    #if os(Windows)
+      WindowsFilePath.isValid(path) && WindowsFilePath.isAbsolute(path)
+    #else
+      path.hasPrefix("/")
+    #endif
   }
 
   private struct Host: Decodable {

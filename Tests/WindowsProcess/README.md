@@ -17,6 +17,12 @@ with continued drain, and descendant cleanup after cancellation, timeout and
 natural exit. Codex discovery and finite commands use the same Windows path and
 environment rules. Each test retains its own native process observations.
 
+Private state tests inspect actual owner SIDs and protected DACLs, inherited
+file permissions, directory replacement during retained ownership, and refusal
+of reparses, foreign owners and existing broader permissions. The separate
+GRDB audit verifies that connection configuration retains the production
+directory guard through close and release.
+
 These tests verify the adapter's lifecycle boundary. The complete adapter and
 all dependency targets retain their separate source audit. Fixture results do
 not establish standard-MCP packaging or authenticated model acceptance.

@@ -86,6 +86,17 @@ if ($results.Where({ $_.target -eq 'GRDB' -and $_.exitCode -eq 0 }).Count -eq 1)
         '__GRDB_PATH__', $grdb.Replace('\', '/'))
     $manifest | Set-Content (Join-Path $consumer 'Package.swift')
     Copy-Item (Join-Path $fixture 'GRDBTests.swift') $tests
+    Copy-Item (Join-Path $fixture 'DirectoryLifetimeTests.swift') $tests
+    $directorySources = @()
+    foreach ($name in @('WindowsPrivateDirectory.swift', 'WindowsFilePath.swift')) {
+        $source = Join-Path $repository "Sources/CodexAdapter/$name"
+        Copy-Item $source $tests
+        $directorySources += [pscustomobject]@{
+            source = "Sources/CodexAdapter/$name"
+            sha256 = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+    $directorySources | ConvertTo-Json | Set-Content (Join-Path $evidence 'database-directory-sources.json')
     $grdbRevision | Set-Content (Join-Path $evidence 'grdb-revision.txt')
     Copy-Item (Join-Path $consumer 'Package.swift') (Join-Path $evidence 'database-Package.swift')
 
