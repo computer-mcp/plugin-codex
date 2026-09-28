@@ -1,6 +1,11 @@
-import CryptoKit
 import Foundation
 import GRDB
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 /// Cross-subject affinity for native threads; all execution records remain in their subject database.
 final class CodexThreadOwnerIndex: @unchecked Sendable {

@@ -1,6 +1,11 @@
-import CryptoKit
 import Foundation
 import MCP
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 /// Host tools use standard MCP and the existing gateway policy/ticket tool surface.
 /// Caller-provided tool arguments cannot select this connection or its authority.

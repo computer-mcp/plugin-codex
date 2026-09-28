@@ -1,6 +1,11 @@
 import CodexAppServerRuntime
-import CryptoKit
 import Foundation
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 typealias AppServerJSON = CodexAppServerConnectionFoundation.JSONValue
 

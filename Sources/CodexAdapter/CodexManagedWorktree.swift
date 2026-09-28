@@ -1,6 +1,11 @@
-import CryptoKit
 import Darwin
 import Foundation
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 enum CodexManagedWorktreeState: String, Codable, Equatable, Sendable {
   case planned

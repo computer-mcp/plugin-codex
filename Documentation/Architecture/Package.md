@@ -14,6 +14,7 @@ dependency.
 | swift-codex | App Server client and Exec client, each with its own lifecycle |
 | swift-subprocess 0.4.0 | Existing process infrastructure dependency |
 | swift-argument-parser 1.8.2 | Named options, schema-comparison subcommand, validation and generated CLI help |
+| Apple Swift Crypto 4.5.2 | SHA-256 on Windows; Apple platforms retain CryptoKit |
 | GRDB 7.11.1 | Codex approval, runtime/thread ownership, acceptance run, worktree lease and managed-worktree storage and transactions |
 
 `Scripts/verify-swift-codex-release-gate.sh` verifies that the manifest's exact
@@ -167,6 +168,10 @@ through unchanged. An initial directory or Git worktree is not OS isolation.
 `CodexProcessEnvironment` preserves vendor state configuration and proxy
 behavior while removing parent Codex session and Computer MCP launch metadata.
 External Codex installation and user credentials remain user-owned.
+Environment filtering uses native case-insensitive name comparison on Windows.
+Proxy settings preserve the existing spelling and do not create case aliases;
+ambiguous caller-supplied names remain subject to native launch validation.
+Apple platforms retain distinct uppercase/lowercase proxy variables.
 
 App Server and Exec resolve the configured executable using the same
 launch environment and workspace: absolute paths are direct, relative paths

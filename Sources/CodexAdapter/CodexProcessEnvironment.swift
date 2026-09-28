@@ -1,5 +1,11 @@
 import Foundation
-import SystemConfiguration
+
+#if canImport(SystemConfiguration)
+  import SystemConfiguration
+#endif
+#if os(Windows)
+  import WinSDK
+#endif
 
 internal struct SystemNetworkProxySettings: Equatable, Sendable {
   internal var httpProxy: String?
@@ -102,11 +108,12 @@ internal enum CodexProcessEnvironment {
     systemProxy: SystemNetworkProxySettings = .current()
   ) -> [String: String] {
     var environment = base
-    for key in parentSessionKeys {
+    for key in base.keys where parentSessionKeys.contains(where: { namesMatch(key, $0) }) {
       environment.removeValue(forKey: key)
     }
-    let hasInheritedProxy = (httpKeys + httpsKeys + allKeys).contains {
-      environment[$0] != nil
+    let proxyKeys = httpKeys + httpsKeys + allKeys
+    let hasInheritedProxy = environment.keys.contains { key in
+      proxyKeys.contains { namesMatch(key, $0) }
     }
 
     if hasInheritedProxy {
@@ -119,11 +126,11 @@ internal enum CodexProcessEnvironment {
       install(systemProxy.socksProxy, for: allKeys, in: &environment)
     }
 
-    let hasEffectiveProxy = (httpKeys + httpsKeys + allKeys).contains {
-      !(environment[$0] ?? "").isEmpty
+    let hasEffectiveProxy = environment.contains { key, value in
+      !value.isEmpty && proxyKeys.contains { namesMatch(key, $0) }
     }
     if hasEffectiveProxy {
-      if noProxyKeys.contains(where: { environment[$0] != nil }) {
+      if environment.keys.contains(where: { key in noProxyKeys.contains { namesMatch(key, $0) } }) {
         mirrorExistingValue(for: noProxyKeys, in: &environment)
       } else {
         let noProxy = normalizedBypassHosts(systemProxy.bypassHosts).joined(separator: ",")
@@ -137,13 +144,15 @@ internal enum CodexProcessEnvironment {
     for keys: [String],
     in environment: inout [String: String]
   ) {
-    let existingValues = keys.compactMap { key in
-      environment[key].map { (key: key, value: $0) }
-    }
-    guard existingValues.count == 1, let existingValue = existingValues.first?.value else {
-      return
-    }
-    install(existingValue, for: keys, in: &environment)
+    #if !os(Windows)
+      let existingValues = keys.compactMap { key in
+        environment[key].map { (key: key, value: $0) }
+      }
+      guard existingValues.count == 1, let existingValue = existingValues.first?.value else {
+        return
+      }
+      install(existingValue, for: keys, in: &environment)
+    #endif
   }
 
   private static func install(
@@ -152,9 +161,35 @@ internal enum CodexProcessEnvironment {
     in environment: inout [String: String]
   ) {
     guard let value else { return }
-    for key in keys {
-      environment[key] = value
-    }
+    #if os(Windows)
+      // Windows already resolves names case-insensitively; aliases would be duplicates.
+      for key in keys.prefix(1) {
+        environment[key] = value
+      }
+    #else
+      for key in keys {
+        environment[key] = value
+      }
+    #endif
+  }
+
+  private static func namesMatch(_ lhs: String, _ rhs: String) -> Bool {
+    #if os(Windows)
+      let left = Array(lhs.utf16)
+      let right = Array(rhs.utf16)
+      guard !left.isEmpty, !right.isEmpty,
+        left.count <= Int32.max, right.count <= Int32.max
+      else { return lhs == rhs }
+      return left.withUnsafeBufferPointer { l in
+        right.withUnsafeBufferPointer { r in
+          // Explicit lengths keep malformed NUL-suffixed keys visible to launch validation.
+          CompareStringOrdinal(l.baseAddress, Int32(l.count), r.baseAddress, Int32(r.count), true)
+            == CSTR_EQUAL
+        }
+      }
+    #else
+      return lhs == rhs
+    #endif
   }
 
   private static func normalizedBypassHosts(_ hosts: [String]) -> [String] {

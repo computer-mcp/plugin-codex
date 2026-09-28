@@ -1,6 +1,11 @@
-import CryptoKit
 import Foundation
 import GRDB
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 /// Transfers only adapter-owned domain records. This is an explicit offline
 /// administration operation, not an MCP tool or a host-authority channel.

@@ -1,5 +1,10 @@
-import CryptoKit
 import Foundation
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 /// Host launch metadata binds task ownership; it never grants gateway administration.
 struct CodexLaunchContext: Sendable {
