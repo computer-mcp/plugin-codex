@@ -173,6 +173,9 @@
     }
 
     private final class PrivateSecurity {
+      // FILE_ALL_ACCESS from winnt.h; Swift cannot import its mixed-type C expression.
+      private static let fileAllAccess =
+        DWORD(STANDARD_RIGHTS_REQUIRED) | DWORD(SYNCHRONIZE) | 0x1FF
       let descriptor: PSECURITY_DESCRIPTOR
       private let owner: PSID
 
@@ -243,7 +246,7 @@
         let header = allowed.pointee.Header
         guard header.AceType == BYTE(ACCESS_ALLOWED_ACE_TYPE),
           header.AceFlags == BYTE(OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE),
-          allowed.pointee.Mask == DWORD(FILE_ALL_ACCESS),
+          allowed.pointee.Mask == Self.fileAllAccess,
           Int(header.AceSize) >= MemoryLayout<ACCESS_ALLOWED_ACE>.size + MemoryLayout<DWORD>.size
         else {
           throw WindowsPrivateDirectoryError.invalid(
