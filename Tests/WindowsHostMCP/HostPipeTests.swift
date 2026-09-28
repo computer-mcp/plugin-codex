@@ -48,8 +48,8 @@
       do {
         try await left.connect()
         try await right.connect()
-        #expect(throws: (any Error).self) { try pair.left.output.write(contentsOf: Data([1])) }
-        #expect(throws: (any Error).self) { _ = try pair.left.input.read(upToCount: 1) }
+        #expect(throws: (any Error).self) { try pair.left.output.withHandle { _ in } }
+        #expect(throws: (any Error).self) { try pair.left.input.withHandle { _ in } }
         async let first: Void = left.disconnect()
         async let second: Void = left.disconnect()
         _ = await (first, second)
@@ -80,12 +80,12 @@
       let transport = try MCPInheritedPipeTransport(takingOwnershipOf: endpoint)
       var inputFlags: DWORD = 0
       var outputFlags: DWORD = 0
-      #expect(GetHandleInformation(endpoint.input._handle, &inputFlags))
-      #expect(GetHandleInformation(endpoint.output._handle, &outputFlags))
+      #expect(try endpoint.input.withHandle { GetHandleInformation($0, &inputFlags) })
+      #expect(try endpoint.output.withHandle { GetHandleInformation($0, &outputFlags) })
       #expect(inputFlags & DWORD(HANDLE_FLAG_INHERIT) == 0)
       #expect(outputFlags & DWORD(HANDLE_FLAG_INHERIT) == 0)
       await transport.disconnect()
-      #expect(throws: (any Error).self) { try endpoint.output.write(contentsOf: Data([1])) }
+      #expect(throws: (any Error).self) { try endpoint.output.withHandle { _ in } }
     }
 
     @Test("Missing, ambiguous, standard-stream and noninherited handles are not consumed")
@@ -102,8 +102,8 @@
           ])
         }
       }
-      let read = String(UInt(bitPattern: pair.left.input._handle))
-      let write = String(UInt(bitPattern: pair.left.output._handle))
+      let read = try pair.left.input.withHandle { String(UInt(bitPattern: $0)) }
+      let write = try pair.left.output.withHandle { String(UInt(bitPattern: $0)) }
       let environment = [
         "COMPUTER_MCP_HOST_CONTEXT": "bound-by-host",
         MCPInheritedPipeEndpoint.readEnvironmentKey: read,
@@ -125,8 +125,8 @@
         try MCPInheritedPipeEndpoint.inherited(environment: standard)
       }
       var flags: DWORD = 0
-      #expect(GetHandleInformation(pair.left.input._handle, &flags))
-      #expect(GetHandleInformation(pair.left.output._handle, &flags))
+      #expect(try pair.left.input.withHandle { GetHandleInformation($0, &flags) })
+      #expect(try pair.left.output.withHandle { GetHandleInformation($0, &flags) })
     }
 
     @Test("A pre-cancelled receiver releases native endpoints and permits peer EOF")
@@ -160,15 +160,15 @@
     let left: MCPInheritedPipeEndpoint
     let right: MCPInheritedPipeEndpoint
     init() throws {
-      func pipe() throws -> (FileHandle, FileHandle) {
+      func pipe() throws -> (MCPInheritedPipeHandle, MCPInheritedPipeHandle) {
         var read: HANDLE?
         var write: HANDLE?
         guard CreatePipe(&read, &write, nil, 4096), let read, let write else {
           throw MCPError.connectionClosed
         }
         return (
-          FileHandle(handle: read, closeOnDealloc: true),
-          FileHandle(handle: write, closeOnDealloc: true)
+          MCPInheritedPipeHandle(takingOwnershipOf: read),
+          MCPInheritedPipeHandle(takingOwnershipOf: write)
         )
       }
       let request = try pipe()
@@ -182,12 +182,14 @@
   private final class HandleLease {
     private var owned: HANDLE?
     let text: String
-    init(duplicating file: FileHandle) throws {
+    init(duplicating file: MCPInheritedPipeHandle) throws {
       var copy: HANDLE?
       guard
-        DuplicateHandle(
-          GetCurrentProcess(), file._handle, GetCurrentProcess(), &copy, 0, true,
-          DWORD(DUPLICATE_SAME_ACCESS)), let copy
+        try file.withHandle({
+          DuplicateHandle(
+            GetCurrentProcess(), $0, GetCurrentProcess(), &copy, 0, true,
+            DWORD(DUPLICATE_SAME_ACCESS))
+        }), let copy
       else { throw MCPError.connectionClosed }
       owned = copy
       text = String(UInt(bitPattern: copy))

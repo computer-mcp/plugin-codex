@@ -10,8 +10,8 @@
   struct MCPInheritedPipeEndpoint: Sendable {
     static let readEnvironmentKey = "COMPUTER_MCP_HOST_READ_HANDLE"
     static let writeEnvironmentKey = "COMPUTER_MCP_HOST_WRITE_HANDLE"
-    let input: FileHandle
-    let output: FileHandle
+    let input: MCPInheritedPipeHandle
+    let output: MCPInheritedPipeHandle
 
     static func inherited(environment: [String: String]) throws -> Self? {
       func value(_ name: String) throws -> String? {
@@ -31,8 +31,8 @@
       let input = try inheritedHandle(read)
       let output = try inheritedHandle(write)
       return Self(
-        input: FileHandle(handle: input, closeOnDealloc: true),
-        output: FileHandle(handle: output, closeOnDealloc: true))
+        input: MCPInheritedPipeHandle(takingOwnershipOf: input),
+        output: MCPInheritedPipeHandle(takingOwnershipOf: output))
     }
 
     private static func inheritedHandle(_ text: String) throws -> HANDLE {
@@ -57,7 +57,10 @@
       label: "mcp.inherited-pipe", factory: { _ in SwiftLogNoOpLogHandler() })
     private let descriptors: InheritedPipeDescriptors
     private let base: StdioTransport
-    private var connection: Task<Void, Error>?
+    private var connection: Task<AsyncThrowingStream<Data, Error>, Error>?
+    private var stream = AsyncThrowingStream<Data, Error> {
+      $0.finish(throwing: MCPError.connectionClosed)
+    }
     private var closing: Task<Void, Never>?
 
     init(
@@ -76,21 +79,22 @@
     func connect() async throws {
       guard closing == nil else { throw MCPError.connectionClosed }
       if let connection {
-        try await connection.value
+        stream = try await connection.value
         try await base.connect()
         return
       }
       let task = Task { [base, descriptors] in
         defer { descriptors.close() }
         try await base.connect()
+        return await base.receive()
       }
       connection = task
-      try await task.value
+      stream = try await task.value
       guard closing == nil else { throw MCPError.connectionClosed }
     }
 
     func send(_ data: Data) async throws { try await base.send(data) }
-    func receive() async -> AsyncThrowingStream<Data, Error> { await base.receive() }
+    func receive() -> AsyncThrowingStream<Data, Error> { stream }
 
     func disconnect() async {
       if let closing {
@@ -105,6 +109,27 @@
       closing = task
       await task.value
     }
+  }
+
+  /// The lock serializes native handle borrowing with its once-only close.
+  final class MCPInheritedPipeHandle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handle: HANDLE?
+    init(takingOwnershipOf handle: HANDLE) { self.handle = handle }
+    func withHandle<T>(_ body: (HANDLE) throws -> T) throws -> T {
+      try lock.withLock {
+        guard let handle else { throw MCPError.connectionClosed }
+        return try body(handle)
+      }
+    }
+    func close() {
+      lock.withLock {
+        guard let handle else { return }
+        self.handle = nil
+        CloseHandle(handle)
+      }
+    }
+    deinit { close() }
   }
 
   private final class InheritedPipeDescriptors: @unchecked Sendable {
@@ -125,26 +150,29 @@
       }
     }
 
-    private static func duplicate(_ file: FileHandle, reading: Bool) throws -> FileDescriptor {
-      let handle = file._handle
-      var mode: DWORD = 0
-      guard GetFileType(handle) == DWORD(FILE_TYPE_PIPE),
-        GetNamedPipeInfo(handle, &mode, nil, nil, nil), mode & DWORD(PIPE_TYPE_MESSAGE) == 0,
-        SetHandleInformation(handle, DWORD(HANDLE_FLAG_INHERIT), 0)
-      else { throw MCPError.invalidParams("Host transport requires owned byte pipes.") }
-      var duplicate: HANDLE?
-      guard
-        DuplicateHandle(
-          GetCurrentProcess(), handle, GetCurrentProcess(), &duplicate, 0, false,
-          DWORD(DUPLICATE_SAME_ACCESS)), let duplicate
-      else { throw MCPError.connectionClosed }
-      let descriptor = ucrt._open_osfhandle(
-        Int(bitPattern: duplicate), (reading ? _O_RDONLY : _O_WRONLY) | _O_BINARY | _O_NOINHERIT)
-      guard descriptor >= 0 else {
-        CloseHandle(duplicate)
-        throw MCPError.connectionClosed
+    private static func duplicate(_ file: MCPInheritedPipeHandle, reading: Bool) throws
+      -> FileDescriptor
+    {
+      try file.withHandle { handle in
+        var mode: DWORD = 0
+        guard GetFileType(handle) == DWORD(FILE_TYPE_PIPE),
+          GetNamedPipeInfo(handle, &mode, nil, nil, nil), mode & DWORD(PIPE_TYPE_MESSAGE) == 0,
+          SetHandleInformation(handle, DWORD(HANDLE_FLAG_INHERIT), 0)
+        else { throw MCPError.invalidParams("Host transport requires owned byte pipes.") }
+        var duplicate: HANDLE?
+        guard
+          DuplicateHandle(
+            GetCurrentProcess(), handle, GetCurrentProcess(), &duplicate, 0, false,
+            DWORD(DUPLICATE_SAME_ACCESS)), let duplicate
+        else { throw MCPError.connectionClosed }
+        let descriptor = ucrt._open_osfhandle(
+          Int(bitPattern: duplicate), (reading ? _O_RDONLY : _O_WRONLY) | _O_BINARY | _O_NOINHERIT)
+        guard descriptor >= 0 else {
+          CloseHandle(duplicate)
+          throw MCPError.connectionClosed
+        }
+        return FileDescriptor(rawValue: descriptor)
       }
-      return FileDescriptor(rawValue: descriptor)
     }
 
     func close() {
@@ -153,8 +181,8 @@
         closed = true
         _ = ucrt._close(input.rawValue)
         _ = ucrt._close(output.rawValue)
-        try? endpoint.input.close()
-        try? endpoint.output.close()
+        endpoint.input.close()
+        endpoint.output.close()
       }
     }
 
