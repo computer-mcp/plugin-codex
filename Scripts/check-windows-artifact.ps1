@@ -64,14 +64,20 @@ foreach ($directory in $runtimeDirectories) { $auditArguments += @('--runtime-di
 python (Join-Path $PSScriptRoot 'windows_runtime.py') @auditArguments
 if ($LASTEXITCODE -ne 0) { throw 'Recursive native runtime dependency audit failed' }
 $swift = (Get-Command swift).Source
-$swiftInstallation = Split-Path (Split-Path (Split-Path (Split-Path $swift)))
+$swiftInstallation = Split-Path (Split-Path (Split-Path (Split-Path (Split-Path $swift))))
 $notices = @(Get-ChildItem $swiftInstallation -Recurse -File | Where-Object {
-    $_.Name -match '^(LICENSE|NOTICE|COPYING|ThirdParty)' -and $_.Length -lt 1048576
+    $_.Name -match '(LICENSE|NOTICE|COPYING|COPYRIGHT|ThirdParty)' -and $_.Length -lt 1048576
 } | ForEach-Object {
     [pscustomobject]@{ path = $_.FullName; bytes = $_.Length
         sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
 })
-$notices | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $evidence 'runtime-notice-inventory.json')
+ConvertTo-Json -InputObject $notices -Depth 4 | Set-Content (Join-Path $evidence 'runtime-notice-inventory.json')
+$noticeOutput = Join-Path $evidence 'runtime-notices'
+foreach ($notice in $notices) {
+    $destination = Join-Path $noticeOutput ([IO.Path]::GetRelativePath($swiftInstallation, $notice.path))
+    New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+    Copy-Item $notice.path $destination
+}
 $definitionRevision = git rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify check definition' }
 [pscustomobject]@{
@@ -105,4 +111,30 @@ python (Join-Path $fixture 'ProtocolCheck.py') --adapter (Join-Path $product 'co
     *> (Join-Path $evidence 'protocol.log')
 $code = $LASTEXITCODE
 Get-Content (Join-Path $evidence 'protocol.log') -Tail 80
-exit $code
+if ($code -ne 0) { exit $code }
+
+# The relocated candidate contains only inventoried product files and selected runtime DLLs.
+$relocated = Join-Path $root 'relocated'
+Copy-Item $product $relocated -Recurse
+$closure = Get-Content (Join-Path $evidence 'runtime-dependencies.json') -Raw | ConvertFrom-Json
+if (@($closure.libraries | Where-Object { $_.role -eq 'external-msvc-runtime' }).Count -ne 0) {
+    throw 'App-local acceptance requires redistributable runtime inputs outside System32'
+}
+foreach ($library in @($closure.libraries | Where-Object { $_.role -eq 'runtime' })) {
+    $destination = Join-Path $relocated ([IO.Path]::GetFileName($library.path))
+    if (Test-Path $destination) { throw 'Runtime DLL collides with the product payload' }
+    Copy-Item $library.path $destination
+    if ((Get-FileHash $destination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $library.sha256) {
+        throw 'Relocated runtime DLL differs from its inspected source'
+    }
+}
+@(Get-ChildItem $relocated -Recurse -File | ForEach-Object {
+    [pscustomobject]@{ path = [IO.Path]::GetRelativePath($relocated, $_.FullName); bytes = $_.Length
+        sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+}) | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $evidence 'relocated-files.json')
+python (Join-Path $fixture 'ProtocolCheck.py') --adapter (Join-Path $relocated 'codex-mcp-adapter.exe') `
+    --codex $codexBinary --evidence-directory (Join-Path $evidence 'app-local-protocol') --app-local-runtime `
+    *> (Join-Path $evidence 'app-local-protocol.log')
+$relocatedCode = $LASTEXITCODE
+Get-Content (Join-Path $evidence 'app-local-protocol.log') -Tail 80
+exit $relocatedCode

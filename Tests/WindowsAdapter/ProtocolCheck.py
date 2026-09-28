@@ -19,6 +19,9 @@ repository = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("workflow_check", repository / "Scripts/check-workflow.py")
 workflow = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(workflow)
+runtime_spec = importlib.util.spec_from_file_location("windows_runtime", repository / "Scripts/windows_runtime.py")
+runtime = importlib.util.module_from_spec(runtime_spec)
+runtime_spec.loader.exec_module(runtime)
 
 
 class ProcessObservation:
@@ -75,7 +78,9 @@ def remove_private_state(root):
     return repaired
 
 
-def run(adapter, codex, evidence_directory=None):
+def run(adapter, codex, evidence_directory=None, app_local_runtime=False):
+    if app_local_runtime and os.name != "nt":
+        raise ValueError("App-local runtime acceptance requires native Windows")
     if evidence_directory is not None:
         evidence_directory.mkdir(parents=True, exist_ok=False)
     root = Path(tempfile.mkdtemp(prefix="native-adapter-汉字-")).resolve()
@@ -92,6 +97,9 @@ def run(adapter, codex, evidence_directory=None):
     for key in ["SystemRoot", "WINDIR", "COMSPEC"]:
         if key in os.environ:
             environment[key] = os.environ[key]
+    if app_local_runtime:
+        system_directory = Path(os.environ["SystemRoot"]) / "System32"
+        environment["PATH"] = os.pathsep.join([str(system_directory), os.environ["SystemRoot"]])
     (state / "config.toml").write_text('cli_auth_credentials_store = "file"\n', encoding="utf-8")
     context = {"formatVersion": 1, "runtimeID": str(uuid.uuid4()), "caller": "local-mcp",
                "profileID": "local-admin", "principalID": "native-protocol-check",
@@ -107,6 +115,10 @@ def run(adapter, codex, evidence_directory=None):
                "runtime_environment": "selected-toolchain", "clean_machine_relocation_verified": False,
                "adapter_sha256": hashlib.sha256(adapter.read_bytes()).hexdigest(),
                "codex_sha256": hashlib.sha256(codex.read_bytes()).hexdigest(), "connections": []}
+    if app_local_runtime:
+        receipt["runtime_environment"] = "app-local-with-system-only-path"
+        receipt["child_path"] = environment["PATH"]
+        receipt["module_observations"] = []
     process = None
     observations = []
     confirmed = False
@@ -140,6 +152,9 @@ def run(adapter, codex, evidence_directory=None):
                 assert result["host_diagnostics_available"] is False, result
                 assert client.call("thread.loaded.list")["data"] == []
                 phase = f"connection {attempt + 1} native lifecycle"
+                if app_local_runtime:
+                    receipt["module_observations"].append(runtime.verify_app_local_modules(
+                        runtime.loaded_modules(process.pid), adapter, system_directory))
                 started = client.call("thread.start")
                 thread_id = started["thread"]["id"]
                 origin = client.last_invocation
@@ -175,6 +190,8 @@ def run(adapter, codex, evidence_directory=None):
                     "tool_count": len(catalog), "thread_id": thread_id, "native_processes": owned,
                     "owned_stop": stopped["process"], "adapter_exit_code": process.returncode})
         confirmed = True
+        if app_local_runtime:
+            receipt["app_local_runtime_verified"] = True
     except Exception as error:
         receipt["failure_phase"] = phase
         receipt["error"] = str(error)[:4096]
@@ -224,8 +241,10 @@ if __name__ == "__main__":
     parser.add_argument("--adapter", type=Path, required=True)
     parser.add_argument("--codex", type=Path, required=True)
     parser.add_argument("--evidence-directory", type=Path)
+    parser.add_argument("--app-local-runtime", action="store_true")
     options = parser.parse_args()
     for executable in [options.adapter, options.codex]:
         if not executable.is_absolute() or not executable.is_file():
             parser.error("Executables must be existing absolute file paths")
-    print(json.dumps(run(options.adapter, options.codex, options.evidence_directory), indent=2))
+    print(json.dumps(run(options.adapter, options.codex, options.evidence_directory,
+                         options.app_local_runtime), indent=2))

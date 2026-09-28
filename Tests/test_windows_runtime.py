@@ -74,3 +74,24 @@ class WindowsRuntimeTests(unittest.TestCase):
             with patch.object(runtime, "imports", side_effect=[("x86_64", [library.name]), ("aarch64", [])]):
                 with self.assertRaisesRegex(ValueError, "architecture mismatch"):
                     runtime.audit(executable, [root], system, Path("inspector"))
+
+    def test_live_modules_must_use_packaged_libraries_and_only_system_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            local, toolchain, system = [root / name for name in ("package", "toolchain", "system")]
+            for path in (local, toolchain, system):
+                path.mkdir()
+            executable, library = local / "adapter.exe", local / "swiftCore.dll"
+            external, native = toolchain / "swiftCore.dll", system / "KERNEL32.dll"
+            for path in (executable, library, external, native):
+                path.write_bytes(path.name.encode())
+            rows = runtime.verify_app_local_modules([executable, library, native], executable, system)
+            self.assertEqual([row["role"] for row in rows], ["adapter", "app-local-runtime", "windows-system"])
+            with self.assertRaisesRegex(ValueError, "outside the package"):
+                runtime.verify_app_local_modules([executable, external], executable, system)
+            unowned = toolchain / "unowned.dll"
+            unowned.write_bytes(b"unowned")
+            with self.assertRaisesRegex(ValueError, "undeclared external"):
+                runtime.verify_app_local_modules([library, unowned], executable, system)
+            with self.assertRaisesRegex(ValueError, "No app-local"):
+                runtime.verify_app_local_modules([executable, native], executable, system)

@@ -2,8 +2,10 @@
 """Inspect a Windows executable's recursive runtime imports without loading it."""
 
 import argparse
+import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -66,7 +68,7 @@ def resolve(name, runtime_files, system_files):
         return "runtime", candidates[0]
     if key in system_files:
         # Visual C++ redistributables are not Windows OS components, even in System32.
-        role = ("external-msvc-runtime" if key.startswith(("vcruntime", "msvcp", "concrt"))
+        role = ("external-msvc-runtime" if re.match(r"(?:vcruntime|msvcp|concrt)\d", key)
                 else "windows-system")
         regular_file(system_files[key])
         return role, system_files[key]
@@ -103,6 +105,78 @@ def audit(executable, runtime_directories, system_directory, inspector):
             "imports": direct, "libraries": sorted(libraries.values(), key=lambda row: row["name"].casefold()),
             "evidence_class": "static-native-import-closure", "relocation_verified": False,
             "dynamic_loads_verified": False, "distribution_notices_verified": False}
+
+
+def loaded_modules(pid):
+    """Observe the live process through a retained handle, independent of PATH."""
+    if os.name != "nt":
+        raise ValueError("Native module observation requires Windows")
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    kernel.K32EnumProcessModulesEx.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.HMODULE),
+                                             wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
+    kernel.K32EnumProcessModulesEx.restype = wintypes.BOOL
+    kernel.K32GetModuleFileNameExW.argtypes = [wintypes.HANDLE, wintypes.HMODULE,
+                                            wintypes.LPWSTR, wintypes.DWORD]
+    kernel.K32GetModuleFileNameExW.restype = wintypes.DWORD
+    handle = kernel.OpenProcess(0x0400 | 0x0010, False, pid)  # QUERY_INFORMATION | VM_READ
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        count = 128
+        for _ in range(4):
+            modules = (wintypes.HMODULE * count)()
+            needed = wintypes.DWORD()
+            if not kernel.K32EnumProcessModulesEx(handle, modules, ctypes.sizeof(modules),
+                                                  ctypes.byref(needed), 3):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if needed.value <= ctypes.sizeof(modules):
+                break
+            count = needed.value // ctypes.sizeof(wintypes.HMODULE) + 32
+            if count > 4096:
+                raise ValueError("Native module inventory exceeds the observation bound")
+        else:
+            raise ValueError("Native module inventory changed during observation")
+        paths = []
+        for module in modules[:needed.value // ctypes.sizeof(wintypes.HMODULE)]:
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = kernel.K32GetModuleFileNameExW(handle, module, buffer, len(buffer))
+            if not length:
+                raise ctypes.WinError(ctypes.get_last_error())
+            if length >= len(buffer):
+                raise ValueError("Native module path was truncated")
+            paths.append(Path(buffer.value))
+        return paths
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def verify_app_local_modules(modules, executable, system_directory):
+    local = directory_files(executable.parent)
+    observed = set()
+    result = []
+    for path in modules:
+        name = path.name.casefold()
+        regular_file(path)
+        if name in local:
+            if not path.samefile(local[name]):
+                raise ValueError(f"Packaged runtime was loaded from outside the package: {path}")
+            role = "app-local-runtime"
+            observed.add(name)
+        elif path.samefile(executable):
+            role = "adapter"
+        elif path.parent.samefile(system_directory):
+            role = "windows-system"
+        else:
+            raise ValueError(f"Process loaded an undeclared external module: {path}")
+        result.append({"path": str(path), "role": role, "sha256": digest(path)})
+    if "swiftcore.dll" not in observed:
+        raise ValueError("No app-local Swift runtime was observed")
+    return result
 
 
 if __name__ == "__main__":
