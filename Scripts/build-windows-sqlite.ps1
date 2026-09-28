@@ -30,10 +30,13 @@ if ($LASTEXITCODE -ne 0) { throw 'SQLite static archive failed; see library.log'
 
 $probe = Join-Path $PSScriptRoot '../Tests/WindowsSQLite/verify.c'
 $executable = Join-Path $root 'verify.exe'
-$probeArguments = @('/nologo', '/O2', '/MD', "/I$include", $probe, $library,
-    "/Fe$executable", "/Fo$(Join-Path $root 'verify.obj')")
-& $compiler @probeArguments *> (Join-Path $root 'verify-build.log')
-if ($LASTEXITCODE -ne 0) { throw 'SQLite verification build failed; see verify-build.log' }
+$probeObject = Join-Path $root 'verify.obj'
+$probeArguments = @('/nologo', '/c', '/O2', '/MD', "/I$include", $probe, "/Fo$probeObject")
+& $compiler @probeArguments *> (Join-Path $root 'verify-compile.log')
+if ($LASTEXITCODE -ne 0) { throw 'SQLite verification compilation failed; see verify-compile.log' }
+$linkArguments = @('/nologo', '/MD', $probeObject, $library, "/Fe$executable")
+& $compiler @linkArguments *> (Join-Path $root 'verify-link.log')
+if ($LASTEXITCODE -ne 0) { throw 'SQLite verification linking failed; see verify-link.log' }
 & $executable (Join-Path $root 'verify.sqlite') $metadata.version *> (Join-Path $root 'verify.json')
 if ($LASTEXITCODE -ne 0) { throw 'SQLite native verification failed; see verify.json' }
 
@@ -43,6 +46,7 @@ $receipt = [pscustomobject]@{
     librarian = $librarian
     compileArguments = $compileArguments
     verificationArguments = $probeArguments
+    verificationLinkArguments = $linkArguments
     librarySHA256 = (Get-FileHash $library -Algorithm SHA256).Hash.ToLowerInvariant()
     headerSHA256 = (Get-FileHash (Join-Path $include 'sqlite3.h') -Algorithm SHA256).Hash.ToLowerInvariant()
     probeSHA256 = (Get-FileHash $probe -Algorithm SHA256).Hash.ToLowerInvariant()
