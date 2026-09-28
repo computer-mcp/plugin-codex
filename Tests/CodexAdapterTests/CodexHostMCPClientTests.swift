@@ -203,8 +203,13 @@ struct CodexHostMCPClientTests {
       }
     }
     let environment = CodexProcessEnvironment.resolved(
-      base: ["COMPUTER_MCP_HOST_FD": "3"], systemProxy: .init())
+      base: [
+        "COMPUTER_MCP_HOST_FD": "3", "COMPUTER_MCP_HOST_READ_HANDLE": "144",
+        "COMPUTER_MCP_HOST_WRITE_HANDLE": "148",
+      ], systemProxy: .init())
     #expect(environment["COMPUTER_MCP_HOST_FD"] == nil)
+    #expect(environment["COMPUTER_MCP_HOST_READ_HANDLE"] == nil)
+    #expect(environment["COMPUTER_MCP_HOST_WRITE_HANDLE"] == nil)
   }
 }
 

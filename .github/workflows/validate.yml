@@ -142,3 +142,41 @@ jobs:
           path: .build/windows-process/evidence/
           include-hidden-files: true
           if-no-files-found: error
+
+  windows-host-mcp:
+    if: ${{ inputs.windows_sdk_revision != '' }}
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate exact SDK input
+        shell: pwsh
+        env:
+          CODEX_CANDIDATE_REVISION: ${{ inputs.windows_sdk_revision }}
+        run: |
+          if ($env:CODEX_CANDIDATE_REVISION -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Host MCP acceptance requires an exact SDK commit'
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: swift-library/swift-codex
+          ref: ${{ inputs.windows_sdk_revision }}
+          path: .build/windows-host-sdk
+          persist-credentials: false
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
+      - name: Test inherited host pipes with the complete MCP candidate
+        shell: pwsh
+        run: ./Scripts/test-windows-host-mcp.ps1 -SDKPath .build/windows-host-sdk -OutputDirectory .build/windows-host-mcp
+      - name: Preserve native host MCP acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-host-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/windows-host-mcp/evidence/
+          include-hidden-files: true
+          if-no-files-found: error

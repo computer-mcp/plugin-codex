@@ -91,6 +91,8 @@ internal enum CodexProcessEnvironment {
   private static let parentSessionKeys = [
     "COMPUTER_MCP_HOST_CONTEXT",
     "COMPUTER_MCP_HOST_FD",
+    "COMPUTER_MCP_HOST_READ_HANDLE",
+    "COMPUTER_MCP_HOST_WRITE_HANDLE",
     "CODEX_APP_TOOLS_PIPE_PATH",
     "CODEX_CI",
     "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",

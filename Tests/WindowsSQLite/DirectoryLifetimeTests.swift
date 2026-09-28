@@ -25,7 +25,9 @@ struct DirectoryLifetimeTests {
     #expect(reference.directory == nil)
     try #require(MoveFileW(Array(root.path.utf16) + [0], Array(moved.path.utf16) + [0]))
     let reopened = try open(state: moved.appendingPathComponent("state"), reference: reference)
-    let value = try reopened.read { db in try Int64.fetchOne(db, sql: "SELECT value FROM records") }
+    let value = try await reopened.read { db in
+      try Int64.fetchOne(db, sql: "SELECT value FROM records")
+    }
     #expect(value == Int64.max)
     try reopened.close()
   }

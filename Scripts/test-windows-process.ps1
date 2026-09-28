@@ -35,7 +35,7 @@ foreach ($name in @(
     'CommandRunner.swift', 'CommandRunner+Windows.swift', 'WindowsCommandProcess.swift',
     'WindowsProcessJob.swift', 'WindowsFilePath.swift', 'WindowsExecutable.swift',
     'WindowsProcessEnvironment.swift', 'CodexConfig.swift', 'JSONValue.swift',
-    'WindowsPrivateDirectory.swift', 'CodexWorktreeFileSystem.swift'
+    'WindowsPrivateDirectory.swift', 'CodexWorktreeFileSystem.swift', 'CodexProcessEnvironment.swift'
 )) {
     $source = Join-Path $repository "Sources/CodexAdapter/$name"
     Copy-Item $source $sources

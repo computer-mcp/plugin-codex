@@ -8,6 +8,7 @@ let package = Package(
   products: [.executable(name: "codex-mcp-adapter", targets: ["CodexMCPAdapter"])],
   dependencies: [
     .package(url: "https://github.com/apple/swift-crypto.git", exact: "4.5.2"),
+    .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.1"),
     .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1"),
     .package(url: "https://github.com/apple/swift-argument-parser", exact: "1.8.2"),
     .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", exact: "0.12.1"),
@@ -21,6 +22,8 @@ let package = Package(
         .product(name: "GRDB", package: "GRDB.swift"),
         .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: [.windows])),
         .product(name: "MCP", package: "swift-sdk"),
+        .product(
+          name: "SystemPackage", package: "swift-system", condition: .when(platforms: [.windows])),
         .product(name: "CodexAppServerClient", package: "swift-codex"),
         .product(name: "CodexAppServerProtocol", package: "swift-codex"),
         .product(name: "CodexAppServerRuntime", package: "swift-codex"),

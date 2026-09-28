@@ -14,6 +14,7 @@ dependency.
 | swift-codex | App Server client and Exec client, each with its own lifecycle |
 | swift-subprocess 0.4.0 | Existing process infrastructure dependency |
 | swift-argument-parser 1.8.2 | Named options, schema-comparison subcommand, validation and generated CLI help |
+| Apple Swift System 1.8.1 | Typed CRT descriptors for inherited Windows MCP pipe handles; already shared by the MCP dependency |
 | Apple Swift Crypto 4.5.2 | SHA-256 on Windows; Apple platforms retain CryptoKit |
 | GRDB 7.11.1 | Codex approval, runtime/thread ownership, acceptance run, worktree lease and managed-worktree storage and transactions |
 
@@ -270,3 +271,20 @@ Universal 2 support.
 The package job neither installs vendor executables nor exercises real accounts.
 An authorized publisher must separately review provenance, signing and runtime
 acceptance before promoting an artifact to a public release.
+
+## Inherited host channel
+
+The host binds callbacks to its own immutable caller/workspace scope. macOS uses
+an inherited connected Unix socket. The Windows transport accepts a paired read
+and write byte-pipe handle through `COMPUTER_MCP_HOST_READ_HANDLE` and
+`COMPUTER_MCP_HOST_WRITE_HANDLE`, alongside the host context. Handles must be
+canonical decimal values, distinct, inherited, and separate from standard I/O.
+Ambiguous environment keys, partial pairs, files and message pipes are rejected.
+
+Admission clears inheritance and bridges owned duplicates through Swift System's
+CRT descriptor type. Once the MCP transport has duplicated the handles for native
+I/O, the adapter closes the inherited originals and CRT intermediates. The owning
+MCP transport supplies framing, bounded queues, cancellation and native I/O joins;
+the adapter retains one connection/close task. Callback metadata is removed from
+vendor environments. Windows native transport evidence is separate from a complete
+host launch, adapter artifact or authenticated model acceptance.

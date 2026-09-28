@@ -8,6 +8,18 @@ import WinSDK
 
 @Suite("Windows adapter process ownership", .timeLimit(.minutes(1)))
 struct ManagedProcessTests {
+  @Test("Host callback handles and provenance do not enter vendor environments")
+  func hostEnvironmentIsolation() {
+    let environment = CodexProcessEnvironment.resolved(
+      base: [
+        "computer_mcp_host_context": "bound-by-host", "Computer_Mcp_Host_Fd": "3",
+        "computer_mcp_host_read_handle": "144", "COMPUTER_MCP_HOST_WRITE_HANDLE": "148",
+        "PRESERVE_VALUE": "user-owned",
+      ], systemProxy: .init())
+    #expect(environment["PRESERVE_VALUE"] == "user-owned")
+    #expect(!environment.keys.contains { $0.lowercased().hasPrefix("computer_mcp_host_") })
+  }
+
   @Test("Graceful EOF preserves final output and a cancelled close caller joins cleanup")
   func gracefulClose() async throws {
     let directory = try temporaryDirectory()
