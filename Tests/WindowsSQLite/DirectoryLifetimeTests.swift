@@ -17,13 +17,19 @@ struct DirectoryLifetimeTests {
     let state = root.appendingPathComponent("state")
     let reference = Reference()
     try useAndClose(state: state, root: root, moved: moved, reference: reference)
-    // GRDB's queue-specific watchdog retains Database until Dispatch destroys the queue context.
+    // Dispatch retires GRDB's queue-specific context asynchronously. A cleared weak
+    // reference alone does not observe completion of the native handle closes.
     let deadline = ContinuousClock.now + .seconds(3)
     while !isReleased(reference), ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(5))
     }
-    #expect(reference.directory == nil)
-    try #require(MoveFileW(Array(root.path.utf16) + [0], Array(moved.path.utf16) + [0]))
+    try #require(reference.directory == nil)
+    while !MoveFileW(Array(root.path.utf16) + [0], Array(moved.path.utf16) + [0]) {
+      let code = GetLastError()
+      try #require(code == DWORD(ERROR_SHARING_VIOLATION), "Directory rename failed: \(code)")
+      try #require(ContinuousClock.now < deadline, "Native directory handles remain open")
+      try await Task.sleep(for: .milliseconds(5))
+    }
     let reopened = try open(state: moved.appendingPathComponent("state"), reference: reference)
     let value = try await reopened.read { db in
       try Int64.fetchOne(db, sql: "SELECT value FROM records")
