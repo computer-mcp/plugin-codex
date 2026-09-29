@@ -1,6 +1,10 @@
-import CryptoKit
-import Darwin
 import Foundation
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 struct CodexThreadOwnershipReconciliationCandidate: Codable, Equatable, Sendable {
   let threadID: String
@@ -154,8 +158,8 @@ enum CodexThreadOwnershipReconciliation {
   ) throws -> Bool {
     guard let database else { return false }
     let lease = try database.codexRuntimeLeases(limit: 5_000).first { $0.id == runtimeID }
-    return processExists(lease?.process?.processID)
-      || processExists(lease?.process?.supervisorProcessID)
+    return codexRuntimeProcessMayExist(lease?.process?.processID)
+      || codexRuntimeProcessMayExist(lease?.process?.supervisorProcessID)
   }
 
   private static func makePlan(
@@ -175,8 +179,8 @@ enum CodexThreadOwnershipReconciliation {
 
   private static func isSafelyGone(_ lease: CodexRuntimeLeaseRecord?) -> Bool {
     guard let lease else { return true }
-    if processExists(lease.process?.processID)
-      || processExists(lease.process?.supervisorProcessID)
+    if codexRuntimeProcessMayExist(lease.process?.processID)
+      || codexRuntimeProcessMayExist(lease.process?.supervisorProcessID)
     {
       return false
     }
@@ -184,9 +188,4 @@ enum CodexThreadOwnershipReconciliation {
       || ["stopped", "cleaned", "failed", "running", "starting"].contains(lease.state)
   }
 
-  private static func processExists(_ processID: Int32?) -> Bool {
-    guard let processID, processID > 1 else { return false }
-    errno = 0
-    return Darwin.kill(processID, 0) == 0 || errno != ESRCH
-  }
 }

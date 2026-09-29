@@ -141,36 +141,45 @@ package struct CodexConfig: Codable, Equatable, Sendable {
   }
 
   func resolvedExecutableURL(workspaceURL: URL, environment: [String: String]) throws -> URL {
-    let candidates: [URL]
-    if executable.contains("/") {
-      candidates = [
-        executable.hasPrefix("/")
-          ? URL(fileURLWithPath: executable)
-          : workspaceURL.appendingPathComponent(executable)
-      ]
-    } else if let path = environment["PATH"] {
-      candidates = path.split(separator: ":", omittingEmptySubsequences: false).map { entry in
-        let directory =
-          entry.hasPrefix("/")
-          ? URL(fileURLWithPath: String(entry), isDirectory: true)
-          : workspaceURL.appendingPathComponent(String(entry), isDirectory: true)
-        return directory.appendingPathComponent(executable)
+    #if os(Windows)
+      do {
+        return try WindowsExecutable.resolve(
+          executable, workspace: workspaceURL, environment: environment)
+      } catch {
+        throw ConfigurationError.invalid(error.localizedDescription)
       }
-    } else {
-      candidates = []
-    }
-    for candidate in candidates {
-      let url = candidate.standardizedFileURL
-      var isDirectory: ObjCBool = false
-      if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-        !isDirectory.boolValue, FileManager.default.isExecutableFile(atPath: url.path)
-      {
-        return url
+    #else
+      let candidates: [URL]
+      if executable.contains("/") {
+        candidates = [
+          executable.hasPrefix("/")
+            ? URL(fileURLWithPath: executable)
+            : workspaceURL.appendingPathComponent(executable)
+        ]
+      } else if let path = environment["PATH"] {
+        candidates = path.split(separator: ":", omittingEmptySubsequences: false).map { entry in
+          let directory =
+            entry.hasPrefix("/")
+            ? URL(fileURLWithPath: String(entry), isDirectory: true)
+            : workspaceURL.appendingPathComponent(String(entry), isDirectory: true)
+          return directory.appendingPathComponent(executable)
+        }
+      } else {
+        candidates = []
       }
-    }
-    throw ConfigurationError.invalid(
-      "Cannot resolve configured Codex executable '\(executable)' in the launch workspace and PATH."
-    )
+      for candidate in candidates {
+        let url = candidate.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+          !isDirectory.boolValue, FileManager.default.isExecutableFile(atPath: url.path)
+        {
+          return url
+        }
+      }
+      throw ConfigurationError.invalid(
+        "Cannot resolve configured Codex executable '\(executable)' in the launch workspace and PATH."
+      )
+    #endif
   }
 }
 

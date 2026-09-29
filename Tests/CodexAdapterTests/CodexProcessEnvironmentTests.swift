@@ -47,13 +47,24 @@ final class CodexProcessEnvironmentTests {
 
     #expect(environment["PATH"] == "/usr/bin")
     #expect(environment["HTTP_PROXY"] == "http://127.0.0.1:6152")
-    #expect(environment["http_proxy"] == "http://127.0.0.1:6152")
+    #if !os(Windows)
+      #expect(environment["http_proxy"] == "http://127.0.0.1:6152")
+    #endif
     #expect(environment["HTTPS_PROXY"] == "http://127.0.0.1:6152")
-    #expect(environment["https_proxy"] == "http://127.0.0.1:6152")
+    #if !os(Windows)
+      #expect(environment["https_proxy"] == "http://127.0.0.1:6152")
+    #endif
     #expect(environment["ALL_PROXY"] == "socks5://127.0.0.1:6153")
-    #expect(environment["all_proxy"] == "socks5://127.0.0.1:6153")
+    #if !os(Windows)
+      #expect(environment["all_proxy"] == "socks5://127.0.0.1:6153")
+    #endif
     #expect(environment["NO_PROXY"] == "localhost,127.0.0.1,::1,*.local")
-    #expect(environment["no_proxy"] == "localhost,127.0.0.1,::1,*.local")
+    #if !os(Windows)
+      #expect(environment["no_proxy"] == "localhost,127.0.0.1,::1,*.local")
+    #else
+      #expect(
+        environment.keys.sorted() == ["ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "PATH"])
+    #endif
   }
 
   @Test
@@ -73,13 +84,41 @@ final class CodexProcessEnvironmentTests {
 
     #expect(environment["HTTP_PROXY"] == nil)
     #expect(environment["http_proxy"] == nil)
-    #expect(environment["HTTPS_PROXY"] == "http://inherited.example:8080")
+    #if os(Windows)
+      #expect(environment["HTTPS_PROXY"] == nil)
+    #else
+      #expect(environment["HTTPS_PROXY"] == "http://inherited.example:8080")
+    #endif
     #expect(environment["https_proxy"] == "http://inherited.example:8080")
     #expect(environment["ALL_PROXY"] == nil)
     #expect(environment["all_proxy"] == nil)
     #expect(environment["NO_PROXY"] == "internal.example")
-    #expect(environment["no_proxy"] == "internal.example")
+    #if os(Windows)
+      #expect(environment["no_proxy"] == nil)
+    #else
+      #expect(environment["no_proxy"] == "internal.example")
+    #endif
   }
+
+  #if os(Windows)
+    @Test
+    func testNativeCaseAliasesDoNotLeakParentAuthorityOrDuplicateProxies() {
+      let base = [
+        "Computer_Mcp_Host_Context": "parent-context", "Computer_Mcp_Host_Fd": "123",
+        "Codex_Thread_Id": "parent-thread", "Codex_Permission_Profile": "parent-profile",
+        "Codex_Home": "C:\\Codex", "hTtPs_PrOxY": "http://proxy.example:8080",
+        "No_PrOxY": "internal.example", "CODEX_THREAD_ID\0suffix": "invalid-key",
+      ]
+      let environment = CodexProcessEnvironment.resolved(
+        base: base,
+        systemProxy: SystemNetworkProxySettings(httpsProxy: "http://system.example:9000"))
+      #expect(
+        environment == [
+          "Codex_Home": "C:\\Codex", "hTtPs_PrOxY": "http://proxy.example:8080",
+          "No_PrOxY": "internal.example", "CODEX_THREAD_ID\0suffix": "invalid-key",
+        ])
+    }
+  #endif
 
   @Test
   func testNoProxyConfigurationLeavesTheBaseEnvironmentUnchanged() {

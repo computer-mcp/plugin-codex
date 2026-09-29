@@ -1,5 +1,10 @@
-import Darwin
 import Foundation
+
+#if os(Windows)
+  import WinSDK
+#else
+  import Darwin
+#endif
 
 struct CodexRuntimeRequestFailure: Codable, Equatable, Sendable {
   let kind: String
@@ -94,8 +99,8 @@ enum CodexRuntimeMaintenance {
     var pending: [JSONValue] = []
     for var record in try visibleRecords(database: database, workspaceID: workspaceID) {
       guard CodexRuntimeDirectory.shared.runtime(id: record.id) == nil else { continue }
-      if processExists(record.process?.processID)
-        || processExists(record.process?.supervisorProcessID)
+      if codexRuntimeProcessMayExist(record.process?.processID)
+        || codexRuntimeProcessMayExist(record.process?.supervisorProcessID)
       {
         pending.append(candidate(record))
         continue
@@ -133,8 +138,8 @@ enum CodexRuntimeMaintenance {
   private static func candidate(_ record: CodexRuntimeLeaseRecord) -> JSONValue {
     let directoryActive = CodexRuntimeDirectory.shared.runtime(id: record.id) != nil
     let processActive =
-      processExists(record.process?.processID)
-      || processExists(record.process?.supervisorProcessID)
+      codexRuntimeProcessMayExist(record.process?.processID)
+      || codexRuntimeProcessMayExist(record.process?.supervisorProcessID)
     return .object([
       "runtime": record.json,
       "directory_active": .bool(directoryActive),
@@ -146,9 +151,21 @@ enum CodexRuntimeMaintenance {
     ])
   }
 
-  private static func processExists(_ processID: Int32?) -> Bool {
+}
+
+/// Read-only evidence for persisted receipts. Unknown access and reused IDs retain ownership;
+/// a numeric ID never grants authority to signal the process or confirm descendant cleanup.
+func codexRuntimeProcessMayExist(_ processID: Int32?) -> Bool {
+  #if os(Windows)
+    guard let processID, DWORD(bitPattern: processID) > 1 else { return false }
+    guard let handle = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(bitPattern: processID)) else {
+      return GetLastError() != DWORD(ERROR_INVALID_PARAMETER)
+    }
+    defer { CloseHandle(handle) }
+    return WaitForSingleObject(handle, 0) != DWORD(WAIT_OBJECT_0)
+  #else
     guard let processID, processID > 1 else { return false }
     errno = 0
     return Darwin.kill(processID, 0) == 0 || errno != ESRCH
-  }
+  #endif
 }

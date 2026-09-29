@@ -4,13 +4,28 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      windows_sdk_revision:
+        description: 'Expected locked swift-codex commit for focused Windows checks; empty runs native packaging on both platforms'
+        required: false
+        type: string
+      windows_validation_scope:
+        description: 'Windows candidate checks; all remains the complete adapter gate'
+        type: choice
+        options: [all, host-mcp, database, artifact]
+        default: all
+      windows_artifact_run:
+        description: 'Completed source audit run whose exact linked Windows binary should be checked'
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
-  group: validate-${{ github.ref }}
+  group: validate-${{ github.ref }}-${{ inputs.windows_validation_scope || 'all' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   package:
+    if: ${{ inputs.windows_sdk_revision == '' }}
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -35,6 +50,8 @@ jobs:
           /usr/bin/swift package resolve
           git diff --exit-code -- Package.resolved
           Scripts/verify-swift-codex-release-gate.sh
+          node --test Tests/schema-import.test.mjs
+          node Scripts/import-schema.mjs --check
           /usr/bin/swift format lint --strict --recursive Package.swift Sources Tests
           /usr/bin/swift build --build-tests --disable-automatic-resolution
       - name: Run Swift tests
@@ -61,12 +78,227 @@ jobs:
       - name: Validate package ownership and publication
         run: python3 -m unittest discover -s Tests -p 'test_*.py' -v
       - name: Build relocatable adapter and receipt
-        run: python3 Scripts/package.py --output dist --configuration release
+        run: |
+          python3 Scripts/package.py --output dist --configuration release
+          python3 Scripts/check-package.py --archive dist/codex-plugin-macos-arm64.zip --receipt dist/receipt.json --destination .build/accepted-package
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: codex-plugin-${{ runner.arch }}-${{ github.sha }}
+          name: codex-plugin-macos-arm64-${{ github.sha }}
           path: |
-            dist/codex-plugin.zip
+            dist/codex-plugin-macos-arm64.zip
             dist/receipt.json
           if-no-files-found: error
           retention-days: 14
+
+  windows-package:
+    if: ${{ inputs.windows_sdk_revision == '' }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
+      - name: Validate native package ownership and inputs
+        shell: pwsh
+        run: |
+          python Scripts/version.py check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($pattern in @('test_package*.py', 'test_windows*.py', 'test_protocol*.py', 'test_version.py')) {
+            python -m unittest discover -s Tests -p $pattern -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          swift package resolve
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- Package.resolved
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the native archive and runtime receipt
+        shell: pwsh
+        run: |
+          python Scripts/package.py --output dist --configuration release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- Package.resolved computer-mcp-plugin.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-x86_64-${{ github.sha }}
+          path: |
+            dist/codex-plugin-windows-x86_64.zip
+            dist/receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-package-acceptance:
+    needs: windows-package
+    runs-on: windows-2022
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - name: Download the exact package from this run
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name "codex-plugin-windows-x86_64-$env:GITHUB_SHA" --dir accepted-artifact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check relocated package with app-local runtime
+        shell: pwsh
+        run: ./Scripts/check-windows-package.ps1 -ArtifactDirectory accepted-artifact -OutputDirectory .build/windows-package-acceptance
+      - name: Preserve exact archive acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-package-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/windows-package-acceptance/evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  windows-candidate:
+    if: ${{ inputs.windows_sdk_revision != '' && inputs.windows_validation_scope != 'host-mcp' && inputs.windows_validation_scope != 'artifact' }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
+      - name: Audit native dependencies and complete adapter source
+        shell: pwsh
+        env:
+          CODEX_CANDIDATE_REVISION: ${{ inputs.windows_sdk_revision }}
+          WINDOWS_VALIDATION_SCOPE: ${{ inputs.windows_validation_scope }}
+        run: |
+          $databaseOnly = $env:WINDOWS_VALIDATION_SCOPE -eq 'database'
+          ./Scripts/validate-windows-candidate.ps1 -SDKRevision $env:CODEX_CANDIDATE_REVISION -DatabaseOnly:$databaseOnly
+      - name: Preserve Windows source audit
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/windows-candidate/evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  windows-process:
+    if: ${{ inputs.windows_sdk_revision != '' && (inputs.windows_validation_scope == '' || inputs.windows_validation_scope == 'all') }}
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate exact SDK input
+        shell: pwsh
+        env:
+          CODEX_CANDIDATE_REVISION: ${{ inputs.windows_sdk_revision }}
+        run: |
+          if ($env:CODEX_CANDIDATE_REVISION -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Windows process acceptance requires an exact SDK commit'
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: swift-library/swift-codex
+          ref: ${{ inputs.windows_sdk_revision }}
+          path: .build/windows-process-sdk
+          persist-credentials: false
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
+      - name: Test exact production process sources in debug and release
+        shell: pwsh
+        run: ./Scripts/test-windows-process.ps1 -SDKPath .build/windows-process-sdk -OutputDirectory .build/windows-process
+      - name: Preserve native process acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-process-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/windows-process/evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  windows-host-mcp:
+    if: ${{ inputs.windows_sdk_revision != '' && inputs.windows_validation_scope != 'database' && inputs.windows_validation_scope != 'artifact' }}
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate exact SDK input
+        shell: pwsh
+        env:
+          CODEX_CANDIDATE_REVISION: ${{ inputs.windows_sdk_revision }}
+        run: |
+          if ($env:CODEX_CANDIDATE_REVISION -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Host MCP acceptance requires an exact SDK commit'
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: swift-library/swift-codex
+          ref: ${{ inputs.windows_sdk_revision }}
+          path: .build/windows-host-sdk
+          persist-credentials: false
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
+      - name: Test inherited host pipes with the shipping MCP dependency
+        shell: pwsh
+        run: ./Scripts/test-windows-host-mcp.ps1 -SDKPath .build/windows-host-sdk -OutputDirectory .build/windows-host-mcp
+      - name: Preserve native host MCP acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-host-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/windows-host-mcp/evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  windows-artifact:
+    if: ${{ inputs.windows_validation_scope == 'artifact' && inputs.windows_sdk_revision != '' }}
+    runs-on: windows-2022
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
+      - name: Check the exact linked native adapter
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.windows_artifact_run }}
+          SDK_REVISION: ${{ inputs.windows_sdk_revision }}
+        run: ./Scripts/check-windows-artifact.ps1 -SourceRun $env:SOURCE_RUN -SDKRevision $env:SDK_REVISION
+      - name: Preserve native artifact acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-artifact-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/windows-artifact/evidence/
+          include-hidden-files: true
+          if-no-files-found: error

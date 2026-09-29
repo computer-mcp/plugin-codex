@@ -1,6 +1,11 @@
-import CryptoKit
 import Foundation
 import GRDB
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 /// Cross-subject affinity for native threads; all execution records remain in their subject database.
 final class CodexThreadOwnerIndex: @unchecked Sendable {
@@ -16,6 +21,12 @@ final class CodexThreadOwnerIndex: @unchecked Sendable {
     .map { String(format: "%02x", $0) }.joined()
     var configuration = Configuration()
     configuration.busyMode = .timeout(5)
+    #if os(Windows)
+      let directory = try WindowsPrivateDirectory(
+        URL(fileURLWithPath: path).deletingLastPathComponent())
+      // The connection owns this validation closure and its directory handles through close.
+      configuration.prepareDatabase { [directory] _ in try directory.validate() }
+    #endif
     database = try DatabaseQueue(path: path, configuration: configuration)
     try database.write { db in
       try db.execute(

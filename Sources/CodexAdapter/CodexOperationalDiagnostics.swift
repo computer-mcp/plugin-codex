@@ -84,17 +84,17 @@ enum CodexOperationalDiagnostics {
       ]),
       "host_diagnostics_available": .bool(hostSnapshot != nil),
       "summary": .object([
-        "live_runtime_count": .number(Double(liveRuntimeCount(liveRuntimes))),
-        "persisted_runtime_count": .number(Double(persistedRuntimes.count)),
-        "thread_ownership_receipt_count": .number(Double(threadOwnership.count)),
-        "pending_approval_count": .number(Double(pendingApprovals.count)),
+        "live_runtime_count": .integer(Int64(liveRuntimeCount(liveRuntimes))),
+        "persisted_runtime_count": .integer(Int64(persistedRuntimes.count)),
+        "thread_ownership_receipt_count": .integer(Int64(threadOwnership.count)),
+        "pending_approval_count": .integer(Int64(pendingApprovals.count)),
         "ownership_reconciliation_candidate_count": .number(
           Double(ownershipReconciliation.candidates.count)
         ),
-        "active_run_count": .number(Double(activeRuns.count)),
-        "active_worktree_lease_count": .number(Double(activeLeases.count)),
-        "active_managed_worktree_count": .number(Double(activeManagedWorktrees.count)),
-        "finding_count": .number(Double(findings.count)),
+        "active_run_count": .integer(Int64(activeRuns.count)),
+        "active_worktree_lease_count": .integer(Int64(activeLeases.count)),
+        "active_managed_worktree_count": .integer(Int64(activeManagedWorktrees.count)),
+        "finding_count": .integer(Int64(findings.count)),
       ]),
       "findings": .array(findings),
       "live_runtimes": liveRuntimes,
@@ -282,7 +282,10 @@ enum CodexOperationalDiagnostics {
     result["category"] = .string(
       object["capability_id"]?.stringValue?.hasPrefix("git.") == true ? "git" : "tool")
     for key in ["duration_milliseconds", "output_byte_count"] {
-      result[key] = object[key]?.numberValue.map(JSONValue.number) ?? .null
+      switch object[key] {
+      case .integer, .number: result[key] = object[key]
+      default: result[key] = .null
+      }
     }
     result["output_truncated"] = object["output_truncated"]?.boolValue.map(JSONValue.bool) ?? .null
     return .object(result)

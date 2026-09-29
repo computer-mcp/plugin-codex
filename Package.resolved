@@ -1,5 +1,5 @@
 {
-  "originHash" : "a4250340ac28abf1ac417498a0595591041765d2544ab790b1baf28e94594952",
+  "originHash" : "2710938c984b3e8c81af989ff73d285a9a9a153f5edc7b8ca5c050bdc0459f8a",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -150,8 +150,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-library/swift-codex.git",
       "state" : {
-        "revision" : "63913b732da36233591e68db3772483c35fbae07",
-        "version" : "0.2.2"
+        "revision" : "35e4a3dc07e60f084efb8a06424a8315c2ab6f64",
+        "version" : "0.4.1"
       }
     },
     {
@@ -231,8 +231,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
-        "revision" : "a931f2c1de8dd49381ce3bf2e279d033f68d8865",
-        "version" : "2.102.0"
+        "revision" : "21de5f08c1a166a6dd293d0e587ad977bf8dac5d",
+        "version" : "2.103.0"
       }
     },
     {
@@ -283,10 +283,10 @@
     {
       "identity" : "swift-sdk",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/modelcontextprotocol/swift-sdk.git",
+      "location" : "https://github.com/computer-mcp/swift-sdk.git",
       "state" : {
-        "revision" : "a0ae212ebf6eab5f754c3129608bc5557637e605",
-        "version" : "0.12.1"
+        "revision" : "61914e07e36440e0a4ee08d9f4644f20e4fa41f4",
+        "version" : "0.13.1-computer-mcp.1"
       }
     },
     {

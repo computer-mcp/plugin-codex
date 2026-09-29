@@ -1,6 +1,11 @@
-import CryptoKit
 import Foundation
 import GRDB
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 struct CodexPersistedThreadMetadata: Equatable, Sendable {
   let id: String
@@ -169,9 +174,9 @@ struct CodexRecentThreadReader: Sendable {
       "id": .string(metadata.id),
       "cwd": .string(metadata.cwd),
       "title": .string(Self.bounded(metadata.title, maximumCharacters: 2_048)),
-      "created_at_seconds": .number(Double(metadata.createdAtSeconds)),
-      "updated_at_seconds": .number(Double(metadata.updatedAtSeconds)),
-      "tokens_used": .number(Double(metadata.tokensUsed)),
+      "created_at_seconds": .integer(Int64(metadata.createdAtSeconds)),
+      "updated_at_seconds": .integer(Int64(metadata.updatedAtSeconds)),
+      "tokens_used": .integer(Int64(metadata.tokensUsed)),
       "archived": .bool(metadata.archived),
       "first_user_message": .string(
         Self.bounded(
@@ -188,7 +193,7 @@ struct CodexRecentThreadReader: Sendable {
           maximumCharacters: 8_192
         )
       ),
-      "rollout_size_bytes": .number(Double(rollout.size)),
+      "rollout_size_bytes": try .encoded(rollout.size),
     ])
     let result: JSONValue = .object([
       "schema_version": .number(1),
@@ -204,17 +209,17 @@ struct CodexRecentThreadReader: Sendable {
       "next_before_cursor": nextCursor.map(JSONValue.string) ?? .null,
       "has_more": .bool(nextCursor != nil),
       "bounds": .object([
-        "page_bytes_read": .number(Double(page.bytesRead)),
-        "goal_scan_bytes_read": .number(Double(goalScan.bytesRead)),
-        "total_io_bytes_read": .number(Double(page.bytesRead + goalScan.bytesRead)),
-        "records_decoded": .number(Double(decoded.count)),
-        "max_turns": .number(Double(limits.maxTurns)),
-        "max_messages": .number(Double(limits.maxMessages)),
-        "max_items": .number(Double(limits.maxItems)),
-        "max_page_bytes": .number(Double(limits.maxReadBytes)),
-        "max_goal_scan_bytes": .number(Double(CodexRecentThreadLimits.maximumGoalScanBytes)),
-        "max_output_bytes": .number(Double(limits.maxOutputBytes)),
-        "max_elapsed_milliseconds": .number(Double(limits.maxElapsedMilliseconds)),
+        "page_bytes_read": .integer(Int64(page.bytesRead)),
+        "goal_scan_bytes_read": .integer(Int64(goalScan.bytesRead)),
+        "total_io_bytes_read": .integer(Int64(page.bytesRead + goalScan.bytesRead)),
+        "records_decoded": .integer(Int64(decoded.count)),
+        "max_turns": .integer(Int64(limits.maxTurns)),
+        "max_messages": .integer(Int64(limits.maxMessages)),
+        "max_items": .integer(Int64(limits.maxItems)),
+        "max_page_bytes": .integer(Int64(limits.maxReadBytes)),
+        "max_goal_scan_bytes": .integer(Int64(CodexRecentThreadLimits.maximumGoalScanBytes)),
+        "max_output_bytes": .integer(Int64(limits.maxOutputBytes)),
+        "max_elapsed_milliseconds": .integer(Int64(limits.maxElapsedMilliseconds)),
         "latency_budget_exhausted": .bool(goalScan.latencyBudgetExhausted),
         "elapsed_milliseconds": .number(elapsedMilliseconds),
       ]),
@@ -497,7 +502,7 @@ struct CodexRecentThreadReader: Sendable {
             )
           ),
           "timestamp": record.timestamp.map(JSONValue.string) ?? .null,
-          "ordinal": record.ordinal.map { .number(Double($0)) } ?? .null,
+          "ordinal": record.ordinal.map { .integer(Int64($0)) } ?? .null,
         ])
         messages.append(message)
         if role == "assistant" { latestAssistantProgress = message }
@@ -524,7 +529,7 @@ struct CodexRecentThreadReader: Sendable {
               )
             } ?? .null,
             "timestamp": record.timestamp.map(JSONValue.string) ?? .null,
-            "ordinal": record.ordinal.map { .number(Double($0)) } ?? .null,
+            "ordinal": record.ordinal.map { .integer(Int64($0)) } ?? .null,
           ])
         )
       }

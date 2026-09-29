@@ -1,7 +1,9 @@
 # Installation and recovery
 
-The package owns `bin/codex-mcp-adapter` and its adjacent
-`codex-plugin_CodexAdapter.bundle`. Codex itself remains an external dependency.
+On macOS the package owns `bin/codex-mcp-adapter` and its adjacent
+`codex-plugin_CodexAdapter.bundle`. On Windows it owns
+`bin/codex-mcp-adapter.exe`, `codex-plugin_CodexAdapter.resources` and the required
+runtime DLLs in `bin/`. Codex itself remains an external dependency.
 Installing this package never installs, updates or removes Codex, changes global
 PATH, or grants a profile access to tools.
 
@@ -16,28 +18,45 @@ python3 Scripts/package.py --output /absolute/new/artifact-directory
 
 The default build is release; `--configuration debug` is available for development.
 The destination must not exist. The script builds using the pinned dependency
-resolution, copies the executable and resource bundle, collects upstream license
-and notice files, applies an ad-hoc signature, and emits `codex-plugin.zip` and
-`receipt.json`. The receipt records each file and archive SHA-256, architecture,
-and build configuration. It is not an official-source or Developer ID signature.
+resolution, copies the executable and resources, collects upstream license and
+notice files, and emits the native archive and `receipt.json`. macOS binaries
+receive an ad-hoc signature; Windows binaries are unsigned. The receipt records
+each file and archive SHA-256, platform, architecture and build configuration.
+It is not an official-source or publisher signature.
 No artifact is uploaded or installed automatically.
 
-The repository manifest declares the archive's supported architectures. Packaging
-requires the built adapter's slices to match that declaration and preserves the
-manifest bytes exactly. Official GitHub installation verifies the archive's
-manifest against the declaration at its release tag. The published archive
-targets arm64.
+The repository manifest declares `codex-plugin-macos-arm64.zip` and
+`codex-plugin-windows-x86_64.zip`. Packaging requires the built adapter to match
+exactly one declared platform and architecture combination. Both archives carry
+the same manifest bytes; its `platform_paths` selects the native executable.
+Computer MCP 1.3.0 or newer understands these declarations. Official GitHub
+installation verifies the archive manifest against its release tag.
+
+On Windows, run the packaging command with Python 3.11 or newer, PowerShell,
+Swift 6.2.3, `clang-cl`, `llvm-lib` and `llvm-readobj` available. The packager
+builds SQLite from the checksummed source in `Scripts/windows-sqlite.json`,
+verifies its required features, and passes the resulting headers and static
+library to SwiftPM. It copies the recursively inspected Swift runtime DLLs
+beside the adapter and verifies their architecture and notice coverage. The
+Windows receipt records each DLL's source digest and the SQLite build identity.
+See [third-party components](../../THIRD_PARTY_NOTICES.md) for distribution terms.
 
 Package inputs must be regular files and directories. Symbolic links and special
-files are rejected before signing or running the staged adapter. The output is
+files, including Windows reparse points, are rejected before signing or running
+the staged adapter. The output is
 published atomically without replacing any existing destination, including an
 empty directory created while the build is running. Failure removes only the
 packager's temporary staging directory; existing outputs remain unchanged.
 
 The repository's `Validate and package` workflow runs on pull requests, pushes
 and manual dispatch. It checks formatting, tests and the dependency lock, then
-retains the ZIP and receipt as downloadable workflow artifacts. These outputs
-are ad-hoc signed validation builds, not published or verified official releases.
+retains both native ZIPs and receipts as downloadable workflow artifacts. A
+separate Windows job installs no Swift toolchain, relocates the exact ZIP and
+runs the adapter with system-only child PATH. It records actual loaded module
+paths and digests, MCP discovery, reconnect and joined native process cleanup.
+Hosted runners can contain preinstalled software; this gate does not claim a
+pristine Windows installation or authenticated model execution. These outputs
+are validation builds, not published or verified official releases.
 Check the receipt's architecture before installation. Public distribution needs
 separate publisher authorization and its signing/provenance review.
 
@@ -48,7 +67,7 @@ the current revision from `computer-mcp plugins list`, then supply the digest
 from the artifact receipt:
 
 ```sh
-computer-mcp plugins install /absolute/path/codex-plugin.zip --id codex --version 0.2.0 --sha256 DIGEST --expected-revision REVISION
+computer-mcp plugins install /absolute/path/ARCHIVE.zip --id codex --version VERSION --sha256 DIGEST --expected-revision REVISION
 ```
 
 The new package is disabled and exposes no tools. In its settings, choose the
@@ -96,10 +115,12 @@ boundary when serving through Computer MCP.
 
 ## Stop, update, roll back and remove
 
-Before changing a plugin, finish or explicitly cancel its active execution,
-then disconnect its Gateway
-clients. The host rejects registration changes while clients are connected;
-it does not interrupt their work to force an update.
+Configuration and installation changes publish a new runtime generation.
+Existing work retains its creating runtime and package files until its owner
+confirms completion; new work uses the current configuration. Current grants
+and workspace access are checked on each invocation. Disabling a plugin closes
+admission for new work while preserving the ownership needed to inspect or
+cancel existing work. Explicitly cancel work when it should stop.
 
 Install an updated artifact through the same command. Saved arguments, exposure
 and profile grants are not reset. Select a retained installation with `plugins

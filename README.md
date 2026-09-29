@@ -7,8 +7,8 @@ The plugin does not link Computer MCP Core or install the vendor Codex binary.
 
 ## Current capabilities
 
-The configured server exposes six `codex.exec.*` tools for sessions, bounded
-events, results and cancellation, alongside the App Server tools below.
+The configured server exposes seven `codex.exec.*` tools for sessions, bounded
+events, results, cancellation and retained-result release, alongside the App Server tools below.
 
 `codex.protocol.methods.list` and `codex.protocol.methods.describe` inspect bundled,
 version-specific protocol declarations. Schema presence does not prove
@@ -18,13 +18,32 @@ App Server exposes thread/turn and Goal operations, approvals, user input,
 events, runtime ownership and release, recent-thread inspection, acceptance
 runs, worktree leases and operational diagnostics. Managed-worktree planning
 and receipts use the adapter's database; provisioning and removal require a
-connected host workspace service. `codex.app.methods.list` and `describe` describe its
-callable RPC surface; `codex.app.methods.call` uses the same runtime validation.
+connected host workspace service.
+
+Every SDK-adopted stable request also has a `codex.app.native.*` tool with its
+complete native parameter schema. For example, `codex.app.native.fs.readFile`
+takes `{"params":{"path":"/absolute/path"}}`. `codex.app.methods.list` and
+`describe` report stability and operation risk; `codex.app.methods.call` shares
+the native runtime validation and accepts experimental methods with
+`experimental: true` when the runtime enables experimental API support.
+Native tools preserve request extensions, response fields and exact signed
+64-bit integers. Powerful operations still require the host's corresponding
+authorization. Higher-level thread, approval and worktree workflows remain
+available alongside the native tools.
+
+Thread reads return metadata by default. Use `codex.app.thread.turns.list`
+and `codex.app.thread.items.list` for bounded history pages with native cursors.
+Explicit full-history reads remain available through `include_turns: true`;
+large histories can exceed transport, output or timeout limits. See the
+[long-thread workflow](Documentation/Reference/Workflows.md#reading-long-threads).
 
 ## Build and run
 
-Building requires macOS 14 or newer and Swift 6.2 or newer.
-Run `swift build` and `swift test`. Launch
+On macOS, building requires macOS 14 or newer and Swift 6.2 or newer.
+Run `swift build` and `swift test`. Windows x86_64 packaging uses Swift 6.2.3,
+PowerShell and the pinned SQLite build described in
+[Installation](Documentation/Reference/Installation.md). The Windows adapter
+serves standard MCP over stdio; it does not provide a Windows host GUI. Launch
 `.build/debug/codex-mcp-adapter` through an MCP stdio client, never as an
 unbounded unattended shell command. `--help` prints usage without serving.
 
@@ -75,12 +94,21 @@ The [documentation index](Documentation/README.md) and
 
 ## Protocol inputs
 
-The bundled inventory was exported by Codex 0.154.0. Reproduce it using that
-version's `app-server generate-json-schema --out EXPORT_ROOT/stable` and
-`app-server generate-json-schema --experimental --out EXPORT_ROOT/experimental`.
-Run `node Scripts/import-schema.mjs EXPORT_ROOT 0.154.0`, or add `--check`
-to verify byte-for-byte drift. Do not edit generated JSON by hand.
-Schema receipt integrity is not publisher signature verification.
+The bundled inventory and adoption metadata derive from the exact swift-codex
+commit in `Package.resolved`. swift-codex owns the upstream schema lock,
+generation and adoption decisions. Regenerate the downstream resources after
+resolving dependencies:
+
+```sh
+node Scripts/import-schema.mjs
+node Scripts/import-schema.mjs --check
+node --test Tests/schema-import.test.mjs
+```
+
+An optional SDK repository path supplies Git objects for the locked commit;
+uncommitted files in that repository are never imported. The receipt binds the
+SDK revision, upstream identity and derived resource digests. Do not edit the
+resources by hand. Resource integrity is not publisher signature verification.
 
 `codex-mcp-adapter compare-schema BASELINE_JSON_DIRECTORY CURRENT_JSON_DIRECTORY`
 reports all four message directions, source digests, method and schema changes,

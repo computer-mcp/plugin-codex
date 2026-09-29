@@ -1,14 +1,12 @@
 import CodexAppServerClient
 import CodexAppServerProtocol
-import CryptoKit
 import Foundation
 
-struct CodexAppServerMethod: Equatable, Sendable {
-  let method: String
-  let description: String
-  let takesParams: Bool
-  let risk: CodexOperationRisk
-}
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
 
 struct CodexRuntimeOwner: Codable, Equatable, Sendable {
   let workspaceID: String?
@@ -122,213 +120,6 @@ final class CodexRuntimeDirectory: @unchecked Sendable {
   }
 }
 
-enum CodexAppServerMethodCatalog {
-  static let methods: [CodexAppServerMethod] = [
-    .init(
-      method: "config/read", description: "Read effective native Codex configuration.",
-      takesParams: true, risk: .readOnly),
-    .init(
-      method: "configRequirements/read",
-      description: "Read managed native Codex configuration requirements.", takesParams: false,
-      risk: .readOnly),
-    .init(
-      method: "mcpServerStatus/list", description: "Read native MCP connection state.",
-      takesParams: true, risk: .readOnly),
-    .init(
-      method: "thread/turns/list", description: "Read a page of persisted thread turns.",
-      takesParams: true, risk: .readOnly),
-    .init(
-      method: "thread/items/list", description: "Read a page of persisted turn items.",
-      takesParams: true, risk: .readOnly),
-
-    .init(
-      method: "account/rateLimits/read",
-      description: "Read the current Codex account rate-limit snapshot.",
-      takesParams: false,
-      risk: .readOnly
-    ),
-    .init(
-      method: "account/read",
-      description: "Read non-secret Codex account metadata.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "account/usage/read",
-      description: "Read the current Codex account token-usage summary.",
-      takesParams: false,
-      risk: .readOnly
-    ),
-    .init(
-      method: "app/list",
-      description: "List Codex apps available to the installed Codex runtime.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "experimentalFeature/list",
-      description: "List experimental Codex feature metadata.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "model/list",
-      description: "List models exposed by the installed Codex runtime.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "plugin/list",
-      description: "List installed Codex plugins without mutating them.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "plugin/read",
-      description: "Read metadata for one installed Codex plugin.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "skills/list",
-      description: "List Skills discovered by Codex.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "thread/list",
-      description: "List Codex threads.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "thread/loaded/list",
-      description: "List thread IDs currently loaded by this App Server runtime.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "thread/read",
-      description: "Read one Codex thread and its persisted turns.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "thread/start",
-      description:
-        "Start a Codex thread using native configuration and an optional initial directory.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/resume",
-      description: "Resume a Codex thread with native configuration.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/fork",
-      description: "Fork an existing Codex thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/goal/get",
-      description: "Read the official persisted Codex Goal for one thread.",
-      takesParams: true,
-      risk: .readOnly
-    ),
-    .init(
-      method: "thread/goal/set",
-      description: "Create or update the official persisted Codex Goal for one thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/goal/clear",
-      description: "Clear the official persisted Codex Goal for one thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/compact/start",
-      description: "Start compaction for one Codex thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/inject_items",
-      description: "Inject protocol items into one Codex thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/metadata/update",
-      description: "Update reviewed metadata for one Codex thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/name/set",
-      description: "Set the display name of one Codex thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/rollback",
-      description: "Roll a Codex thread back to a prior turn.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/archive",
-      description: "Archive one Codex thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/unarchive",
-      description: "Unarchive one Codex thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "thread/unsubscribe",
-      description: "Unsubscribe the App Server connection from one thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "turn/start",
-      description: "Start a turn using the native Codex execution policy.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "turn/steer",
-      description: "Steer an active Codex turn.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "turn/interrupt",
-      description: "Interrupt an active Codex turn.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-    .init(
-      method: "review/start",
-      description: "Start a Codex review for a thread.",
-      takesParams: true,
-      risk: .workspaceWrite
-    ),
-  ]
-
-  static func method(named name: String) -> CodexAppServerMethod? {
-    methods.first { $0.method == name }
-  }
-}
-
 protocol CodexAppServerRuntimeProtocol: Sendable {
   func status() async -> JSONValue
   func call(method: String, params: JSONValue?) async throws -> JSONValue
@@ -338,10 +129,14 @@ protocol CodexAppServerRuntimeProtocol: Sendable {
   func approvals(state: String?, limit: Int) async throws -> JSONValue
   func approval(id: String) async throws -> JSONValue
   func respondToApproval(id: String, response: JSONValue) async throws -> JSONValue
+  func workResources() async throws -> [CodexWorkResource]
   func shutdown() async
 }
 
 extension CodexAppServerRuntimeProtocol {
+  func workResources() async throws -> [CodexWorkResource] {
+    throw CodexToolError.disabled("codex.app.work_unavailable: Runtime ownership is unavailable.")
+  }
   func approvals(state: String?, limit: Int) async throws -> JSONValue {
     .object(["approvals": .array([])])
   }
@@ -433,6 +228,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   private typealias Stable = CodexAppServerProtocol.Stable
   private struct PendingUserInputRequest: Sendable {
     let handle: CodexAppServerRawServerRequest
+    let connection: CodexAppServerConnection
     let payload: JSONValue
     let threadID: String?
     var kind: String {
@@ -443,13 +239,52 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
 
   private struct ConnectionStartup: Sendable {
     let id: UUID
+    let work: CodexWorkBinding
     let transport: ManagedCodexAppServerTransport
     let task: Task<CodexAppServerConnection, Error>
   }
 
   private struct RequestGenerationRetirement: Sendable {
     let id: UUID
+    let work: CodexWorkBinding
+    let generation: Int
+    let transport: ManagedCodexAppServerTransport?
     let task: Task<CodexAppServerProcessSnapshot?, Never>
+  }
+
+  private struct TurnWorkKey: Hashable, Sendable {
+    let threadID: String
+    let turnID: String
+  }
+
+  private struct ThreadCleanupWork: Sendable {
+    let threadID: String
+    let generation: Int
+    let binding: CodexWorkBinding
+    var requiresProcessExit: Bool
+  }
+
+  private struct ServerRequestWorkKey: Hashable, Sendable {
+    let connection: ObjectIdentifier
+    let requestID: String
+  }
+
+  private struct ServerRequestWork: Sendable {
+    let binding: CodexWorkBinding
+    let connection: CodexAppServerConnection
+    let generation: Int
+    let threadID: String?
+    let turnID: String?
+    var approvalID: String?
+    var state: CodexWorkResource.State = .active
+    var handlerActive = true
+    var nativeSettled = false
+    var task: Task<Void, Never>?
+  }
+
+  private struct NativeReply: Sendable {
+    let connection: CodexAppServerConnection
+    let value: JSONValue
   }
 
   struct RequestTimeoutError: Error, LocalizedError, Sendable {
@@ -476,7 +311,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   private var requestGenerationRetirement: RequestGenerationRetirement?
   private var lastProcessSnapshot: CodexAppServerProcessSnapshot?
   private var notificationTask: Task<Void, Never>?
-  private var requestTask: Task<Void, Never>?
   private var pendingUserInputRequests: [String: PendingUserInputRequest] = [:]
   private var approvalRecords: [String: CodexApprovalRecord] = [:]
   private var pendingApprovalHandles: [String: PendingApprovalHandle] = [:]
@@ -488,11 +322,32 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   private var threadStates: [String: JSONValue] = [:]
   private var activeTurnIDs: [String: String] = [:]
   private var turnStartInFlight: Set<String> = []
+  private var detachedReviewInFlight = false
+  private var completedTurnsDuringStart: Set<TurnWorkKey> = []
+  private var closedThreadsDuringStart: Set<String> = []
   private var threadStartInFlight = false
+  private var threadResumeInFlight: Set<String> = []
   private var handoffPreparations: [String: UUID] = [:]
   private var connectionState = "idle"
   private var connectionID: String?
   private var connectionGeneration = 0
+  private var nativeResources = CodexNativeResources()
+  private var asyncNativeWork = CodexAppAsyncWork()
+  private var remoteControlWork = CodexRemoteControlWork()
+  private var queuedWork = CodexQueuedWork()
+  private var threadWork: [String: CodexWorkBinding] = [:]
+  private var threadCleanupWork: [String: ThreadCleanupWork] = [:]
+  private var turnWork: [TurnWorkKey: CodexWorkBinding] = [:]
+  private var goalWork: [String: CodexWorkBinding] = [:]
+  private var goalObservationToken = UUID()
+  private var goalMutationInFlight: Set<String> = []
+  private var pendingGoalOrigins: [String: CodexWorkOrigin] = [:]
+  private var goalNotificationsDuringMutation: Set<String> = []
+  private var uncertainGoalWork: Set<String> = []
+  private var pendingCallWork: [String: CodexWorkBinding] = [:]
+  private var serverRequestWork: [ServerRequestWorkKey: ServerRequestWork] = [:]
+  private var cleanupWork: CodexWorkBinding?
+  private var unconfirmedTransport: (generation: Int, transport: ManagedCodexAppServerTransport)?
   private var shutdownReason: String?
   private var isShutdown = false
   private var lastError: String?
@@ -544,7 +399,120 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         database: database, runtimeID: record.runtimeID)) == false
   }
 
+  func workResources() async throws -> [CodexWorkResource] {
+    await recheckProcessCleanup()
+    let state: CodexWorkResource.State =
+      requestGenerationRetirement != nil || unconfirmedTransport != nil ? .uncertain : .active
+    var rows =
+      try nativeResources.workResources() + asyncNativeWork.workResources()
+      + remoteControlWork.workResources()
+      + queuedWork.workResources()
+    for id in loadedThreadIDs.union(subscribedThreadIDs) {
+      let binding = threadBinding(id)
+      if threadCleanupWork[binding.id] == nil {
+        rows.append(
+          try binding.resource(
+            "codex.app.thread", state: state, handles: ["thread_id": .string(id)]))
+      }
+    }
+    rows += try threadCleanupWork.values.map {
+      try $0.binding.resource(
+        "codex.app.thread", state: .uncertain, handles: ["thread_id": .string($0.threadID)])
+    }
+    for (threadID, turnID) in activeTurnIDs {
+      rows.append(
+        try turnBinding(threadID: threadID, turnID: turnID).resource(
+          "codex.app.turn", state: state,
+          handles: ["thread_id": .string(threadID), "turn_id": .string(turnID)])
+      )
+    }
+    rows += try goalWork.map { threadID, work in
+      try work.resource(
+        "codex.app.goal", state: uncertainGoalWork.contains(threadID) ? .uncertain : state,
+        handles: ["thread_id": .string(threadID)])
+    }
+    rows += try pendingCallWork.values.map { try $0.resource("codex.app.call") }
+    rows += try serverRequestWork.map { key, work in
+      var handles: [String: JSONValue] = ["request_id": .string(key.requestID)]
+      if let id = work.threadID { handles["thread_id"] = .string(id) }
+      if let id = work.turnID { handles["turn_id"] = .string(id) }
+      if let id = work.approvalID { handles["approval_id"] = .string(id) }
+      return try work.binding.resource(
+        "codex.app.server-request", state: state == .uncertain ? state : work.state,
+        handles: handles)
+    }
+    if let startup = connectionStartup {
+      rows.append(try startup.work.resource("codex.app.startup"))
+    }
+    if let retirement = requestGenerationRetirement {
+      rows.append(try retirement.work.resource("codex.app.cleanup", state: .uncertain))
+    } else if let cleanupWork, unconfirmedTransport != nil {
+      rows.append(try cleanupWork.resource("codex.app.cleanup", state: .uncertain))
+    }
+    return try rows.map { try $0.addingHandles(["runtime_id": .string(runtimeID)]) }
+      .sorted { ($0.kind, $0.id) < ($1.kind, $1.id) }
+  }
+
+  private func threadBinding(_ id: String) -> CodexWorkBinding {
+    if let binding = threadWork[id] { return binding }
+    if let cleanup = threadCleanupWork.values.first(where: { $0.threadID == id }) {
+      return cleanup.binding
+    }
+    let binding = CodexWorkBinding()
+    threadWork[id] = binding
+    return binding
+  }
+
+  private func turnBinding(
+    threadID: String, turnID: String, origin: CodexWorkOrigin? = nil
+  ) -> CodexWorkBinding {
+    let key = TurnWorkKey(threadID: threadID, turnID: turnID)
+    if let binding = turnWork[key] { return binding }
+    let binding = CodexWorkBinding(origin: origin ?? .init())
+    turnWork[key] = binding
+    return binding
+  }
+
+  private func requestOrigin(threadID: String?, turnID: String?) -> CodexWorkOrigin {
+    guard let threadID else { return .init() }
+    if let turnID {
+      let parentOrigin =
+        turnStartInFlight.contains(threadID) || queuedWork.hasPending(threadID: threadID)
+        ? nil
+        : (goalWork[threadID]?.origin ?? pendingGoalOrigins[threadID]
+          ?? threadBinding(threadID).origin)
+      return turnBinding(threadID: threadID, turnID: turnID, origin: parentOrigin).origin
+    }
+    return threadBinding(threadID).origin
+  }
+
+  private func pruneWorkBindings() {
+    let threadCreationPending =
+      threadStartInFlight || detachedReviewInFlight || !threadResumeInFlight.isEmpty
+    if !threadCreationPending { closedThreadsDuringStart.removeAll() }
+    let liveThreads = loadedThreadIDs.union(subscribedThreadIDs)
+    let pendingThreads = Set(serverRequestWork.values.compactMap(\.threadID))
+    threadWork = threadWork.filter {
+      threadCreationPending || liveThreads.contains($0.key) || pendingThreads.contains($0.key)
+    }
+    let pendingTurns = Set(
+      serverRequestWork.values.compactMap { request -> TurnWorkKey? in
+        guard let threadID = request.threadID, let turnID = request.turnID else { return nil }
+        return .init(threadID: threadID, turnID: turnID)
+      })
+    completedTurnsDuringStart = completedTurnsDuringStart.filter {
+      detachedReviewInFlight || turnStartInFlight.contains($0.threadID)
+    }
+    turnWork = turnWork.filter { key, _ in
+      activeTurnIDs[key.threadID] == key.turnID
+        || detachedReviewInFlight || turnStartInFlight.contains(key.threadID)
+        || pendingTurns.contains(key)
+        || threadCleanupWork.values.contains { $0.threadID == key.threadID }
+    }
+  }
+
   func status() async -> JSONValue {
+    await recheckProcessCleanup()
     let processSnapshot =
       await (processTransport ?? connectionStartup?.transport)?.snapshot()
       ?? lastProcessSnapshot
@@ -573,20 +541,22 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       "created_at": (try? JSONValue.encoded(createdAt)) ?? .null,
       "owner": owner.flatMap { try? JSONValue.encoded($0) } ?? .null,
       "state": .string(connectionState),
-      "runtime_state": .string(isShutdown ? "stopped" : "running"),
+      "runtime_state": .string(
+        unconfirmedTransport != nil ? "cleanup-pending" : (isShutdown ? "stopped" : "running")),
       "connection_state": .string(connectionState),
       "process_state": processSnapshot.map { .string($0.state.rawValue) } ?? .string("absent"),
       "current_request_state": .string(currentRequestState),
-      "current_request_count": .number(Double(activeRequestCount)),
+      "current_request_count": .integer(Int64(activeRequestCount)),
       "last_request_failure": lastRequestFailure?.json ?? .null,
       "connection_id": connectionID.map(JSONValue.string) ?? .null,
-      "connection_generation": .number(Double(connectionGeneration)),
+      "connection_generation": .integer(Int64(connectionGeneration)),
+      "native_resource_count": .integer(Int64(nativeResources.count)),
       "experimental_api": .bool(configuration.experimentalAPI),
       "workspace": .string(workspaceURL.path),
       "last_error": lastError.map(JSONValue.string) ?? .null,
       "shutdown_reason": shutdownReason.map(JSONValue.string) ?? .null,
-      "pending_user_input_requests": .number(Double(pendingUserInputRequests.count)),
-      "pending_approvals": .number(Double(pendingApprovals.count)),
+      "pending_user_input_requests": .integer(Int64(pendingUserInputRequests.count)),
+      "pending_approvals": .integer(Int64(pendingApprovals.count)),
       "pending_approval_ids": .array(pendingApprovalIDs),
       "threads": .array(threads),
       "process": processSnapshot?.json ?? .null,
@@ -602,6 +572,10 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         $0.threadID == threadID && $0.state == .pending
       }
       || pendingUserInputRequests.values.contains { $0.threadID == threadID }
+      || serverRequestWork.values.contains { $0.threadID == threadID }
+      || threadCleanupWork.values.contains { $0.threadID == threadID }
+      || asyncNativeWork.hasWork(threadID: threadID)
+      || queuedWork.hasPending(threadID: threadID)
   }
 
   func prepareForHandoff(
@@ -749,9 +723,14 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       let officialLoaded = Set(
         response.objectValue?["data"]?.arrayValue?.compactMap(\.stringValue) ?? []
       )
+      let removed = loadedThreadIDs.union(subscribedThreadIDs).subtracting(officialLoaded)
+      for id in removed { retainThreadCleanup(threadID: id) }
       loadedThreadIDs = officialLoaded
       subscribedThreadIDs.formIntersection(officialLoaded)
-      loadedState = officialLoaded.contains(threadID) ? "still-loaded" : "not-loaded"
+      loadedState =
+        officialLoaded.contains(threadID)
+          || threadCleanupWork.values.contains { $0.threadID == threadID }
+        ? "still-loaded" : "not-loaded"
     }
 
     if loadedState == "still-loaded" {
@@ -777,6 +756,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     subscribedThreadIDs.remove(threadID)
     activeTurnIDs.removeValue(forKey: threadID)
     threadStates[threadID] = .string("released")
+    threadWork.removeValue(forKey: threadID)
     try persistThreadOwnership(threadID: threadID, state: .released)
 
     if isEligibleForIdleReaping(ignoring: threadID) {
@@ -816,26 +796,96 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     let otherHandoffs = handoffPreparations.keys.contains { $0 != threadID }
     return otherLoaded.isEmpty && otherSubscribed.isEmpty && !otherActive
       && !otherPendingApprovals && !otherPendingInput && !otherHandoffs
+      && nativeResources.count == 0 && asyncNativeWork.isEmpty && pendingCallWork.isEmpty
+      && remoteControlWork.isEmpty
+      && queuedWork.isEmpty
+      && serverRequestWork.isEmpty && !threadStartInFlight && !detachedReviewInFlight
+      && turnStartInFlight.isEmpty && threadResumeInFlight.isEmpty
+      && !goalWork.keys.contains { $0 != threadID } && goalMutationInFlight.isEmpty
+      && !threadCleanupWork.values.contains { $0.threadID != threadID }
   }
 
   func call(method: String, params: JSONValue?) async throws -> JSONValue {
+    try CodexAppServerMethodCatalog.validate()
     guard let descriptor = CodexAppServerMethodCatalog.method(named: method) else {
       throw CodexToolError.disabled(
-        "codex.app.method_not_allowed: App Server method '\(method)' is not in the reviewed allowlist."
+        "codex.app.method_not_allowed: App Server method '\(method)' is not adopted by the SDK."
       )
     }
+    guard descriptor.channel != .experimental || configuration.experimentalAPI else {
+      throw CodexToolError.disabled(
+        "Experimental App Server requests are disabled in this runtime.")
+    }
     let normalized = try normalize(params: params, for: descriptor)
+    try descriptor.validate(params: normalized)
     if let threadID = try Self.workspaceScopedThreadID(method: method, params: normalized) {
       try threadOwnerIndex?.check(threadID: threadID)
       if descriptor.risk != .readOnly, method != "thread/fork" {
         try threadOwnerIndex?.claim(threadID: threadID)
       }
     }
+    if let beforeThreadID = normalized?.objectValue?["beforeThreadId"]?.stringValue,
+      descriptor.threadParameters["beforeThreadId"] != nil
+    {
+      try threadOwnerIndex?.check(threadID: Self.validatedThreadID(beforeThreadID))
+    }
+    let targetThreadID = normalized?.objectValue?["threadId"]?.stringValue
+    let previouslyOwnedThreads = loadedThreadIDs.union(subscribedThreadIDs)
+    let resumeThreadID = method == "thread/resume" ? targetThreadID : nil
+    if let resumeThreadID {
+      guard !threadCleanupWork.values.contains(where: { $0.threadID == resumeThreadID }) else {
+        throw CodexToolError.disabled(
+          "codex.app.thread_cleanup_pending: Previous native thread cleanup is not yet confirmed.")
+      }
+      guard threadResumeInFlight.insert(resumeThreadID).inserted else {
+        throw CodexToolError.disabled(
+          "codex.app.thread_resume_in_flight: This thread is already being resumed.")
+      }
+    }
+    defer {
+      if let resumeThreadID { threadResumeInFlight.remove(resumeThreadID) }
+      pruneWorkBindings()
+    }
+    let queriedGoalWorkID = targetThreadID.flatMap { goalWork[$0]?.id }
+    let queriedGoalObservation = goalObservationToken
+    let goalMutationThreadID =
+      ["thread/goal/set", "thread/goal/clear"].contains(method) ? targetThreadID : nil
+    if let goalMutationThreadID {
+      guard goalMutationInFlight.insert(goalMutationThreadID).inserted else {
+        throw CodexToolError.disabled(
+          "codex.app.goal_request_in_flight: Another Goal mutation is still settling for this thread."
+        )
+      }
+    }
+    defer {
+      if let goalMutationThreadID {
+        goalMutationInFlight.remove(goalMutationThreadID)
+        goalNotificationsDuringMutation.remove(goalMutationThreadID)
+        pendingGoalOrigins.removeValue(forKey: goalMutationThreadID)
+      }
+    }
+    let isDetachedReview =
+      method == "review/start" && normalized?.objectValue?["delivery"] == .string("detached")
+    if isDetachedReview {
+      guard !detachedReviewInFlight else {
+        throw CodexToolError.disabled(
+          "codex.app.review_start_in_flight: Another detached review is still being started.")
+      }
+      detachedReviewInFlight = true
+    }
+    defer {
+      if isDetachedReview {
+        detachedReviewInFlight = false
+        pruneWorkBindings()
+      }
+    }
     let turnStartThreadID =
-      method == "turn/start" ? normalized?.objectValue?["threadId"]?.stringValue : nil
+      ["turn/start", "thread/queue/start", "review/start"].contains(method) && !isDetachedReview
+      ? targetThreadID : nil
     let turnStartPriorState = turnStartThreadID.flatMap { threadStates[$0] }
     let turnStartPriorActiveTurnID = turnStartThreadID.flatMap { activeTurnIDs[$0] }
-    if method == "thread/start", !handoffPreparations.isEmpty {
+    let createsThread = ["thread/start", "thread/fork"].contains(method)
+    if createsThread, !handoffPreparations.isEmpty {
       throw CodexToolError.disabled(
         "codex.app.handoff_in_progress: A thread release transaction is in progress on this runtime."
       )
@@ -850,16 +900,16 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     if let turnStartThreadID {
       guard turnStartInFlight.insert(turnStartThreadID).inserted else {
         throw CodexToolError.disabled(
-          "codex.app.turn_start_in_flight: Another turn/start is already being committed for this thread."
+          "codex.app.turn_start_in_flight: Another turn is already being started for this thread."
         )
       }
       threadStates[turnStartThreadID] = .string("starting")
       activeTurnIDs.removeValue(forKey: turnStartThreadID)
     }
-    if method == "thread/start" {
+    if createsThread {
       guard !threadStartInFlight else {
         throw CodexToolError.disabled(
-          "codex.app.thread_start_in_flight: Another thread/start is already being committed by this runtime."
+          "codex.app.thread_start_in_flight: Another thread is already being started by this runtime."
         )
       }
       threadStartInFlight = true
@@ -868,19 +918,27 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       if let turnStartThreadID {
         turnStartInFlight.remove(turnStartThreadID)
       }
-      if method == "thread/start" {
+      if createsThread {
         threadStartInFlight = false
       }
+      pruneWorkBindings()
     }
     let normalizedRequest = normalized
+    let creator = CodexWorkInvocation.current
+    let work = CodexWorkBinding(origin: .init(invocation: creator))
+    if method == "thread/goal/set", let targetThreadID {
+      pendingGoalOrigins[targetThreadID] = goalWork[targetThreadID]?.origin ?? work.origin
+    }
+    pendingCallWork[work.id] = work
     activeRequestCount += 1
     currentRequestState = "running"
     defer {
+      pendingCallWork.removeValue(forKey: work.id)
       activeRequestCount = max(0, activeRequestCount - 1)
       currentRequestState = activeRequestCount == 0 ? "idle" : "running"
       persistRuntimeLease(state: connectionState, reason: nil)
     }
-    let response: JSONValue
+    let reply: NativeReply
     do {
       let totalTimeoutSeconds = Self.requestTimeoutSeconds(
         method: method,
@@ -892,21 +950,21 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         risk: descriptor.risk,
         method: method
       )
-      response = try await Self.boundedRequest(
+      reply = try await Self.boundedRequest(
         timeoutSeconds: totalTimeoutSeconds,
         onTimeout: {
           await self.retireCurrentRequestGeneration(method: method)
         },
         operation: {
           try await Self.withRequestRetry(risk: descriptor.risk) { attempt in
-            let runAttempt: @Sendable () async throws -> JSONValue = {
+            let runAttempt: @Sendable () async throws -> NativeReply = {
               let connection = try await self.ensureConnection()
               try await self.validateWorkspaceScope(
                 method: method,
                 params: normalizedRequest,
                 connection: connection
               )
-              return try await Self.sendReviewedRequest(
+              return try await self.sendNativeRequest(
                 method: method,
                 params: normalizedRequest,
                 connection: connection
@@ -945,28 +1003,111 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         "codex.app.request_failed: \(Self.errorDescription(error))"
       )
     }
-    if let turnStartThreadID,
-      threadStates[turnStartThreadID] == .string("starting"),
+    guard connection === reply.connection else {
+      throw CodexToolError.executionFailed(
+        "codex.app.connection_retired: The response belongs to a retired connection.")
+    }
+    let response = reply.value
+    let returnedTurnThreadID =
+      isDetachedReview
+      ? Self.safeStoredIdentifier(response.objectValue?["reviewThreadId"]?.stringValue)
+      : turnStartThreadID
+    if let threadID = returnedTurnThreadID,
+      let turnID = Self.safeStoredIdentifier(
+        response.objectValue?["turn"]?.objectValue?["id"]?.stringValue)
+    {
+      if method == "thread/queue/start" {
+        if let origin = queuedWork.origin(
+          threadID: threadID,
+          submissionID: normalizedRequest?.objectValue?["queuedSubmissionId"]?.stringValue)
+        {
+          turnBinding(threadID: threadID, turnID: turnID).origin.bind(to: origin.value)
+        } else if !queuedWork.hasPending(threadID: threadID) {
+          turnBinding(threadID: threadID, turnID: turnID).origin.bind(to: creator)
+        }
+      } else {
+        turnBinding(threadID: threadID, turnID: turnID).origin.bind(to: creator)
+      }
+    }
+    if let returnedTurnThreadID,
+      isDetachedReview || threadStates[returnedTurnThreadID] == .string("starting"),
       let turnID = Self.safeStoredIdentifier(
         response.objectValue?["turn"]?.objectValue?["id"]?.stringValue
       )
     {
       let responseStatus = response.objectValue?["turn"]?.objectValue?["status"]?.stringValue
-      if let responseStatus, ["completed", "failed", "interrupted"].contains(responseStatus) {
-        activeTurnIDs.removeValue(forKey: turnStartThreadID)
-        threadStates[turnStartThreadID] = .string("idle")
-      } else {
-        activeTurnIDs[turnStartThreadID] = turnID
-        threadStates[turnStartThreadID] = .string("active")
+      if completedTurnsDuringStart.contains(.init(threadID: returnedTurnThreadID, turnID: turnID))
+        || closedThreadsDuringStart.contains(returnedTurnThreadID)
+        || responseStatus.map({ ["completed", "failed", "interrupted"].contains($0) }) == true
+      {
+        if activeTurnIDs[returnedTurnThreadID] == nil
+          || activeTurnIDs[returnedTurnThreadID] == turnID
+        {
+          activeTurnIDs.removeValue(forKey: returnedTurnThreadID)
+          threadStates[returnedTurnThreadID] = .string("idle")
+        }
+      } else if activeTurnIDs[returnedTurnThreadID] == nil
+        || activeTurnIDs[returnedTurnThreadID] == turnID
+      {
+        activeTurnIDs[returnedTurnThreadID] = turnID
+        threadStates[returnedTurnThreadID] = .string("active")
       }
     }
     let visibleResponse = try threadOwnerIndex?.filtered(response, method: method) ?? response
     try rememberWorkspaceScopedThreads(
       method: method,
       params: normalizedRequest,
-      response: visibleResponse
+      response: visibleResponse, creator: creator, previouslyOwnedThreads: previouslyOwnedThreads
     )
+    if method == "thread/goal/set",
+      let threadID = normalizedRequest?.objectValue?["threadId"]?.stringValue
+    {
+      goalObservationToken = UUID()
+      if response.objectValue?["goal"]?.objectValue?["status"] == .string("active") {
+        if goalWork[threadID] == nil { goalWork[threadID] = .init(origin: work.origin) }
+        if queriedGoalWorkID == nil { goalWork[threadID]?.origin.bind(to: creator) }
+        if goalNotificationsDuringMutation.contains(threadID) { uncertainGoalWork.insert(threadID) }
+      } else {
+        finishGoalMutation(threadID: threadID)
+      }
+    } else if method == "thread/goal/clear",
+      let threadID = normalizedRequest?.objectValue?["threadId"]?.stringValue,
+      response.objectValue?["cleared"] == .bool(true)
+    {
+      goalObservationToken = UUID()
+      finishGoalMutation(threadID: threadID)
+    } else if method == "thread/goal/get", let threadID = targetThreadID,
+      let queriedGoalWorkID, goalWork[threadID]?.id == queriedGoalWorkID,
+      queriedGoalObservation == goalObservationToken, !goalMutationInFlight.contains(threadID)
+    {
+      if response.objectValue?["goal"]?.objectValue?["status"] != .string("active") {
+        goalWork.removeValue(forKey: threadID)
+      }
+      uncertainGoalWork.remove(threadID)
+    }
+    if method == "thread/turns/list" || method == "thread/items/list" {
+      // A truncated page loses both records and its continuation. The caller
+      // keeps its input cursor and can retry a smaller page without skipping data.
+      guard try JSONEncoder().encode(visibleResponse).count <= outputBounds.maxStructuredBytes
+      else {
+        throw CodexToolError.executionFailed(
+          "codex.app.history_page_too_large: Retry the same cursor with a smaller limit or itemsView=notLoaded for turns. If a single item exceeds the output budget, use codex.app.thread.recent for an explicitly bounded summary."
+        )
+      }
+      return visibleResponse
+    }
     return outputBounds.json(visibleResponse)
+  }
+
+  private func finishGoalMutation(threadID: String) {
+    // Notification and RPC consumers can interleave; a contradictory active
+    // notification needs a subsequent read before the owner can be released.
+    if goalNotificationsDuringMutation.contains(threadID), goalWork[threadID] != nil {
+      uncertainGoalWork.insert(threadID)
+    } else {
+      goalWork.removeValue(forKey: threadID)
+      uncertainGoalWork.remove(threadID)
+    }
   }
 
   private func validateHandoff(
@@ -980,6 +1121,15 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       )
     }
     guard mode == .graceful else { return }
+    guard
+      !serverRequestWork.values.contains(where: { $0.threadID == threadID && $0.handlerActive }),
+      !asyncNativeWork.hasWork(threadID: threadID)
+        && !queuedWork.hasPending(threadID: threadID)
+    else {
+      throw CodexToolError.disabled(
+        "codex.app.handoff_pending_work: The thread still owns a running callback or background session."
+      )
+    }
     let approvals = approvalRecords.values.filter {
       $0.threadID == threadID && $0.state == .pending
     }.count
@@ -1098,16 +1248,22 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         "codex.app.request_unknown: Unknown or already resolved App Server request '\(requestID)'."
       )
     }
-    let connection = try await ensureConnection()
+    let connection = request.connection
     do {
+      guard self.connection === connection, !isShutdown else {
+        throw CodexToolError.disabled(
+          "codex.app.request_retired: The request's connection has retired.")
+      }
       switch request.handle.method {
       case "item/tool/requestUserInput": _ = try Self.decodeUserInputResponse(response)
       case "mcpServer/elicitation/request": _ = try Self.decodeElicitationResponse(response)
       default: throw CodexToolError.invalidArguments("Unsupported interactive request.")
       }
-      try await connection.resolveServerRequest(request.handle, with: response)
+      try await resolveOwnedServerRequest(request.handle, connection: connection, with: response)
     } catch {
-      pendingUserInputRequests[requestID] = request
+      if self.connection === connection, !isShutdown {
+        pendingUserInputRequests[requestID] = request
+      }
       throw error
     }
     await eventBuffer.append(
@@ -1186,18 +1342,19 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
 
   private func shutdown(reason: String) async {
     if isShutdown {
+      await recheckProcessCleanup()
       return
     }
     isShutdown = true
+    for work in serverRequestWork.values { work.task?.cancel() }
+    let retiredGeneration = connectionGeneration
     shutdownReason = reason
     if let requestGenerationRetirement {
       await finishRequestGenerationRetirement(requestGenerationRetirement)
       shutdownReason = reason
     }
     notificationTask?.cancel()
-    requestTask?.cancel()
     notificationTask = nil
-    requestTask = nil
     let activeConnection = connection
     let activeTransport = processTransport
     let startup = connectionStartup
@@ -1215,11 +1372,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
     approvalTimeoutTasks.removeAll()
     pendingApprovalHandles.removeAll()
-    workspaceScopedThreadIDs.removeAll()
-    loadedThreadIDs.removeAll()
-    subscribedThreadIDs.removeAll()
-    threadStates.removeAll()
-    activeTurnIDs.removeAll()
     connectionState = "stopped"
     lastError = nil
     startup?.task.cancel()
@@ -1231,8 +1383,14 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     } else if let activeTransport {
       lastProcessSnapshot = await activeTransport.snapshot()
     }
+    if lastProcessSnapshot?.cleanupConfirmed == true {
+      releaseConfirmedGeneration(retiredGeneration)
+    } else if let transport = startup?.transport ?? activeTransport {
+      unconfirmedTransport = (retiredGeneration, transport)
+      cleanupWork = startup?.work ?? .init(origin: .init(invocation: CodexWorkInvocation.current))
+    }
     persistRuntimeLease(state: "stopped", reason: shutdownReason)
-    CodexRuntimeDirectory.shared.unregister(id: runtimeID)
+    unregisterIfDrained()
     _ = try? CodexThreadOwnershipReconciliation.reconcileSafely(
       database: database,
       workspaceID: owner?.workspaceID,
@@ -1257,6 +1415,12 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
     if let connection {
       return connection
+    }
+    await recheckProcessCleanup()
+    guard unconfirmedTransport == nil, lastProcessSnapshot?.cleanupConfirmed != false else {
+      throw CodexToolError.disabled(
+        "codex.app.cleanup_unconfirmed: The previous owned process group has not been confirmed gone."
+      )
     }
     connectionState = "starting"
     shutdownReason = nil
@@ -1290,10 +1454,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
             version: CodexAdapterBuildInfo.version
           ),
           experimentalApi: configuration.experimentalAPI,
-          optOutNotificationMethods: [
-            "remoteControl/status/changed"
-          ],
-          inboundMessageMode: .raw
+          inboundMessageMode: .rawOrdered
         ),
         transportFactory: { transport }
       )
@@ -1304,7 +1465,9 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         }
         return connection
       }
-      startup = .init(id: UUID(), transport: transport, task: task)
+      startup = .init(
+        id: UUID(), work: .init(origin: .init(invocation: CodexWorkInvocation.current)),
+        transport: transport, task: task)
       connectionStartup = startup
     }
     do {
@@ -1320,6 +1483,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       connection = started
       processTransport = startup.transport
       connectionGeneration += 1
+      remoteControlWork.started(generation: connectionGeneration, origin: startup.work.origin)
       connectionID = UUID().uuidString
       connectionState = "running"
       shutdownReason = nil
@@ -1333,7 +1497,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
           "experimental_api": .bool(configuration.experimentalAPI),
           "runtime_id": .string(runtimeID),
           "connection_id": connectionID.map(JSONValue.string) ?? .null,
-          "connection_generation": .number(Double(connectionGeneration)),
+          "connection_generation": .integer(Int64(connectionGeneration)),
           "process": processSnapshot.json,
         ])
       )
@@ -1354,6 +1518,10 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         throw RequestTimeoutError(seconds: configuration.appServerRequestTimeoutSeconds)
       }
       lastProcessSnapshot = startupProcessSnapshot
+      if startupProcessSnapshot.cleanupConfirmed != true {
+        unconfirmedTransport = (connectionGeneration, startup.transport)
+        cleanupWork = startup.work
+      }
       throw await connectionStartupFailed(error)
     }
   }
@@ -1370,35 +1538,47 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   }
 
   private func startConsumers(connection: CodexAppServerConnection) {
+    CodexWorkInvocation.$current.withValue(nil) {
+      startUnboundConsumers(connection: connection)
+    }
+  }
+
+  private func startUnboundConsumers(connection: CodexAppServerConnection) {
     notificationTask?.cancel()
-    requestTask?.cancel()
     notificationTask = Task { [weak self, connection] in
       do {
-        for try await notification in connection.rawNotifications {
+        for try await message in connection.rawInboundMessages {
           guard let self else { return }
-          await self.recordNotification(notification)
+          switch message {
+          case .notification(let notification):
+            await self.recordNotification(notification, connection: connection)
+          case .serverRequest(let request):
+            await self.enqueueServerRequest(request, connection: connection)
+          }
         }
         await self?.connectionEnded(connection, message: nil)
       } catch {
         await self?.connectionEnded(connection, message: Self.errorDescription(error))
       }
     }
-    requestTask = Task { [weak self, connection] in
-      do {
-        for try await request in connection.rawServerRequests {
-          guard let self else { return }
-          await self.handleServerRequest(request, connection: connection)
-        }
-      } catch {
-        await self?.recordConsumerFailure(
-          kind: "server_request_stream_failed",
-          message: error.localizedDescription
-        )
-      }
-    }
   }
 
-  private func recordNotification(_ notification: CodexAppServerRawNotification) async {
+  private func recordNotification(
+    _ notification: CodexAppServerRawNotification, connection: CodexAppServerConnection
+  ) async {
+    guard self.connection === connection else { return }
+    let rawParams = (try? Self.gatewayJSON(notification.payload))?.objectValue?["params"]?
+      .objectValue
+    asyncNativeWork.notified(
+      method: notification.method, params: rawParams ?? [:], generation: connectionGeneration)
+    if notification.method == "remoteControl/status/changed" {
+      remoteControlWork.notified(params: rawParams ?? [:], generation: connectionGeneration)
+    }
+    if notification.method == "process/exited",
+      let handle = rawParams?["processHandle"]?.stringValue
+    {
+      nativeResources.processExited(handle: handle, generation: connectionGeneration)
+    }
     let payload = CodexApprovalRedactor.redact(
       (try? Self.gatewayJSON(notification.payload)) ?? .null)
     let params = payload.objectValue?["params"]?.objectValue ?? [:]
@@ -1413,30 +1593,127 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         workspaceScopedThreadIDs.insert(threadID)
         loadedThreadIDs.insert(threadID)
         subscribedThreadIDs.insert(threadID)
+        _ = threadBinding(threadID)
       case "thread/status/changed":
         threadStates[threadID] = params["status"] ?? .string("unknown")
       case "thread/closed":
+        let creationPending =
+          threadStartInFlight || detachedReviewInFlight || !threadResumeInFlight.isEmpty
+        if creationPending { closedThreadsDuringStart.insert(threadID) }
+        threadCleanupWork = threadCleanupWork.filter {
+          $0.value.threadID != threadID || $0.value.requiresProcessExit
+        }
         loadedThreadIDs.remove(threadID)
         subscribedThreadIDs.remove(threadID)
         activeTurnIDs.removeValue(forKey: threadID)
         threadStates[threadID] = .string("closed")
+        if !creationPending { threadWork.removeValue(forKey: threadID) }
+        if threadCleanupWork.values.contains(where: { $0.threadID == threadID }) {
+          if goalWork[threadID] != nil { uncertainGoalWork.insert(threadID) }
+        } else {
+          goalWork.removeValue(forKey: threadID)
+          uncertainGoalWork.remove(threadID)
+        }
       case "turn/started":
         if let turnID = Self.safeStoredIdentifier(params["turn"]?.objectValue?["id"]?.stringValue) {
           activeTurnIDs[threadID] = turnID
+          _ = requestOrigin(threadID: threadID, turnID: turnID)
           threadStates[threadID] = .string("active")
         }
       case "turn/completed":
-        activeTurnIDs.removeValue(forKey: threadID)
-        threadStates[threadID] = .string("idle")
+        if let turnID = params["turn"]?.objectValue?["id"]?.stringValue {
+          queuedWork.completed(threadID: threadID, turnID: turnID, generation: connectionGeneration)
+          if detachedReviewInFlight || turnStartInFlight.contains(threadID) {
+            completedTurnsDuringStart.insert(.init(threadID: threadID, turnID: turnID))
+          }
+          if activeTurnIDs[threadID] == turnID {
+            activeTurnIDs.removeValue(forKey: threadID)
+            threadStates[threadID] = .string("idle")
+          }
+        }
+      case "item/started":
+        if let item = rawParams?["item"]?.objectValue, item["type"] == .string("userMessage"),
+          let turnID = Self.safeStoredIdentifier(rawParams?["turnId"]?.stringValue)
+        {
+          let queuedOrigin = item["clientId"]?.stringValue.flatMap {
+            queuedWork.consumed(
+              threadID: threadID, clientID: $0, turnID: turnID, generation: connectionGeneration)
+          }
+          if queuedOrigin != nil || !turnStartInFlight.contains(threadID) {
+            let origin =
+              queuedOrigin ?? goalWork[threadID]?.origin ?? pendingGoalOrigins[threadID]
+              ?? threadBinding(threadID).origin
+            turnBinding(threadID: threadID, turnID: turnID).origin.bind(to: origin.value)
+          }
+        }
+      case "thread/goal/updated":
+        goalObservationToken = UUID()
+        if goalMutationInFlight.contains(threadID) {
+          goalNotificationsDuringMutation.insert(threadID)
+        } else {
+          uncertainGoalWork.remove(threadID)
+        }
+        if params["goal"]?.objectValue?["status"] == .string("active") {
+          if goalWork[threadID] == nil {
+            goalWork[threadID] = .init(origin: pendingGoalOrigins[threadID] ?? .init())
+          }
+        } else {
+          goalWork.removeValue(forKey: threadID)
+        }
+      case "thread/goal/cleared":
+        goalObservationToken = UUID()
+        if goalMutationInFlight.contains(threadID) {
+          goalNotificationsDuringMutation.insert(threadID)
+        }
+        goalWork.removeValue(forKey: threadID)
+        uncertainGoalWork.remove(threadID)
       default: break
       }
+      if !turnStartInFlight.contains(threadID) { pruneWorkBindings() }
     }
     await eventBuffer.append(kind: "notification", payload: payload)
+  }
+
+  private func enqueueServerRequest(
+    _ request: CodexAppServerRawServerRequest, connection: CodexAppServerConnection
+  ) async {
+    guard self.connection === connection else { return }
+    let id = Self.requestIDString(request.id)
+    let params = (try? Self.gatewayJSON(request.params)) ?? .null
+    let threadID = Self.serverRequestThreadID(params)
+    let turnID = Self.safeStoredIdentifier(params.objectValue?["turnId"]?.stringValue)
+    let workKey = ServerRequestWorkKey(connection: ObjectIdentifier(connection), requestID: id)
+    let binding = CodexWorkBinding(origin: requestOrigin(threadID: threadID, turnID: turnID))
+    serverRequestWork[workKey] = .init(
+      binding: binding, connection: connection, generation: connectionGeneration,
+      threadID: threadID, turnID: turnID)
+    // Registration precedes the next wire message; slow host calls do not hold
+    // the inbound consumer or hide queued requests behind turn completion.
+    if serverRequestWork.count > 256 {
+      do {
+        try await rejectOwnedServerRequest(
+          request, connection: connection, code: -32_000,
+          message: "The adapter's pending server-request capacity is reached.")
+      } catch {
+        await connectionEnded(
+          connection, message: "The server-request rejection could not be sent.")
+      }
+      finishServerRequestHandler(id: workKey, workID: binding.id)
+      return
+    }
+    serverRequestWork[workKey]?.task = Task {
+      await self.handleServerRequest(request, connection: connection)
+      self.finishServerRequestHandler(id: workKey, workID: binding.id)
+    }
   }
 
   private func handleServerRequest(
     _ request: CodexAppServerRawServerRequest, connection: CodexAppServerConnection
   ) async {
+    guard self.connection === connection else {
+      await rejectServerRequest(request, method: request.method, connection: connection)
+      return
+    }
     let id = Self.requestIDString(request.id)
     let params = (try? Self.gatewayJSON(request.params)) ?? .null
     let payload = CodexApprovalRedactor.redact((try? Self.gatewayJSON(request.payload)) ?? .null)
@@ -1449,7 +1726,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     switch request.method {
     case "item/tool/requestUserInput", "mcpServer/elicitation/request":
       pendingUserInputRequests[id] = .init(
-        handle: request, payload: payload, threadID: Self.serverRequestThreadID(params))
+        handle: request, connection: connection, payload: payload,
+        threadID: Self.serverRequestThreadID(params))
       await eventBuffer.append(
         kind: "user_input_requested",
         payload: .object(["request_id": .string(id), "request": payload]))
@@ -1555,6 +1833,9 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
 
     pendingApprovalHandles[id] = handle
+    let workKey = ServerRequestWorkKey(
+      connection: ObjectIdentifier(connection), requestID: upstreamRequestID)
+    serverRequestWork[workKey]?.approvalID = id
     await eventBuffer.append(kind: "approval_requested", payload: record.json)
 
     approvalTimeoutTasks[id] = Task { [weak self] in
@@ -1588,13 +1869,13 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       let result = try await dynamicToolDispatcher.execute(
         name: params.tool, arguments: arguments,
         requestID: params.callId, workspaceID: owner?.workspaceID)
-      try await connection.resolveServerRequest(
-        handle,
+      try await resolveOwnedServerRequest(
+        handle, connection: connection,
         with: Self.dynamicToolResponse(
           success: result.objectValue?["isError"] != .bool(true), value: result))
     } catch {
-      try? await connection.resolveServerRequest(
-        handle,
+      try? await resolveOwnedServerRequest(
+        handle, connection: connection,
         with: Self.dynamicToolResponse(
           success: false,
           value: .object(["error": .string(Self.errorDescription(error))])))
@@ -1638,7 +1919,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     do {
       // Remove before suspension so concurrent responders cannot both send.
       pendingApprovalHandles.removeValue(forKey: id)
-      try await connection.resolveServerRequest(handle, with: response)
+      try await resolveOwnedServerRequest(handle, connection: connection, with: response)
       let decision = response.objectValue?["decision"]
       record.state = Self.approvalState(response)
       record.resolvedAt = Date()
@@ -1768,6 +2049,74 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       && (record.owner == nil || record.owner?.profileID == owner?.profileID)
   }
 
+  private func resolveOwnedServerRequest<Response: Encodable & Sendable>(
+    _ handle: CodexAppServerRawServerRequest, connection: CodexAppServerConnection,
+    with response: Response
+  ) async throws {
+    let id = ServerRequestWorkKey(
+      connection: ObjectIdentifier(connection), requestID: Self.requestIDString(handle.id))
+    let work = serverRequestWork[id]
+    do {
+      try await connection.resolveServerRequest(handle, with: response)
+      finishServerRequestWork(id: id, work: work, confirmed: true)
+    } catch {
+      finishServerRequestWork(id: id, work: work, confirmed: false)
+      throw error
+    }
+  }
+
+  private func rejectOwnedServerRequest(
+    _ handle: CodexAppServerRawServerRequest, connection: CodexAppServerConnection,
+    code: Int64, message: String
+  ) async throws {
+    let id = ServerRequestWorkKey(
+      connection: ObjectIdentifier(connection), requestID: Self.requestIDString(handle.id))
+    let work = serverRequestWork[id]
+    do {
+      try await connection.rejectServerRequest(handle, code: code, message: message)
+      finishServerRequestWork(id: id, work: work, confirmed: true)
+    } catch {
+      finishServerRequestWork(id: id, work: work, confirmed: false)
+      throw error
+    }
+  }
+
+  private func cancelServerRequestHandlers(generation: Int) {
+    for work in serverRequestWork.values where work.generation == generation { work.task?.cancel() }
+  }
+
+  private func finishServerRequestWork(
+    id: ServerRequestWorkKey, work: ServerRequestWork?, confirmed: Bool
+  ) {
+    guard let work, serverRequestWork[id]?.binding.id == work.binding.id else { return }
+    if confirmed {
+      serverRequestWork[id]?.nativeSettled = true
+    } else {
+      serverRequestWork[id]?.state = .uncertain
+    }
+    releaseSettledServerRequest(id: id)
+  }
+
+  private func finishServerRequestHandler(id: ServerRequestWorkKey, workID: String?) {
+    guard let workID, serverRequestWork[id]?.binding.id == workID else { return }
+    serverRequestWork[id]?.handlerActive = false
+    releaseSettledServerRequest(id: id)
+  }
+
+  private func releaseSettledServerRequest(id: ServerRequestWorkKey) {
+    if let work = serverRequestWork[id], work.nativeSettled && !work.handlerActive {
+      serverRequestWork.removeValue(forKey: id)
+    }
+    pruneWorkBindings()
+    unregisterIfDrained()
+  }
+
+  private func unregisterIfDrained() {
+    if isShutdown, unconfirmedTransport == nil, serverRequestWork.isEmpty {
+      CodexRuntimeDirectory.shared.unregister(id: runtimeID)
+    }
+  }
+
   private func rejectServerRequest(
     _ handle: CodexAppServerRawServerRequest,
     method: String,
@@ -1778,8 +2127,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       Self.serverRequestPayload(method: method, params: handle.params)
     )
     do {
-      try await connection.rejectServerRequest(
-        handle,
+      try await rejectOwnedServerRequest(
+        handle, connection: connection,
         code: -32_001,
         message:
           "This App Server request is not part of the supported coding contract."
@@ -1802,7 +2151,8 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     message: String
   ) async {
     do {
-      try await connection.rejectServerRequest(handle, code: -32_001, message: message)
+      try await rejectOwnedServerRequest(
+        handle, connection: connection, code: -32_001, message: message)
     } catch {
       await recordConsumerFailure(
         kind: "approval_policy_rejection_failed",
@@ -1889,7 +2239,7 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     default:
       response = .object(["decision": .string("cancel")])
     }
-    try await connection.resolveServerRequest(handle, with: response)
+    try await resolveOwnedServerRequest(handle, connection: connection, with: response)
   }
 
   private static func dynamicToolResponse(
@@ -1914,42 +2264,43 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     _ endedConnection: CodexAppServerConnection,
     message: String?
   ) async {
+    // Explicit shutdown owns cleanup after cancelling the notification consumer.
+    guard !isShutdown else { return }
     guard connection === endedConnection else {
       await endedConnection.close()
       return
     }
-    await interruptPendingApprovals(
-      connection: endedConnection,
-      reason: message == nil ? "App Server connection ended." : "App Server connection failed."
-    )
     let endedTransport = processTransport
+    let endedGeneration = connectionGeneration
+    cancelServerRequestHandlers(generation: endedGeneration)
     connection = nil
     connectionID = nil
     processTransport = nil
-    pendingUserInputRequests.removeAll()
-    workspaceScopedThreadIDs.removeAll()
     connectionState = message == nil ? "stopped" : "failed"
     shutdownReason = nil
     let redactedMessage = message.map(Self.redactedMessage)
     lastError = redactedMessage
     recordRequestFailure(
       kind: message == nil ? "peer_closed" : "consumer_failure",
-      message: redactedMessage ?? "App Server connection ended."
-    )
+      message: redactedMessage ?? "App Server connection ended.")
+    let retirement = RequestGenerationRetirement(
+      id: UUID(), work: .init(origin: .init(invocation: CodexWorkInvocation.current)),
+      generation: endedGeneration,
+      transport: endedTransport,
+      task: Task {
+        await self.interruptPendingApprovals(
+          connection: endedConnection,
+          reason: message == nil ? "App Server connection ended." : "App Server connection failed.")
+        await endedConnection.close()
+        await endedTransport?.close()
+        return await endedTransport?.snapshot()
+      })
+    requestGenerationRetirement = retirement
+    pendingUserInputRequests.removeAll()
     await eventBuffer.append(
       kind: "connection_ended",
-      payload: .object(["message": redactedMessage.map(JSONValue.string) ?? .null])
-    )
-    await endedConnection.close()
-    await endedTransport?.close()
-    if let endedTransport {
-      lastProcessSnapshot = await endedTransport.snapshot()
-    }
-    persistRuntimeLease(
-      state: connectionState,
-      process: lastProcessSnapshot,
-      reason: nil
-    )
+      payload: .object(["message": redactedMessage.map(JSONValue.string) ?? .null]))
+    await finishRequestGenerationRetirement(retirement)
   }
 
   private func retireCurrentRequestGeneration(method: String? = nil) async {
@@ -1959,19 +2310,13 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
     if let connection {
       let transport = processTransport
-      await interruptPendingApprovals(
-        connection: connection,
-        reason: "App Server request deadline exceeded."
-      )
+      cancelServerRequestHandlers(generation: connectionGeneration)
       self.connection = nil
       connectionID = nil
       processTransport = nil
       notificationTask?.cancel()
       notificationTask = nil
-      requestTask?.cancel()
-      requestTask = nil
       pendingUserInputRequests.removeAll()
-      workspaceScopedThreadIDs.removeAll()
       connectionState = "failed"
       shutdownReason = nil
       lastError = "App Server request deadline exceeded."
@@ -1980,19 +2325,23 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         message: method.map { "App Server request '\($0)' exceeded its deadline." }
           ?? "App Server request deadline exceeded."
       )
-      await eventBuffer.append(
-        kind: "connection_ended",
-        payload: .object(["message": .string("App Server request deadline exceeded.")])
-      )
       let retirement = RequestGenerationRetirement(
-        id: UUID(),
+        id: UUID(), work: .init(origin: .init(invocation: CodexWorkInvocation.current)),
+        generation: connectionGeneration,
+        transport: transport,
         task: Task {
+          await self.interruptPendingApprovals(
+            connection: connection, reason: "App Server request deadline exceeded.")
           await connection.close()
           await transport?.close()
           return await transport?.snapshot()
         }
       )
       requestGenerationRetirement = retirement
+      await eventBuffer.append(
+        kind: "connection_ended",
+        payload: .object(["message": .string("App Server request deadline exceeded.")])
+      )
       await finishRequestGenerationRetirement(retirement)
       return
     }
@@ -2019,7 +2368,9 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
       ])
     )
     let retirement = RequestGenerationRetirement(
-      id: UUID(),
+      id: UUID(), work: startup.work,
+      generation: connectionGeneration,
+      transport: startup.transport,
       task: Task {
         await startup.transport.close()
         return await startup.transport.snapshot()
@@ -2037,12 +2388,53 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     requestGenerationRetirement = nil
     if let processSnapshot {
       lastProcessSnapshot = processSnapshot
+      if processSnapshot.cleanupConfirmed == true {
+        releaseConfirmedGeneration(retirement.generation)
+      } else if let transport = retirement.transport {
+        unconfirmedTransport = (retirement.generation, transport)
+        cleanupWork = retirement.work
+      }
     }
     persistRuntimeLease(
       state: "failed",
       process: lastProcessSnapshot,
       reason: nil
     )
+  }
+
+  private func recheckProcessCleanup() async {
+    guard let pending = unconfirmedTransport else { return }
+    let snapshot = await pending.transport.snapshot()
+    guard unconfirmedTransport?.generation == pending.generation else { return }
+    lastProcessSnapshot = snapshot
+    if snapshot.cleanupConfirmed == true {
+      releaseConfirmedGeneration(pending.generation)
+      unconfirmedTransport = nil
+      unregisterIfDrained()
+    }
+  }
+
+  private func releaseConfirmedGeneration(_ generation: Int) {
+    nativeResources.retired(generation: generation)
+    asyncNativeWork.retired(generation: generation)
+    remoteControlWork.retired(generation: generation)
+    queuedWork.retired(generation: generation)
+    threadCleanupWork = threadCleanupWork.filter { $0.value.generation != generation }
+    for id in serverRequestWork.keys where serverRequestWork[id]?.generation == generation {
+      serverRequestWork[id]?.nativeSettled = true
+      if serverRequestWork[id]?.handlerActive == false { serverRequestWork.removeValue(forKey: id) }
+    }
+    guard generation == connectionGeneration else { return }
+    cleanupWork = nil
+    threadWork.removeAll()
+    turnWork.removeAll()
+    goalWork.removeAll()
+    uncertainGoalWork.removeAll()
+    workspaceScopedThreadIDs.removeAll()
+    loadedThreadIDs.removeAll()
+    subscribedThreadIDs.removeAll()
+    activeTurnIDs.removeAll()
+    threadStates.removeAll()
   }
 
   private func recordRequestFailure(kind: String, message: String) {
@@ -2320,24 +2712,39 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
   private func rememberWorkspaceScopedThreads(
     method: String,
     params: JSONValue?,
-    response: JSONValue
+    response: JSONValue, creator: UUID?, previouslyOwnedThreads: Set<String>
   ) throws {
     if ["thread/start", "thread/resume", "thread/fork"].contains(method) {
       let threadID = try Self.createdThreadID(
         response: response
       )
-      try persistThreadOwnership(threadID: threadID, state: .loaded)
+      let alreadyClosed = closedThreadsDuringStart.contains(threadID)
+      try persistThreadOwnership(threadID: threadID, state: alreadyClosed ? .released : .loaded)
       workspaceScopedThreadIDs.insert(threadID)
-      loadedThreadIDs.insert(threadID)
-      subscribedThreadIDs.insert(threadID)
+      if !previouslyOwnedThreads.contains(threadID) {
+        threadBinding(threadID).origin.bind(to: creator)
+      }
+      if !alreadyClosed {
+        loadedThreadIDs.insert(threadID)
+        subscribedThreadIDs.insert(threadID)
+      }
     }
 
     if method == "thread/loaded/list" {
       let visible = response.objectValue?["data"]?.arrayValue?.compactMap(\.stringValue) ?? []
       let loaded = Set(try visible.filter { try threadOwnerIndex?.owns(threadID: $0) ?? true })
+      let completeListing =
+        params?.objectValue?["cursor"]?.stringValue == nil
+        && response.objectValue?["nextCursor"]?.stringValue == nil
+      if completeListing {
+        let removed = loadedThreadIDs.union(subscribedThreadIDs).subtracting(loaded)
+        for id in removed { retainThreadCleanup(threadID: id) }
+        loadedThreadIDs = loaded
+        subscribedThreadIDs.formIntersection(loaded)
+      } else {
+        loadedThreadIDs.formUnion(loaded)
+      }
       workspaceScopedThreadIDs.formUnion(loaded)
-      loadedThreadIDs = loaded
-      subscribedThreadIDs = loaded
       for threadID in loaded where threadOwnerIndex == nil {
         try persistThreadOwnership(threadID: threadID, state: .loaded)
       }
@@ -2346,11 +2753,22 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     if method == "thread/unsubscribe",
       let threadID = params?.objectValue?["threadId"]?.stringValue
     {
+      // Unsubscribe only removes this connection's listener. Native shutdown
+      // can be delayed by active work or fail; thread/closed proves teardown.
+      subscribedThreadIDs.remove(threadID)
+    }
+    if (method == "thread/unsubscribe" && response.objectValue?["status"] == .string("notLoaded"))
+      || method == "thread/delete",
+      let threadID = params?.objectValue?["threadId"]?.stringValue
+    {
       loadedThreadIDs.remove(threadID)
       subscribedThreadIDs.remove(threadID)
       activeTurnIDs.removeValue(forKey: threadID)
-      threadStates[threadID] = .string("released")
-      try persistThreadOwnership(threadID: threadID, state: .released)
+      threadWork.removeValue(forKey: threadID)
+      threadStates[threadID] = .string(method == "thread/delete" ? "deleted" : "released")
+      if method == "thread/delete" { workspaceScopedThreadIDs.remove(threadID) }
+      try persistThreadOwnership(
+        threadID: threadID, state: method == "thread/delete" ? .deleted : .released)
     }
 
     if method == "thread/archive",
@@ -2366,17 +2784,27 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     }
 
     if method == "review/start",
-      let reviewThreadID = response.objectValue?["reviewThreadId"]?.stringValue,
-      !reviewThreadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      let reviewThreadID = Self.safeStoredIdentifier(
+        response.objectValue?["reviewThreadId"]?.stringValue)
     {
+      let alreadyClosed = closedThreadsDuringStart.contains(reviewThreadID)
+      try persistThreadOwnership(
+        threadID: reviewThreadID, state: alreadyClosed ? .released : .loaded)
       workspaceScopedThreadIDs.insert(reviewThreadID)
+      if !alreadyClosed {
+        loadedThreadIDs.insert(reviewThreadID)
+        subscribedThreadIDs.insert(reviewThreadID)
+      }
+      if !previouslyOwnedThreads.contains(reviewThreadID) {
+        threadBinding(reviewThreadID).origin.bind(to: creator)
+      }
     }
   }
 
   private func releaseAllThreads(connection: CodexAppServerConnection) async {
     for threadID in subscribedThreadIDs.sorted() {
       do {
-        _ = try await Self.boundedRequest(
+        let response = try await Self.boundedRequest(
           timeoutSeconds: min(2, configuration.appServerRequestTimeoutSeconds),
           onTimeout: {},
           operation: {
@@ -2388,10 +2816,13 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
             )
           }
         )
-        loadedThreadIDs.remove(threadID)
         subscribedThreadIDs.remove(threadID)
-        threadStates[threadID] = .string("released")
-        try persistThreadOwnership(threadID: threadID, state: .released)
+        if response.status == .notloaded {
+          loadedThreadIDs.remove(threadID)
+          threadStates[threadID] = .string("released")
+          threadWork.removeValue(forKey: threadID)
+          try persistThreadOwnership(threadID: threadID, state: .released)
+        }
       } catch {
         await eventBuffer.append(
           kind: "thread_release_failed",
@@ -2401,6 +2832,17 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
           ])
         )
       }
+    }
+  }
+
+  private func retainThreadCleanup(threadID: String, requiresProcessExit: Bool = false) {
+    guard let binding = threadWork[threadID] else { return }
+    if threadCleanupWork[binding.id] != nil {
+      if requiresProcessExit { threadCleanupWork[binding.id]?.requiresProcessExit = true }
+    } else {
+      threadCleanupWork[binding.id] = .init(
+        threadID: threadID, generation: connectionGeneration, binding: binding,
+        requiresProcessExit: requiresProcessExit)
     }
   }
 
@@ -2440,7 +2882,14 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     method: String,
     params: JSONValue?
   ) throws -> String? {
-    guard threadScopedMethods.contains(method) else {
+    guard
+      let required = CodexAppServerMethodCatalog.method(named: method)?.threadParameters["threadId"]
+    else {
+      return nil
+    }
+    if !required,
+      params?.objectValue?["threadId"] == nil || params?.objectValue?["threadId"] == .null
+    {
       return nil
     }
     guard let rawThreadID = params?.objectValue?["threadId"]?.stringValue else {
@@ -2514,29 +2963,6 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
     return resolvedCandidate == resolvedRoot
       || resolvedCandidate.path.hasPrefix(resolvedRoot.path + "/")
   }
-
-  private static let threadScopedMethods: Set<String> = [
-    "review/start",
-    "thread/archive",
-    "thread/compact/start",
-    "thread/fork",
-    "thread/goal/clear",
-    "thread/goal/get",
-    "thread/goal/set",
-    "thread/inject_items",
-    "thread/metadata/update",
-    "thread/name/set",
-    "thread/read",
-    "thread/turns/list",
-    "thread/items/list",
-    "thread/resume",
-    "thread/rollback",
-    "thread/unarchive",
-    "thread/unsubscribe",
-    "turn/interrupt",
-    "turn/start",
-    "turn/steer",
-  ]
 
   private static func sandboxPolicy(_ mode: CodexSandboxMode) -> JSONValue {
     switch mode {
@@ -2625,6 +3051,57 @@ actor LiveCodexAppServerRuntime: CodexAppServerRuntimeProtocol {
         try await connection.sendRawRequest(method: method, params: stableJSON(params)))
     }
     return try gatewayJSON(try await connection.sendRawRequest(method: method))
+  }
+
+  private func sendNativeRequest(
+    method: String, params: JSONValue?, connection: CodexAppServerConnection
+  ) async throws -> NativeReply {
+    if let beforeThreadID = params?.objectValue?["beforeThreadId"]?.stringValue,
+      CodexAppServerMethodCatalog.method(named: method)?.threadParameters["beforeThreadId"] != nil
+    {
+      try await validateWorkspaceScope(
+        method: "thread/read",
+        params: .object(["threadId": .string(beforeThreadID)]), connection: connection)
+    }
+    guard self.connection === connection else { throw CodexAppServerClientError.closed }
+    let requestGeneration = connectionGeneration
+    let ticket = try nativeResources.prepare(
+      method: method, params: params, generation: connectionGeneration)
+    let asyncTicket = try asyncNativeWork.prepare(
+      method: method, params: params, generation: connectionGeneration)
+    remoteControlWork.prepare(method: method, generation: connectionGeneration)
+    let queueTicket = try queuedWork.prepare(
+      method: method, params: params, generation: requestGeneration)
+    if ["thread/archive", "thread/delete", "thread/revert"].contains(method),
+      let threadID = params?.objectValue?["threadId"]?.stringValue
+    {
+      // Native destructive operations remove the thread and emit thread/closed
+      // even when their bounded shutdown fails. Only process cleanup proves
+      // that the detached native task no longer owns work.
+      retainThreadCleanup(threadID: threadID, requiresProcessExit: true)
+    }
+    do {
+      let result = try await Self.sendReviewedRequest(
+        method: method, params: params, connection: connection)
+      nativeResources.completed(ticket)
+      asyncNativeWork.replied(asyncTicket, response: result)
+      queuedWork.replied(queueTicket, response: result)
+      queuedWork.deleted(
+        method: method, params: params, response: result, generation: requestGeneration)
+      return .init(connection: connection, value: result)
+    } catch {
+      if let nativeError = error as? CodexAppServerClientError, case .jsonRPCError = nativeError {
+        nativeResources.completed(ticket, rejected: true)
+        asyncNativeWork.failed(asyncTicket, rejected: true)
+        queuedWork.failed(queueTicket, rejected: true)
+      } else {
+        nativeResources.uncertain(ticket)
+        asyncNativeWork.failed(asyncTicket, rejected: false)
+        queuedWork.failed(queueTicket, rejected: false)
+      }
+      // An uncertain send retains its handle; it cannot be replayed onto a new connection.
+      throw error
+    }
   }
 
   private static func requestIDString(

@@ -7,6 +7,11 @@ enum CodexApprovalRedactor {
     #"(?i)((?:api[_-]?key|token|credential|password|secret)\s*[=:]\s*)[^\s,;]+"#,
   ].map { try! NSRegularExpression(pattern: $0) }
 
+  private static let tokenCounterKeys: Set<String> = [
+    "cachewriteinputtokens", "cachedinputtokens", "inputtokens", "outputtokens",
+    "reasoningoutputtokens", "totaltokens", "tokenbudget", "tokensused",
+  ]
+
   static func redact(_ value: JSONValue) -> JSONValue {
     var remainingEntries = 10_000
     return redact(value, depth: 0, remainingEntries: &remainingEntries)
@@ -30,10 +35,11 @@ enum CodexApprovalRedactor {
           break
         }
         let safeKey = redactString(key, maximumCharacters: 256)
+        let value = object[key] ?? .null
         result[safeKey] =
-          isSensitiveKey(key)
+          isSensitiveValue(value, forKey: key)
           ? .string("[REDACTED]")
-          : redact(object[key] ?? .null, depth: depth + 1, remainingEntries: &remainingEntries)
+          : redact(value, depth: depth + 1, remainingEntries: &remainingEntries)
       }
       return .object(result)
     case .array(let values):
@@ -48,7 +54,7 @@ enum CodexApprovalRedactor {
       return .array(result)
     case .string(let value):
       return .string(redactString(value))
-    case .number, .bool, .null:
+    case .number, .integer, .bool, .null:
       return value
     }
   }
@@ -61,10 +67,22 @@ enum CodexApprovalRedactor {
     return String(redactedString(value).prefix(maximumCharacters))
   }
 
-  private static func isSensitiveKey(_ key: String) -> Bool {
+  private static func isSensitiveValue(_ value: JSONValue, forKey key: String) -> Bool {
     let normalized = key.lowercased()
-    return ["authorization", "credential", "password", "secret", "token"]
-      .contains { normalized.contains($0) }
+    let measurementKey = normalized.replacingOccurrences(of: "_", with: "")
+    // Usage containers still recurse through credential redaction. Only typed
+    // counters are public measurements; strings and other shapes remain sensitive.
+    if measurementKey == "tokenusage", case .object = value { return false }
+    if tokenCounterKeys.contains(measurementKey) {
+      switch value {
+      case .integer, .null: return false
+      default: break
+      }
+    }
+    return [
+      "authorization", "credential", "password", "secret", "token", "api_key", "api-key", "apikey",
+    ]
+    .contains { normalized.contains($0) }
   }
 
   private static func redactedString(_ value: String) -> String {

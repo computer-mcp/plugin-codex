@@ -220,6 +220,7 @@ final class CodexOperationalDiagnosticsTests {
           "profile_id": .string("profile-1"),
           "workspace_id": .string("workspace-1"),
           "capability_id": .string("git.commit"),
+          "output_byte_count": .integer(9_007_199_254_740_993),
           "decision": .string("allowed"),
           "input_digest": .string("sha256:input"),
           "output_digest": .string("sha256:output"),
@@ -268,6 +269,9 @@ final class CodexOperationalDiagnosticsTests {
     #expect(findingCodes.contains("thread_ownership_requires_reconciliation"))
     #expect(object["thread_ownership_receipts"]?.arrayValue?.count == 1)
     #expect(audits.count == 2)
+    #expect(
+      audits.first { $0.objectValue?["category"] == .string("git") }?
+        .objectValue?["output_byte_count"] == .integer(9_007_199_254_740_993))
     let gitAudit = try #require(
       audits.first { $0.objectValue?["category"] == .string("git") }
     )

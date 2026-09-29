@@ -84,7 +84,7 @@ struct ProtocolTools: Sendable {
     let text = String(decoding: try encoder.encode(value), as: UTF8.self)
     return MCP.CallTool.Result(
       content: [.text(text: text, annotations: nil, _meta: nil)],
-      structuredContent: Optional.some(Self.mcpValue(value)),
+      structuredContent: Optional.some(try Self.mcpValue(value)),
       isError: false)
   }
 
@@ -120,15 +120,8 @@ struct ProtocolTools: Sendable {
     ])
   }
 
-  static func mcpValue(_ value: AppServerJSON) -> MCP.Value {
-    switch value {
-    case .null: .null
-    case .bool(let value): .bool(value)
-    case .number(.integer(let value)): .int(Int(value))
-    case .number(.decimal(let value)): .double(NSDecimalNumber(decimal: value).doubleValue)
-    case .string(let value): .string(value)
-    case .array(let values): .array(values.map(mcpValue))
-    case .object(let values): .object(values.mapValues(mcpValue))
-    }
+  static func mcpValue(_ value: AppServerJSON) throws -> MCP.Value {
+    let json = try JSONValue.encoded(value)
+    return try JSONDecoder().decode(MCP.Value.self, from: JSONEncoder().encode(json))
   }
 }

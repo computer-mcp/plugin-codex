@@ -89,6 +89,8 @@ class MCPClient:
         self.tool_prefix = tool_prefix
         self.messages = queue.Queue(maxsize=1024)
         self.sequence = 0
+        self.last_invocation = None
+        self.work_snapshot = None
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
 
@@ -108,6 +110,9 @@ class MCPClient:
         self.process.stdin.flush()
 
     def request(self, method, params):
+        if method == "tools/call" and not self.tool_prefix:
+            self.last_invocation = str(uuid.uuid4())
+            params = dict(params, _meta={"io.github.computer-mcp/work-invocation": self.last_invocation})
         self.sequence += 1
         request_id = self.sequence
         self.send({"id": request_id, "method": method, "params": params})
@@ -123,11 +128,46 @@ class MCPClient:
             return message["result"]
         raise TimeoutError(method)
 
+    def work(self):
+        assert not self.tool_prefix, "The Gateway consumes provider work privately"
+        uri = "computer-mcp://runtime/work/v1"
+        result = self.request("resources/read", {"uri": uri})
+        assert len(result["contents"]) == 1, result
+        content = result["contents"][0]
+        assert content["uri"] == uri and content["mimeType"] == "application/json", content
+        assert len(content["text"].encode()) <= 524288
+        value = json.loads(content["text"])
+        assert value["format_version"] == 1 and len(value["resources"]) <= 1024, value
+        assert str(uuid.UUID(value["instance_id"])) == value["instance_id"], value
+        if self.work_snapshot:
+            assert value["instance_id"] == self.work_snapshot["instance_id"]
+            assert value["revision"] >= self.work_snapshot["revision"]
+            if value["revision"] == self.work_snapshot["revision"]:
+                assert value == self.work_snapshot, "Unchanged revision changed work"
+        self.work_snapshot = value
+        return value["resources"]
+
     def call(self, suffix, **arguments):
         result = self.request("tools/call", {"name": self.tool_prefix + "codex.app." + suffix, "arguments": arguments})
         if result.get("isError"):
             raise RuntimeError(f"{suffix}: {result['content']}")
         return result["structuredContent"]["result"]
+
+    def host_work(self, count):
+        deadline = time.monotonic() + 15
+        observed = None
+        while time.monotonic() < deadline:
+            result = self.request("tools/call", {"name": "mcp.servers.status", "arguments": {}})
+            assert not result.get("isError"), result
+            servers = result["structuredContent"]["result"]["servers"]
+            assert len(servers) == 1, servers
+            observed = servers[0]["connection"].get("provider_work")
+            assert isinstance(observed, dict), "Candidate host lacks provider-work observation"
+            if (observed["resource_count"] == count and observed["unsettled_invocation_count"] == 0
+                    and not observed["observation_pending"]):
+                return observed
+            time.sleep(.03)
+        raise AssertionError(f"Candidate host did not observe {count} settled resources: {observed}")
 
 def verify_owned_stop(status):
     assert status["runtime_state"] == "stopped", status
@@ -144,7 +184,8 @@ def verify_owned_stop(status):
     return snapshot
 
 
-def run(adapter, codex, gateway=None, database=None, control_socket=None, registered_workspace=None):
+def run(adapter, codex, gateway=None, database=None, control_socket=None, registered_workspace=None,
+        require_host_work=False):
     # A vendor launcher may use an interpreter installed beside it (for example Node).
     runtime_path = str(codex.parent) + os.pathsep + "/usr/bin:/bin"
     codex_version = subprocess.run([str(codex), "--version"], env={"PATH": runtime_path},
@@ -206,7 +247,11 @@ metrics_exporter = "none"
         tool_risks.update({"codex." + name: "workspace-write" for name in write_tools})
         risk_table = ", ".join(json.dumps(name) + " = " + json.dumps(risk) for name, risk in tool_risks.items())
         manifest.write_text('schema_version = 1\n[runtime]\ncaller = "local-cli"\nprofile = "local-admin"\n'
-                            '[policy]\nshell_enabled = false\n[[mcp.servers]]\nid = "adapter"\ntransport = "stdio"\n'
+                            '[policy]\nshell_enabled = false\n'
+                            '[[profiles]]\nid = "local-admin"\nmode = "local-full-access"\n'
+                            'confirmation_policy = "never"\nfull_shell_enabled = true\n'
+                            'capabilities = ["*"]\nworkspaces = ["*"]\nallowed_callers = ["local-cli"]\n'
+                            '[[mcp.servers]]\nid = "adapter"\ntransport = "stdio"\n'
                             'command = ' + json.dumps(str(adapter)) + '\nargs = ' + json.dumps(launch_arguments[1:]) + '\n'
                             'allowed_tools = ' + json.dumps(list(tool_risks)) + '\n'
                             'tool_risks = { ' + risk_table + ' }\nexposure = "reexport"\nprefix = "adapter"\n'
@@ -254,7 +299,16 @@ metrics_exporter = "none"
             required = {"thread.start", "thread.list", "thread.read", "thread.loaded.list", "thread.fork",
                         "thread.release", "thread.reclaim", "goal.set", "goal.get", "goal.clear", "turn.start",
                         "turn.steer", "events.read", "approvals.list", "approvals.respond", "runtime.stop"}
-            assert {client.tool_prefix + "codex.app." + name for name in required} <= names
+            missing = {client.tool_prefix + "codex.app." + name for name in required} - names
+            assert not missing, {"missing_tools": sorted(missing), "listed_tools": sorted(names)}
+            if require_host_work:
+                assert all(key not in tool.get("_meta", {}) for tool in catalog
+                           for key in ("io.github.computer-mcp/work", "io.github.computer-mcp/continuation")), catalog
+            if not gateway:
+                for tool in catalog:
+                    assert tool["_meta"]["io.github.computer-mcp/work"] == {
+                        "format_version": 1, "uri": "computer-mcp://runtime/work/v1"}
+                assert client.work() == [], "Discovery started native work"
             diagnostic_result = client.request("tools/call", {
                 "name": client.tool_prefix + "codex.diagnostics.snapshot", "arguments": {"limit": 10}})
             assert diagnostic_result.get("isError") is False, diagnostic_result
@@ -268,10 +322,20 @@ metrics_exporter = "none"
             receipt["steps"].append("diagnostics→adapter persistence→host data explicitly unavailable")
             assert client.call("thread.list")["data"] == []
             started = client.call("thread.start")
+            thread_origin = client.last_invocation
             thread_id = started["thread"]["id"]
             assert thread_id in client.call("thread.loaded.list")["data"]
+            if require_host_work:
+                receipt["host_work_opened"] = client.host_work(1)
+            if not gateway:
+                rows = [row for row in client.work() if row["kind"] == "codex.app.thread"]
+                assert len(rows) == 1 and rows[0]["acquired_by"] == thread_origin, rows
+                assert rows[0]["handles"]["thread_id"] == thread_id, rows
+                runtime_id = rows[0]["handles"]["runtime_id"]
+                assert str(uuid.UUID(runtime_id)).lower() == runtime_id.lower(), rows
             receipt["steps"].append("thread/list→start→loaded/list")
             turn = client.call("turn.start", thread_id=thread_id, prompt="Return the fixture response.")
+            turn_origin = client.last_invocation
             turn_id = turn["turn"]["id"]
             cursor = 0
             deadline = time.monotonic() + 30
@@ -294,6 +358,14 @@ metrics_exporter = "none"
                     assert approval["kind"] == "command_execution", approval
                     assert Path(approval["workspace_path"]).resolve() == workspace, approval
                     assert approval["thread_id"] == thread_id, approval
+                    if not gateway:
+                        rows = [row for row in client.work() if row["kind"] == "codex.app.server-request"]
+                        assert rows and all(row["acquired_by"] == turn_origin for row in rows), rows
+                        owned = [row for row in rows if row["handles"].get("approval_id") == approval["id"]]
+                        assert len(owned) == 1, rows
+                        assert owned[0]["handles"]["thread_id"] == thread_id, owned
+                        assert owned[0]["handles"]["turn_id"] == turn_id, owned
+                        assert owned[0]["handles"]["runtime_id"] == runtime_id, owned
                     client.call("approvals.respond", approval_id=approval["id"], response={"decision": "accept"})
                     approved += 1
                 if completed is None:
@@ -329,6 +401,11 @@ metrics_exporter = "none"
             assert forced["externally_claimable"] is True, forced
             stopped = client.call("status")
             receipt["first_owned_stop"] = verify_owned_stop(stopped)
+            if require_host_work:
+                receipt["host_work_released"] = client.host_work(0)
+            if not gateway:
+                assert client.work() == [], "Confirmed process exit retained native work"
+                receipt["steps"].append("complete work resource→native creator/callback correlation→confirmed cleanup")
             process.stdin.close()
             assert process.wait(timeout=10) == 0
             client.reader.join(timeout=2)
@@ -353,6 +430,8 @@ metrics_exporter = "none"
             receipt["steps"].append("active turn→steer→reviewed interrupt/release→owned runtime stop")
             stopped = client.call("runtime.stop")
             receipt["final_owned_stop"] = verify_owned_stop(stopped)
+            if not gateway:
+                assert client.work() == [], "Final owned cleanup did not settle work"
             confirmed = True
             process.stdin.close()
             assert process.wait(timeout=10) == 0
@@ -391,7 +470,11 @@ if __name__ == "__main__":
     parser.add_argument("--database", type=Path, help="Fresh isolated host-test database containing an installed Codex plugin")
     parser.add_argument("--control-socket", type=Path, help="Owner socket of that isolated host-test instance")
     parser.add_argument("--workspace", type=Path, help="Existing disposable workspace registered in that test database")
+    parser.add_argument("--require-host-work", action="store_true",
+                        help="Require the candidate Gateway to accept provider aliases and observe final release")
     options = parser.parse_args()
+    if options.require_host_work and not options.gateway:
+        parser.error("Host work observation requires --gateway")
     fixture_options = [options.database, options.control_socket, options.workspace]
     if any(fixture_options) and (not all(fixture_options) or not options.gateway):
         parser.error("Installed-plugin checks require --gateway, --database, --control-socket and --workspace together")
@@ -401,4 +484,5 @@ if __name__ == "__main__":
     for executable in [options.adapter, options.codex] + ([options.gateway] if options.gateway else []):
         if not executable.is_absolute() or not os.access(executable, os.X_OK):
             parser.error("Both executables must be existing absolute executable paths")
-    print(json.dumps(run(options.adapter, options.codex, options.gateway, options.database, options.control_socket, options.workspace), indent=2))
+    print(json.dumps(run(options.adapter, options.codex, options.gateway, options.database,
+                         options.control_socket, options.workspace, options.require_host_work), indent=2))

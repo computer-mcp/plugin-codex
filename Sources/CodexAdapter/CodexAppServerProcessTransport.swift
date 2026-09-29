@@ -1,5 +1,4 @@
 import CodexAppServerRuntime
-import Darwin
 import Foundation
 
 struct CodexAppServerProcessSnapshot: Codable, Equatable, Sendable {
@@ -22,6 +21,7 @@ struct CodexAppServerProcessSnapshot: Codable, Equatable, Sendable {
   let signal: Int32?
   let terminationEscalated: Bool
   let lastError: String?
+  var cleanupConfirmed: Bool? = nil
 
   private enum CodingKeys: String, CodingKey {
     case state
@@ -35,6 +35,7 @@ struct CodexAppServerProcessSnapshot: Codable, Equatable, Sendable {
     case signal
     case terminationEscalated = "termination_escalated"
     case lastError = "last_error"
+    case cleanupConfirmed = "cleanup_confirmed"
   }
 
   var json: JSONValue {
@@ -83,7 +84,7 @@ final class ManagedCodexAppServerTransport: CodexAppServerLinePeer, Sendable {
       terminationGraceMilliseconds: Int = 1_000,
       killGraceMilliseconds: Int = 2_000,
       maximumMessageBytes: Int = 16 * 1_024 * 1_024,
-      ownerProcessID: Int32 = getpid()
+      ownerProcessID: Int32 = ProcessInfo.processInfo.processIdentifier
     ) {
       self.executable = executable
       self.arguments = arguments
@@ -140,6 +141,7 @@ final class ManagedCodexAppServerTransport: CodexAppServerLinePeer, Sendable {
       exitCode: value.exitCode,
       signal: value.signal,
       terminationEscalated: value.terminationEscalated,
-      lastError: value.lastError)
+      lastError: value.lastError,
+      cleanupConfirmed: value.cleanupConfirmed)
   }
 }

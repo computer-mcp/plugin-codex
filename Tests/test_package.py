@@ -17,6 +17,12 @@ spec.loader.exec_module(package)
 
 
 class PackageOwnershipTests(unittest.TestCase):
+    def setUp(self):
+        # Build commands are fixture responses; publication still uses the native OS.
+        native_build = patch.object(package, "current_platform", return_value="macos")
+        native_build.start()
+        self.addCleanup(native_build.stop)
+
     def make_repository(self, root):
         repo = root / "repo"
         built = repo / ".build/debug"
@@ -27,7 +33,8 @@ class PackageOwnershipTests(unittest.TestCase):
         for name in ("computer-mcp-plugin.toml", "README.md", "CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
             (repo / name).write_text("fixture content\n")
         (repo / "computer-mcp-plugin.toml").write_text(
-            "id = 'codex'\nversion = '1.2.3'\n\n[compatibility]\narchitectures = ['arm64']\n"
+            "id = 'codex'\nversion = '1.2.3'\n[[mcp]]\nid = 'app-server'\n"
+            "executable = { path = 'bin/codex-mcp-adapter' }\n\n[compatibility]\narchitectures = ['arm64']\n"
         )
         metadata = repo / version.GENERATED
         metadata.parent.mkdir(parents=True)
@@ -96,6 +103,39 @@ class PackageOwnershipTests(unittest.TestCase):
                         package.validate_architectures(manifest, ["arm64"])
             manifest.write_text("[compatibility]\narchitectures = ['x86_64', 'arm64']")
             package.validate_architectures(manifest, ["arm64", "x86_64"])
+
+    def test_named_archives_select_exact_platform_and_architecture_without_manifest_rewriting(self):
+        manifest = Path(__file__).resolve().parents[1] / "computer-mcp-plugin.toml"
+        original = manifest.read_bytes()
+        self.assertEqual(package.validate_architectures(manifest, ["arm64"], "macos"),
+                         "codex-plugin-macos-arm64.zip")
+        self.assertEqual(package.validate_architectures(manifest, ["x86_64"], "windows"),
+                         "codex-plugin-windows-x86_64.zip")
+        for platform, slices in [("windows", ["arm64"]), ("macos", ["x86_64"]),
+                                 ("macos", ["arm64", "x86_64"]), ("linux", ["x86_64"])]:
+            with self.subTest(platform=platform, slices=slices), self.assertRaises(ValueError):
+                package.validate_architectures(manifest, slices, platform)
+        self.assertEqual(manifest.read_bytes(), original)
+
+    @unittest.skipUnless(os.name == "nt", "Native Windows directory reparse boundary")
+    def test_windows_junction_is_rejected_before_copying_external_content(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside, source = root / "outside", root / "source"
+            outside.mkdir()
+            source.mkdir()
+            (outside / "sentinel").write_bytes(b"user owned")
+            junction = source / "junction"
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                           check=True, capture_output=True)
+            try:
+                with self.assertRaisesRegex(ValueError, "reparse"):
+                    package.copy_tree(source, root / "payload")
+                self.assertFalse((root / "payload").exists())
+                self.assertEqual((outside / "sentinel").read_bytes(), b"user owned")
+            finally:
+                junction.rmdir()
 
     def test_package_rejects_slice_mismatch_and_manifest_mutation_before_publication(self):
         for failure in ("slice_mismatch", "manifest_mutation", "version_mismatch"):
@@ -182,7 +222,8 @@ class PackageOwnershipTests(unittest.TestCase):
             target = root / "target"
             package.copy_file(source, target)
             self.assertEqual(target.read_bytes(), source.read_bytes())
-            self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+            if os.name != "nt":
+                self.assertEqual(target.stat().st_mode & 0o777, 0o755)
             package.validate_payload(root)
 
     def test_file_links_and_special_files_are_rejected_without_reading_their_targets(self):
@@ -192,9 +233,12 @@ class PackageOwnershipTests(unittest.TestCase):
             outside.write_bytes(b"user owned")
             link = root / "link"
             link.symlink_to(outside)
-            fifo = root / "fifo"
-            os.mkfifo(fifo)
-            for source in (link, fifo):
+            sources = [link]
+            if hasattr(os, "mkfifo"):
+                fifo = root / "fifo"
+                os.mkfifo(fifo)
+                sources.append(fifo)
+            for source in sources:
                 with self.subTest(source=source.name), self.assertRaises(ValueError):
                     package.copy_file(source, root / "target")
                 self.assertFalse((root / "target").exists())
@@ -213,10 +257,9 @@ class PackageOwnershipTests(unittest.TestCase):
                     link = source / name
                     link.symlink_to(target)
                     copied = root / ("copied-" + name)
-                    package.copy_tree(source, copied)
-                    self.assertTrue((copied / name).is_symlink())
                     with self.assertRaises(ValueError):
-                        package.validate_payload(copied)
+                        package.copy_tree(source, copied)
+                    self.assertFalse(copied.exists())
                     link.unlink()
             self.assertEqual((outside / "sentinel").read_bytes(), b"user owned")
 

@@ -6,6 +6,117 @@ import Testing
 
 @Suite(.serialized)
 struct CodexAppServerProviderTests {
+  @Test
+  func hostServiceConsumersDeclareTheirExactSemanticEffect() {
+    let expected = [
+      "codex.diagnostics.snapshot": "diagnostics.snapshot",
+      "codex.worktree.provision.perform": "workspaces.provision",
+      "codex.worktree.remove.perform": "workspaces.remove",
+    ]
+    for tool in makeProvider().tools {
+      #expect(tool._meta?["io.github.computer-mcp/host-action"]?.stringValue == expected[tool.name])
+    }
+  }
+
+  @Test
+  func modelAndApprovalEntryPointsDeclareFullShellAcrossTheMCPCatalog() throws {
+    let tools = makeProvider().tools
+    for tool in tools {
+      let raw = try #require(
+        tool._meta?["io.github.computer-mcp/risk"]?.stringValue)
+      #expect(CodexOperationRisk(rawValue: raw) != nil)
+      #expect(tool.annotations.readOnlyHint == (raw == "read-only"))
+    }
+    for name in [
+      "codex.app.methods.call", "codex.app.thread.start", "codex.app.thread.reclaim",
+      "codex.app.thread.fork", "codex.app.thread.release", "codex.app.turn.start",
+      "codex.app.turn.steer", "codex.app.turn.interrupt", "codex.app.review.start",
+      "codex.app.requests.respond", "codex.app.approvals.respond", "codex.app.goal.set",
+    ] {
+      let tool = try #require(tools.first { $0.name == name })
+      #expect(tool._meta?["io.github.computer-mcp/risk"] == .string("full-shell"))
+    }
+    for name in ["codex.app.thread.read", "codex.app.approvals.read", "codex.app.events.read"] {
+      let tool = try #require(tools.first { $0.name == name })
+      #expect(tool._meta?["io.github.computer-mcp/risk"] == .string("read-only"))
+    }
+    let goal = try #require(tools.first { $0.name == "codex.app.goal.clear" })
+    #expect(
+      goal._meta?["io.github.computer-mcp/risk"] == .string("workspace-write"))
+  }
+
+  @Test
+  func threadHistoryDefaultsToMetadataAndBoundedNativePages() async throws {
+    let provider = makeProvider()
+    for includeTurns in [nil, false, true] as [Bool?] {
+      var arguments: [String: JSONValue] = ["thread_id": .string("thread-1")]
+      if let includeTurns { arguments["include_turns"] = .bool(includeTurns) }
+      let result = try await provider.call(
+        name: "codex.app.thread.read", arguments: .object(arguments))
+      #expect(
+        result.structuredContent?.objectValue?["result"]?.objectValue?["params"]?
+          .objectValue?["includeTurns"] == .bool(includeTurns ?? false))
+    }
+    for (tool, method) in [
+      ("codex.app.thread.reclaim", "thread/resume"), ("codex.app.thread.fork", "thread/fork"),
+    ] {
+      for includeTurns in [nil, false, true] as [Bool?] {
+        var arguments: [String: JSONValue] = ["thread_id": .string("thread-1")]
+        if let includeTurns { arguments["include_turns"] = .bool(includeTurns) }
+        let result = try await provider.call(name: tool, arguments: .object(arguments))
+        let params = try #require(
+          result.structuredContent?.objectValue?["result"]?.objectValue?["params"])
+        #expect(params.objectValue?["excludeTurns"] == .bool(!(includeTurns ?? false)))
+        try #require(CodexAppServerMethodCatalog.method(named: method)).validate(
+          params: JSONValue.encoded(params))
+      }
+    }
+    for (tool, method, limit) in [
+      ("codex.app.thread.turns.list", "thread/turns/list", 20),
+      ("codex.app.thread.items.list", "thread/items/list", 50),
+    ] {
+      let result = try await provider.call(
+        name: tool, arguments: .object(["thread_id": .string("thread-1")]))
+      let body = try #require(result.structuredContent?.objectValue?["result"]?.objectValue)
+      let params = try #require(body["params"]?.objectValue)
+      #expect(body["method"] == .string(method))
+      #expect(params["limit"] == .int(limit))
+      #expect(params["sortDirection"] == .string("desc"))
+      #expect(params["itemsView"] == (method == "thread/turns/list" ? .string("notLoaded") : nil))
+      for invalid in [JSONValue.integer(0), .integer(101), .number(1.5), .string("20")] {
+        await #expect(throws: CodexToolError.self) {
+          try await provider.call(
+            name: tool,
+            arguments: .object([
+              "thread_id": .string("thread-1"), "limit": invalid,
+            ]))
+        }
+      }
+    }
+    let cursor = "opaque/+cursor==:9007199254740993"
+    let result = try await provider.call(
+      name: "codex.app.thread.items.list",
+      arguments: .object([
+        "thread_id": .string("thread-1"), "turn_id": .string("turn-7"),
+        "cursor": .string(cursor), "sort_direction": .string("asc"), "limit": .integer(1),
+      ]))
+    #expect(
+      result.structuredContent?.objectValue?["result"]?.objectValue?["params"]
+        == .object([
+          "threadId": .string("thread-1"), "turnId": .string("turn-7"),
+          "cursor": .string(cursor), "sortDirection": .string("asc"), "limit": .int(1),
+        ]))
+    for field in ["sort_direction", "items_view"] {
+      await #expect(throws: CodexToolError.self) {
+        try await provider.call(
+          name: "codex.app.thread.turns.list",
+          arguments: .object([
+            "thread_id": .string("thread-1"), field: .string("unsupported"),
+          ]))
+      }
+    }
+  }
+
   @Test(.timeLimit(.minutes(2)))
   func mcpWorkflowUsesOriginalRuntimeAndPersistsRelease() async throws {
     let fixture = try AppServerProcessFixture()
@@ -64,6 +175,28 @@ struct CodexAppServerProviderTests {
       #expect(goal.objectValue?["goal"]?.objectValue?["tokenBudget"] == .int(50_000))
       _ = try await invoke("codex.app.goal.get", ["thread_id": .string("thread_fixture")])
       _ = try await invoke("codex.app.goal.clear", ["thread_id": .string("thread_fixture")])
+      try Data("9007199254740993".utf8).write(
+        to: fixture.directory.appendingPathComponent("goal-token-budget"))
+      let nativeGoal = try await invoke(
+        "codex.app.native.thread.goal.set",
+        [
+          "params": .object([
+            "threadId": .string("thread_fixture"),
+            "objective": .string("Verify exact integer transport."),
+            "tokenBudget": .int(9_007_199_254_740_993),
+          ])
+        ])
+      #expect(
+        nativeGoal.objectValue?["goal"]?.objectValue?["tokenBudget"] == .int(9_007_199_254_740_993))
+      let nativeRequests = try fixture.requests().map {
+        try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+      }
+      #expect(
+        nativeRequests.contains {
+          $0.objectValue?["method"] == .string("thread/goal/set")
+            && $0.objectValue?["params"]?.objectValue?["tokenBudget"]
+              == .integer(9_007_199_254_740_993)
+        })
       var approvalID: String?
       for _ in 0..<500 {
         let approvals = try await invoke("codex.app.approvals.list", ["state": .string("pending")])
@@ -147,6 +280,30 @@ struct CodexAppServerProviderTests {
     let result = call.objectValue?["structuredContent"]?.objectValue?["result"]?.objectValue
     #expect((result?["method"]) == (.string("thread/start")))
     #expect((result?["params"]?.objectValue?["model"]) == (.string("gpt-test")))
+  }
+
+  @Test
+  func experimentalCallsRequireExplicitAdmissionAndRemainDistinctFromStableTools() async throws {
+    let provider = makeProvider()
+    #expect(provider.tools.filter { $0.name.hasPrefix("codex.app.native.") }.count == 96)
+    #expect(!provider.tools.contains { $0.name == "codex.app.native.mock.experimentalMethod" })
+    await #expect(throws: CodexToolError.self) {
+      try await provider.call(
+        name: "codex.app.methods.call",
+        arguments: .object([
+          "method": .string("mock/experimentalMethod"),
+          "params": .object(["value": .string("probe")]),
+        ]))
+    }
+    let result = try await provider.call(
+      name: "codex.app.methods.call",
+      arguments: .object([
+        "method": .string("mock/experimentalMethod"), "experimental": .bool(true),
+        "params": .object(["value": .string("probe")]),
+      ]))
+    #expect(
+      result.structuredContent?.objectValue?["result"]?.objectValue?["method"]
+        == .string("mock/experimentalMethod"))
   }
 
   @Test

@@ -58,6 +58,10 @@ struct CodexExecutionProvider: Sendable {
         result = try await tryExec().cancel(
           sessionID: Self.requiredIdentifier("session_id", in: object)
         )
+      case "codex.exec.release":
+        result = try await tryExec().release(
+          sessionID: Self.requiredIdentifier("session_id", in: object)
+        )
 
       default: throw CodexToolError.unknownTool(name)
       }
@@ -208,7 +212,7 @@ struct CodexExecutionProvider: Sendable {
         ],
         required: ["prompt"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool(
       "codex.exec.resume",
@@ -222,7 +226,7 @@ struct CodexExecutionProvider: Sendable {
         ],
         required: ["upstream_session_id"]
       ),
-      write: true
+      risk: .fullShell
     ),
     tool("codex.exec.list", "List gateway-owned Codex Exec sessions.", emptySchema),
     tool(
@@ -239,12 +243,19 @@ struct CodexExecutionProvider: Sendable {
       "codex.exec.cancel",
       "Cancel one running Codex Exec session.",
       objectSchema(properties: ["session_id": stringSchema()], required: ["session_id"]),
-      write: true
+      risk: .destructive
+    ),
+    tool(
+      "codex.exec.release",
+      "Release a retained Exec result after confirmed native cleanup. Native conversation storage is unchanged.",
+      objectSchema(properties: ["session_id": stringSchema()], required: ["session_id"]),
+      risk: .destructive
     ),
   ]
 
   private static func tool(
-    _ name: String, _ description: String, _ inputSchema: JSONValue, write: Bool = false
+    _ name: String, _ description: String, _ inputSchema: JSONValue,
+    risk: CodexOperationRisk = .readOnly
   ) -> MCP.Tool {
     let title = name.split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" })
       .map { String($0.prefix(1)).uppercased() + $0.dropFirst() }.joined(separator: " ")
@@ -253,11 +264,14 @@ struct CodexExecutionProvider: Sendable {
     return .init(
       name: name, title: title, description: description, inputSchema: input,
       annotations: .init(
-        readOnlyHint: !write, destructiveHint: false, idempotentHint: !write, openWorldHint: write),
+        readOnlyHint: risk == .readOnly,
+        destructiveHint: risk == .destructive || risk == .fullShell,
+        idempotentHint: risk == .readOnly, openWorldHint: risk != .readOnly),
       outputSchema: .object([
         "type": .string("object"), "properties": .object(["result": .object([:])]),
         "required": .array([.string("result")]), "additionalProperties": .bool(false),
-      ]))
+      ]),
+      _meta: .init(additionalFields: ["io.github.computer-mcp/risk": .string(risk.rawValue)]))
   }
 
   private static func objectSchema(
@@ -297,10 +311,10 @@ struct CodexExecutionProvider: Sendable {
   private static func integerSchema(minimum: Int, maximum: Int? = nil) -> JSONValue {
     var schema: [String: JSONValue] = [
       "type": .string("integer"),
-      "minimum": .number(Double(minimum)),
+      "minimum": .integer(Int64(minimum)),
     ]
     if let maximum {
-      schema["maximum"] = .number(Double(maximum))
+      schema["maximum"] = .integer(Int64(maximum))
     }
     return .object(schema)
   }

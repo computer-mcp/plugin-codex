@@ -4,6 +4,7 @@ enum CodexThreadOwnershipState: String, Codable, Equatable, Sendable {
   case loaded
   case released
   case archived
+  case deleted
 }
 
 struct CodexThreadOwnershipRecord: Codable, Equatable, Sendable, Identifiable {

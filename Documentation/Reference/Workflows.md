@@ -13,13 +13,13 @@ by the runtime; do not substitute upstream thread IDs for local handles.
 | Acceptance and writer ownership | `codex.run.*` and `codex.worktree.leases.*`, with durable revisions |
 | Managed worktrees | `codex.worktree.provision.plan` / `perform`, `managed.list` / `read`, and `remove.plan` / `perform`; mutations require the host workspace service |
 | Operational diagnostics | `codex.diagnostics.snapshot`, with optional bounded `limit` |
-| Exec | `codex.exec.start` or `resume` → `list` / `events` / `result` → `cancel` when required |
+| Exec | `codex.exec.start` / `resume`; inspect `list` / `events` / `result`; `cancel` while running; `release` after cleanup |
 
 ## Native coding configuration
 
 Exec start accepts `prompt` and optional `model` and `options`; resume accepts
 `upstream_session_id` and optional `prompt`, `model` and `options`.
-Exec events/result/cancel use `session_id`.
+Exec events/result/cancel/release use `session_id`.
 
 Exec uses existing Codex configuration and authentication, including provider,
 MCP servers, Skills and hooks. Omitted sandbox and approval values inherit native
@@ -39,11 +39,38 @@ inspect vendor configuration and available models. Thread and turn parameters
 may explicitly select native sandbox, approval policy and directory; unsupported
 vendor inputs return a vendor error, never a silent downgrade.
 
+Use `codex.app.native.<method>` for each adopted stable request, replacing `/`
+with `.` in the native method name. Pass native arguments under `params`;
+parameterless methods take an empty tool-argument object. The tool schema
+includes every native parameter and its referenced definitions. SDK request
+types validate required fields and known value shapes; original extension
+fields pass through. Responses retain the usual `structuredContent.result`
+envelope and notifications appear in `codex.app.events.read`. Signed 64-bit
+JSON integers remain exact through MCP and App Server transport; integers
+outside that range fail explicitly.
+
+`codex.app.methods.describe` returns a request's full parameter schema, risk
+and stability channel. Experimental requests use `codex.app.methods.call`
+with `experimental: true` and require the runtime's `experimental_api` setting.
+SDK-excluded lifecycle/internal methods are not executable through this path.
+Native account-token refresh and device-attestation callbacks require an
+external credential or attestation owner; the adapter rejects those callbacks
+explicitly instead of inventing credentials or proof.
+
+Native turn starts and other thread execution paths check existing worktree
+leases. Use the higher-level leased-turn workflow when a lease is active.
+Interactive command/process, filesystem-watch and event-stream handles belong
+to the connection that created them. A replacement connection cannot operate
+an old handle. A failed stop or uncertain request is not proof of cleanup.
+Runtime status reports `cleanup-pending` when owned process-group cleanup is
+unconfirmed; new connection admission remains closed until a later check
+confirms that group is gone.
+
 The configured executable can be an absolute path, a path relative to the
 workspace, or a name on the child process PATH. Resolution and launch share the
 same environment. Missing programs fail explicitly without loading shell profiles.
 
-Exec event reads acceptExec event reads accept `after_cursor` (default 0) and `max_results`
+Exec event reads accept `after_cursor` (default 0) and `max_results`
 (default 100, range 1–1000). Bounded event history reports missed rows; clients
 must not treat an evicted cursor as a complete history.
 
@@ -51,6 +78,11 @@ Successful results preserve the existing JSON text and
 `structuredContent.result` envelope. Tool execution and argument errors return
 `isError: true`; unknown tools are MCP protocol errors. Inspect actual catalog
 schemas for the complete input contract.
+
+Retained events and approval records redact credentials before storage. Known
+native token-usage and Goal counters preserve their integer or null values.
+Usage containers still receive recursive credential redaction; a string in a
+counter field is not treated as a public measurement.
 
 Host permissions are checked on each invocation, including callbacks.
 MCP disconnection shuts down each owned provider. Finish or cancel active work
@@ -74,6 +106,41 @@ their respective records and Goals.
 RPC execution metadata uses `codex.app.methods.*`; version-specific schema
 inspection uses `codex.protocol.methods.*`. Inspecting a schema does not
 enable that RPC or start a vendor process.
+
+## Reading long threads
+
+`codex.app.thread.read` returns metadata without turns by default. Use
+`codex.app.thread.turns.list` with `thread_id` to read turn metadata (default
+20 turns, newest first, without items), then `codex.app.thread.items.list`
+to read items (default 50, newest first). Both accept `limit` from 1 to 100,
+`cursor` and `sort_direction`. Item pages optionally accept `turn_id`; turn
+pages accept the native `items_view` values `notLoaded`, `summary` or `full`.
+
+For example, read one turn's items with
+`{"thread_id":"<thread>","turn_id":"<turn>","limit":10}`. The result's
+`data` holds the page and `nextCursor` is the native continuation. Pass that
+cursor unchanged on the next request with the same thread, turn filter and
+sort direction. A cursor is not authorization: every request still checks
+thread ownership. Cursors follow the installed vendor's history semantics;
+they do not freeze an actively changing thread.
+
+Successful pages retain their complete fields and continuation. If a page
+exceeds the adapter output budget, `codex.app.history_page_too_large` reports
+an error instead of returning a truncated page. Keep the input cursor and
+retry with a smaller limit. For turns, use `items_view: "notLoaded"` and load
+items separately. A single oversized item can still exceed the budget;
+`codex.app.thread.recent` offers a bounded persisted summary with visible
+read/output limits and a snapshot-bound `next_before_cursor`.
+
+Explicit `include_turns: true` on `thread.read` retains full-history behavior,
+including its timeout, transport and output limits. Inspection does not require
+`thread.reclaim`: reclaim acquires a writer and remains a separate operation.
+`thread.reclaim` and `thread.fork` also omit turns from their response by
+default, using native `excludeTurns: true`; their `include_turns: true` option
+requests full history. Writer conflicts retain their native ownership meaning
+and are not repaired by reconnecting or force-stopping another client.
+Native tools also expose `thread/read`, `thread/turns/list` and
+`thread/items/list` with the SDK's complete schemas and parameter names.
 
 ## Workspace and diagnostic availability
 
@@ -116,6 +183,21 @@ completion with cancellation history. Results expose `output_capture`, including
 dropped stdout/stderr bytes. Capture-budget failure is explicit; preserved output
 must not be treated as complete. Adapter text truncation and missed event cursors
 are separate, visible limits.
+
+Completed Exec results remain readable until explicit `codex.exec.release` or
+capacity eviction. Release requires both a settled result and confirmed native
+cleanup; it rejects running, still-settling and uncertain-cleanup sessions.
+Releasing removes the adapter session, its result and buffered events. It does
+not delete native conversation history or its workspace ownership record.
+Result and event reads are non-destructive. Capacity eviction removes only
+settled results with confirmed cleanup; uncertain work continues to occupy a slot.
+
+Exec shutdown also covers native requests still starting. It refuses new
+start/resume calls before claiming thread ownership and waits for admitted
+startup and owned process cleanup outcomes.
+If a cancelled startup supplies a late process handle, the adapter cleans that
+handle before returning. Cancellation of a start request after it has returned
+does not replace the explicit session cancel operation.
 
 ## Subject-bound adapter storage
 

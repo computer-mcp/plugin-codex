@@ -74,7 +74,7 @@ struct ProtocolToolsTests {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
-    try Data(#"{"codexVersion":"0.154.0","files":{}}"#.utf8).write(
+    try Data(#"{"codexVersion":"0.154.0","adoptionSHA256":"invalid","files":{}}"#.utf8).write(
       to: directory.appendingPathComponent("receipt.json"))
     #expect(throws: SchemaError.self) { try ProtocolInventory(directory: directory) }
   }
@@ -102,8 +102,14 @@ struct ProtocolToolsTests {
         files[path] = ["sha256": AppServerSchema.digest(bytes), "messages": 1]
       }
     }
+    let adoption = Data(
+      #"{"schema":"swift-codex.codex-app-server-method-adoption.v1","upstreamTag":"rust-v1.2.3","adopted":{"stable":["test"],"experimental":[]},"excluded":[]}"#
+        .utf8)
+    try adoption.write(to: directory.appendingPathComponent("adoption.json"))
     let receiptURL = directory.appendingPathComponent("receipt.json")
-    try JSONSerialization.data(withJSONObject: ["codexVersion": "1.2.3", "files": files]).write(
+    try JSONSerialization.data(withJSONObject: [
+      "codexVersion": "1.2.3", "adoptionSHA256": AppServerSchema.digest(adoption), "files": files,
+    ]).write(
       to: receiptURL)
     #expect(try ProtocolInventory(directory: directory).receipt.codexVersion == "1.2.3")
     let target = "experimental/ServerNotification.json"
@@ -111,7 +117,9 @@ struct ProtocolToolsTests {
       try (bytes + Data([32])).write(to: directory.appendingPathComponent(target))
     } else {
       files[target] = ["sha256": AppServerSchema.digest(bytes), "messages": 2]
-      try JSONSerialization.data(withJSONObject: ["codexVersion": "1.2.3", "files": files]).write(
+      try JSONSerialization.data(withJSONObject: [
+        "codexVersion": "1.2.3", "adoptionSHA256": AppServerSchema.digest(adoption), "files": files,
+      ]).write(
         to: receiptURL)
     }
     #expect(throws: SchemaError.self) { try ProtocolInventory(directory: directory) }

@@ -8,6 +8,60 @@ import Testing
 
 @Suite(.serialized)
 final class CodexAppServerRuntimeTests {
+  @Test
+  func historyPagesPreserveCursorsAndExtensionsOrFailWithoutTruncating() async throws {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    let runtime = fixture.makeRuntime()
+    let responseFile = fixture.directory.appendingPathComponent("history-page.json")
+    let page: JSONValue = .object([
+      "data": .array([
+        .object(["id": .string("item-1"), "futureItem": .integer(9_007_199_254_740_993)])
+      ]),
+      "nextCursor": .string("native-opaque/+=="), "futurePage": .bool(true),
+    ])
+    do {
+      _ = try await runtime.call(method: "thread/loaded/list", params: .object([:]))
+      try JSONEncoder().encode(page).write(to: responseFile)
+      let arguments: JSONValue = .object([
+        "threadId": .string("thread_fixture"), "cursor": .string("input-opaque/+=="),
+        "limit": .integer(1),
+      ])
+      for method in ["thread/turns/list", "thread/items/list"] {
+        #expect(try await runtime.call(method: method, params: arguments) == page)
+      }
+      let oversized: JSONValue = .object([
+        "data": .array([
+          .object([
+            "id": .string("item-1"), "text": .string(String(repeating: "x", count: 1_048_576)),
+          ])
+        ]),
+        "nextCursor": .string("must-not-advance"),
+      ])
+      try JSONEncoder().encode(oversized).write(to: responseFile)
+      do {
+        _ = try await runtime.call(method: "thread/items/list", params: arguments)
+        Issue.record("An oversized page must not succeed as a truncated cursorless preview.")
+      } catch {
+        #expect(error.localizedDescription.contains("codex.app.history_page_too_large"))
+      }
+      try JSONEncoder().encode(page).write(to: responseFile)
+      #expect(try await runtime.call(method: "thread/items/list", params: arguments) == page)
+      let requests = try fixture.requests().map {
+        try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+      }
+      #expect(
+        requests.filter { $0.objectValue?["method"] == .string("thread/items/list") }.allSatisfy {
+          $0.objectValue?["params"] == arguments
+        })
+      #expect(try fixture.processIDs().count == 1)
+      await runtime.shutdown()
+    } catch {
+      await runtime.shutdown()
+      throw error
+    }
+  }
+
   @Test(arguments: [false, true])
   func testUnavailableExecutableReportsFailedStartup(missingInterpreter: Bool) async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -27,6 +81,52 @@ final class CodexAppServerRuntimeTests {
     await runtime.shutdown()
     #expect(status.objectValue?["connection_state"] == .string("failed"))
     #expect(status.objectValue?["last_error"]?.stringValue?.isEmpty == false)
+  }
+
+  @Test(arguments: [false, true])
+  func confirmedRetirementReleasesLoadedAndActiveThreadOwnership(timeout: Bool) async throws {
+    let fixture = try AppServerProcessFixture()
+    defer { fixture.remove() }
+    let runtime = fixture.makeRuntime(requestTimeoutSeconds: 1)
+    do {
+      _ = try await runtime.call(method: "thread/start", params: .object([:]))
+      _ = try await runtime.call(
+        method: "turn/start",
+        params: .object([
+          "threadId": .string("thread_native"),
+          "input": .array([.object(["type": .string("text"), "text": .string("fixture")])]),
+        ]))
+      #expect(await runtime.hasLiveOwnership(of: "thread_native"))
+      let pid = try await fixture.waitForLatestPID(count: 1)
+      if timeout {
+        try Data().write(to: fixture.hangRequestsFile)
+        await assertThrowsErrorAsync(
+          try await runtime.call(method: "thread/loaded/list", params: .object([:])))
+      } else {
+        #expect(Darwin.kill(pid, SIGTERM) == 0)
+        try await waitUntilRuntimeCondition {
+          let status = await runtime.status()
+          return status.objectValue?["connection_state"] != .string("running")
+            && status.objectValue?["process"]?.objectValue?["cleanup_confirmed"] == .bool(true)
+        }
+      }
+      let status = await runtime.status()
+      #expect(status.objectValue?["process"]?.objectValue?["cleanup_confirmed"] == .bool(true))
+      #expect(await waitForProcessExit(pid))
+      #expect(!(await runtime.hasLiveOwnership(of: "thread_native")))
+      #expect(
+        await CodexRuntimeDirectory.shared.runtimeIDs(
+          owning: "thread_native", workspaceID: "fixture-workspace"
+        ).isEmpty)
+      if timeout { try FileManager.default.removeItem(at: fixture.hangRequestsFile) }
+      _ = try await runtime.call(method: "thread/loaded/list", params: .object([:]))
+      #expect(await runtime.hasLiveOwnership(of: "thread_fixture"))
+      #expect(!(await runtime.hasLiveOwnership(of: "thread_native")))
+      await runtime.shutdown()
+    } catch {
+      await runtime.shutdown()
+      throw error
+    }
   }
 
   @Test
@@ -482,11 +582,15 @@ final class CodexAppServerRuntimeTests {
     await runtime.shutdown()
   }
 
-  @Test
-  func testConnectionStartupIsBoundedByEndToEndDeadline() async throws {
+  @Test(arguments: [false, true])
+  func testConnectionStartupIsBoundedByEndToEndDeadline(ignoreTermination: Bool) async throws {
     let fixture = try AppServerProcessFixture()
     defer { fixture.remove() }
     try Data().write(to: fixture.hangInitializeFile)
+    if ignoreTermination {
+      try Data().write(
+        to: fixture.directory.appendingPathComponent("ignore-initialize-termination"))
+    }
     let runtime = fixture.makeRuntime(requestTimeoutSeconds: 1)
     let clock = ContinuousClock()
     let started = clock.now
@@ -499,7 +603,22 @@ final class CodexAppServerRuntimeTests {
     #expect(elapsed < .seconds(3))
     let processID = try await fixture.waitForLatestPID(count: 1)
     #expect(await waitForProcessExit(processID))
-    #expect(!FileManager.default.fileExists(atPath: fixture.leaseDirectory.path))
+    let status = await runtime.status()
+    let process = try #require(status.objectValue?["process"]?.objectValue)
+    #expect(process["cleanup_confirmed"] == .bool(true))
+    let supervisorID = Int32(try #require(process["supervisor_process_id"]?.intValue))
+    let groupID = Int32(try #require(process["process_group_id"]?.intValue))
+    #expect(!processExists(supervisorID))
+    let groupProbe = Darwin.kill(-groupID, 0)
+    let groupError = errno
+    #expect(groupProbe == -1 && groupError == ESRCH)
+    #expect(try await runtime.workResources().isEmpty)
+    #expect(status.objectValue?["current_request_count"] == .integer(0))
+    if ignoreTermination {
+      #expect(process["termination_escalated"] == .bool(true))
+      // SIGKILL cannot run the child's EXIT trap; filesystem residue is not live ownership.
+      #expect(FileManager.default.fileExists(atPath: fixture.leaseDirectory.path))
+    }
     await runtime.shutdown()
   }
 
@@ -1434,6 +1553,9 @@ struct AppServerProcessFixture {
 
       IFS= read -r line || exit 74
       if [ -f "$fixture_dir/hang-initialize" ]; then
+        if [ -f "$fixture_dir/ignore-initialize-termination" ]; then
+          trap '' HUP INT TERM
+        fi
         /bin/sleep 60
         exit 76
       fi
@@ -1441,6 +1563,9 @@ struct AppServerProcessFixture {
       printf '{"id":%s,"result":{"codexHome":"%s","platformFamily":"unix","platformOs":"macos","userAgent":"Codex/computer-mcp-fixture"}}\n' "$id" "$fixture_dir"
       IFS= read -r line || exit 75
       printf '%s\n' "$line" >> "$fixture_dir/requests.log"
+      remote_status=disabled
+      if [ -f "$fixture_dir/initial-remote-status" ]; then remote_status=$(/bin/cat "$fixture_dir/initial-remote-status"); fi
+      printf '{"method":"remoteControl/status/changed","params":{"status":"%s","installationId":"fixture-installation","serverName":"fixture"}}\n' "$remote_status"
       if [ -f "$fixture_dir/approval-request.json" ]; then
         /bin/cat "$fixture_dir/approval-request.json"
         printf '\n'
@@ -1458,13 +1583,33 @@ struct AppServerProcessFixture {
       while IFS= read -r line; do
         printf '%s\n' "$line" >> "$fixture_dir/requests.log"
         case "$line" in
-          *'"id":900'*|*'"id":"900"'*)
+          *'"method":'*) ;;
+          *)
             printf '%s\n' "$line" >> "$fixture_dir/approval-response.log"
             continue
             ;;
         esac
         id=$(printf '%s\n' "$line" | /usr/bin/sed -E 's/.*"id":("[^"]*"|[0-9]+).*/\\1/')
+        if [ -f "$fixture_dir/notifications-next.jsonl" ]; then
+          /bin/cat "$fixture_dir/notifications-next.jsonl"
+          /bin/rm "$fixture_dir/notifications-next.jsonl"
+          while [ -f "$fixture_dir/hold-notification-response" ]; do /bin/sleep 0.01; done
+        fi
         case "$line" in
+          *remoteControl*enable*|*remoteControl*disable*)
+            printf '{"id":%s,"result":{"status":"disabled","installationId":"fixture-installation","serverName":"fixture"}}\n' "$id"
+            ;;
+          *account*login*start*)
+            login_id=11111111-1111-1111-1111-111111111111
+            if [ -f "$fixture_dir/login-id" ]; then login_id=$(/bin/cat "$fixture_dir/login-id"); fi
+            printf '{"id":%s,"result":{"type":"chatgpt","loginId":"%s","authUrl":"https://example.invalid/login"}}\\n' "$id" "$login_id"
+            ;;
+          *account*login*cancel*)
+            printf '{"id":%s,"result":{"status":"canceled"}}\\n' "$id"
+            ;;
+          *mcpServer*oauth*login*)
+            printf '{"id":%s,"result":{"authorizationUrl":"https://example.invalid/oauth"}}\\n' "$id"
+            ;;
           *thread*loaded*list*)
             if [ -f "$fixture_dir/hang-requests" ]; then
               : > "$fixture_dir/hang-request-received"
@@ -1484,14 +1629,41 @@ struct AppServerProcessFixture {
             fi
             printf '{"id":%s,"result":{"data":%s,"nextCursor":null}}\n' "$id" "$loaded"
             ;;
+          *thread*turns*list*|*thread*items*list*)
+            printf '{"id":%s,"result":' "$id"
+            /bin/cat "$fixture_dir/history-page.json"
+            printf '}\n'
+            ;;
           *thread*unsubscribe*)
+            if [ -f "$fixture_dir/closed-threads-after-unsubscribe.jsonl" ]; then
+              /bin/cat "$fixture_dir/closed-threads-after-unsubscribe.jsonl"
+              /bin/rm "$fixture_dir/closed-threads-after-unsubscribe.jsonl"
+            fi
             if [ -f "$fixture_dir/loaded-threads-after-unsubscribe.json" ]; then
               /bin/cp "$fixture_dir/loaded-threads-after-unsubscribe.json" "$fixture_dir/loaded-threads.json"
             fi
             printf '{"id":%s,"result":{"status":"unsubscribed"}}\n' "$id"
             ;;
-          *thread*start*)
-            printf '{"id":%s,"result":{"futureResponse":{"preserved":true},"approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"%s","model":"gpt-test","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"cliVersion":"fixture","createdAt":1,"cwd":"%s","ephemeral":false,"id":"thread_native","modelProvider":"openai","preview":"","sessionId":"session_native","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":1}}}\n' "$id" "$workspace_dir" "$workspace_dir"
+          *thread*queue*add*)
+            printf '{"id":%s,"result":{"queuedSubmission":{"id":"queued-native","clientUserMessageId":"queued-client","input":[]}}}\n' "$id"
+            ;;
+          *thread*queue*delete*)
+            printf '{"id":%s,"result":{"deleted":true}}\n' "$id"
+            ;;
+          *thread*archive*|*thread*realtime*start*|*thread*realtime*stop*)
+            printf '{"id":%s,"result":{}}\n' "$id"
+            ;;
+          *review*start*|*thread*queue*start*)
+            turn_id=turn_native
+            if [ -f "$fixture_dir/created-turn-id" ]; then turn_id=$(/bin/cat "$fixture_dir/created-turn-id"); fi
+            review_thread_id=thread_native
+            if [ -f "$fixture_dir/review-thread-id" ]; then review_thread_id=$(/bin/cat "$fixture_dir/review-thread-id"); fi
+            printf '{"id":%s,"result":{"reviewThreadId":"%s","turn":{"id":"%s","items":[],"status":"inProgress"}}}\\n' "$id" "$review_thread_id" "$turn_id"
+            ;;
+          *thread*start*|*thread*resume*)
+            thread_id=thread_native
+            if [ -f "$fixture_dir/created-thread-id" ]; then thread_id=$(/bin/cat "$fixture_dir/created-thread-id"); fi
+            printf '{"id":%s,"result":{"futureResponse":{"preserved":true},"approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"%s","model":"gpt-test","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"cliVersion":"fixture","createdAt":1,"cwd":"%s","ephemeral":false,"id":"%s","modelProvider":"openai","preview":"","sessionId":"session_native","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":1}}}\n' "$id" "$workspace_dir" "$workspace_dir" "$thread_id"
             ;;
           *turn*interrupt*)
             printf '{"id":%s,"result":{}}\n' "$id"
@@ -1500,13 +1672,19 @@ struct AppServerProcessFixture {
             if [ -f "$fixture_dir/hang-turn-start" ]; then
               continue
             fi
-            printf '{"id":%s,"result":{"turn":{"id":"turn_native","items":[],"status":"inProgress"}}}\n' "$id"
+            turn_id=turn_native
+            if [ -f "$fixture_dir/created-turn-id" ]; then turn_id=$(/bin/cat "$fixture_dir/created-turn-id"); fi
+            printf '{"id":%s,"result":{"turn":{"id":"%s","items":[],"status":"inProgress"}}}\n' "$id" "$turn_id"
             ;;
           *thread*goal*set*)
-            printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"active","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":50000,"tokensUsed":1250,"updatedAt":2}}}\n' "$id"
+            budget=50000
+            if [ -f "$fixture_dir/goal-token-budget" ]; then budget=$(/bin/cat "$fixture_dir/goal-token-budget"); fi
+            printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"active","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":%s,"tokensUsed":1250,"updatedAt":2}}}\n' "$id" "$budget"
             ;;
           *thread*goal*get*)
-            printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"active","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":50000,"tokensUsed":1250,"updatedAt":2}}}\n' "$id"
+            goal_status=active
+            if [ -f "$fixture_dir/goal-read-status" ]; then goal_status=$(/bin/cat "$fixture_dir/goal-read-status"); fi
+            printf '{"id":%s,"result":{"goal":{"createdAt":1,"objective":"Pass every acceptance criterion.","status":"%s","threadId":"thread_fixture","timeUsedSeconds":30,"tokenBudget":50000,"tokensUsed":1250,"updatedAt":2}}}\n' "$id" "$goal_status"
             ;;
           *thread*goal*clear*)
             printf '{"id":%s,"result":{"cleared":true}}\n' "$id"
@@ -1531,7 +1709,8 @@ struct AppServerProcessFixture {
     requestTimeoutSeconds: Int = CodexConfig().appServerRequestTimeoutSeconds,
     approvalTimeoutSeconds: Int = 300,
     database: CodexDatabase? = nil,
-    workspaceID: String? = "fixture-workspace"
+    workspaceID: String? = "fixture-workspace",
+    dynamicToolDispatcher: (any CodexHostTools)? = nil
   ) -> LiveCodexAppServerRuntime {
     LiveCodexAppServerRuntime(
       configuration: CodexConfig(
@@ -1554,7 +1733,7 @@ struct AppServerProcessFixture {
         tunnelInstanceID: nil,
         tunnelProfileID: nil
       ),
-      database: database
+      database: database, dynamicToolDispatcher: dynamicToolDispatcher
     )
   }
 
@@ -1653,6 +1832,19 @@ struct AppServerProcessFixture {
     let encoder = CanonicalJSONCoding.encoder(outputFormatting: [.sortedKeys])
     try encoder.encode(initial).write(to: loadedThreadsFile)
     try encoder.encode(afterUnsubscribe).write(to: loadedThreadsAfterUnsubscribeFile)
+    let closed = Set(initial).subtracting(afterUnsubscribe).sorted()
+    var notifications = Data()
+    for threadID in closed {
+      notifications.append(
+        try encoder.encode(
+          JSONValue.object([
+            "method": .string("thread/closed"),
+            "params": .object(["threadId": .string(threadID)]),
+          ])))
+      notifications.append(10)
+    }
+    try notifications.write(
+      to: directory.appendingPathComponent("closed-threads-after-unsubscribe.jsonl"))
   }
 
   func requests() throws -> [String] {
@@ -1756,7 +1948,7 @@ private func replaceWorkspacePlaceholder(_ value: JSONValue, with workspace: Str
         }
       )
     )
-  case .number, .bool, .null:
+  case .number, .integer, .bool, .null:
     return value
   }
 }

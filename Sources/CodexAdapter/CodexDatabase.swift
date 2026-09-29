@@ -12,6 +12,15 @@ final class CodexDatabase: @unchecked Sendable {
     fileURL = URL(fileURLWithPath: path).standardizedFileURL
     var configuration = Configuration()
     configuration.busyMode = .timeout(5)
+    #if os(Windows)
+      let directories = try ([path] + [worktreeLeasePath].compactMap { $0 }).map {
+        try WindowsPrivateDirectory(URL(fileURLWithPath: $0).deletingLastPathComponent())
+      }
+      // GRDB retains configuration through connection close, keeping ancestry handles alive.
+      configuration.prepareDatabase { [directories] _ in
+        for directory in directories { try directory.validate() }
+      }
+    #endif
     writer = try DatabaseQueue(path: path, configuration: configuration)
     sharesWorktreeLeases = worktreeLeasePath != nil
     if let worktreeLeasePath {

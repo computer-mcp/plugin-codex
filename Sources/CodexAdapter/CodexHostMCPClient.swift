@@ -1,6 +1,19 @@
-import CryptoKit
 import Foundation
 import MCP
+
+#if canImport(CryptoKit)
+  import CryptoKit
+#else
+  import Crypto
+#endif
+
+#if os(Windows)
+  typealias CodexHostMCPTransport = MCPInheritedPipeTransport
+  typealias CodexHostMCPEndpoint = MCPInheritedPipeEndpoint
+#else
+  typealias CodexHostMCPTransport = MCPInheritedSocketTransport
+  typealias CodexHostMCPEndpoint = FileHandle
+#endif
 
 /// Host tools use standard MCP and the existing gateway policy/ticket tool surface.
 /// Caller-provided tool arguments cannot select this connection or its authority.
@@ -11,7 +24,7 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
   private let owner: CodexRuntimeOwner
   private let workspaceID: String
   private let client = MCP.Client(name: "codex-host-tools", version: CodexAdapterBuildInfo.version)
-  private let transport: MCPInheritedSocketTransport
+  private let transport: CodexHostMCPTransport
   private let requestTimeout: Duration
   private var startup: Task<Void, Error>?
   private var connected = false
@@ -26,17 +39,24 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
 
   static func inherited(environment: [String: String], context: CodexLaunchContext) throws -> Self?
   {
-    guard let text = environment[descriptorEnvironmentKey] else { return nil }
-    guard environment["COMPUTER_MCP_HOST_CONTEXT"] != nil,
-      let descriptor = Int32(text), (3...9).contains(descriptor), String(descriptor) == text
-    else { throw ConfigurationError.invalid("Invalid inherited host MCP descriptor.") }
-    return try Self(
-      takingOwnershipOf: FileHandle(fileDescriptor: descriptor, closeOnDealloc: true),
-      owner: context.owner)
+    #if os(Windows)
+      guard let endpoint = try MCPInheritedPipeEndpoint.inherited(environment: environment) else {
+        return nil
+      }
+      return try Self(takingOwnershipOf: endpoint, owner: context.owner)
+    #else
+      guard let text = environment[descriptorEnvironmentKey] else { return nil }
+      guard environment["COMPUTER_MCP_HOST_CONTEXT"] != nil,
+        let descriptor = Int32(text), (3...9).contains(descriptor), String(descriptor) == text
+      else { throw ConfigurationError.invalid("Invalid inherited host MCP descriptor.") }
+      return try Self(
+        takingOwnershipOf: FileHandle(fileDescriptor: descriptor, closeOnDealloc: true),
+        owner: context.owner)
+    #endif
   }
 
   init(
-    takingOwnershipOf handle: FileHandle, owner: CodexRuntimeOwner,
+    takingOwnershipOf handle: CodexHostMCPEndpoint, owner: CodexRuntimeOwner,
     requestTimeout: Duration = .seconds(30)
   ) throws {
     guard requestTimeout > .zero else {
@@ -48,7 +68,7 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
     self.owner = owner
     self.workspaceID = workspaceID
     self.requestTimeout = requestTimeout
-    transport = try MCPInheritedSocketTransport(takingOwnershipOf: handle)
+    transport = try CodexHostMCPTransport(takingOwnershipOf: handle)
   }
 
   func risk(named name: String, arguments: JSONValue, requestID: String, workspaceID: String?)
@@ -197,7 +217,7 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
   /// Disconnecting on timeout/cancellation resolves SDK waiters before the task group joins.
   /// A cancelled deadline after normal completion must not close a reusable connection.
   private static func bounded<T: Sendable>(
-    client: MCP.Client, transport: MCPInheritedSocketTransport, timeout: Duration,
+    client: MCP.Client, transport: CodexHostMCPTransport, timeout: Duration,
     operation: @escaping @Sendable () async throws -> T
   ) async throws -> T {
     let state = Completion()
@@ -240,7 +260,7 @@ extension CodexHostMCPClient {
     guard (1...1000).contains(limit) else {
       throw CodexToolError.invalidArguments("Host diagnostic limit must be 1...1000.")
     }
-    let value = try await service("host.diagnostics.snapshot", ["limit": .number(Double(limit))])
+    let value = try await service("host.diagnostics.snapshot", ["limit": .integer(Int64(limit))])
     guard let object = value.objectValue,
       let returnedOwner = object["owner"],
       try JSONDecoder().decode(CodexRuntimeOwner.self, from: JSONEncoder().encode(returnedOwner))

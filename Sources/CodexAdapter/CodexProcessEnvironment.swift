@@ -1,5 +1,8 @@
 import Foundation
-import SystemConfiguration
+
+#if canImport(SystemConfiguration)
+  import SystemConfiguration
+#endif
 
 internal struct SystemNetworkProxySettings: Equatable, Sendable {
   internal var httpProxy: String?
@@ -88,6 +91,8 @@ internal enum CodexProcessEnvironment {
   private static let parentSessionKeys = [
     "COMPUTER_MCP_HOST_CONTEXT",
     "COMPUTER_MCP_HOST_FD",
+    "COMPUTER_MCP_HOST_READ_HANDLE",
+    "COMPUTER_MCP_HOST_WRITE_HANDLE",
     "CODEX_APP_TOOLS_PIPE_PATH",
     "CODEX_CI",
     "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
@@ -102,11 +107,12 @@ internal enum CodexProcessEnvironment {
     systemProxy: SystemNetworkProxySettings = .current()
   ) -> [String: String] {
     var environment = base
-    for key in parentSessionKeys {
+    for key in base.keys where parentSessionKeys.contains(where: { namesMatch(key, $0) }) {
       environment.removeValue(forKey: key)
     }
-    let hasInheritedProxy = (httpKeys + httpsKeys + allKeys).contains {
-      environment[$0] != nil
+    let proxyKeys = httpKeys + httpsKeys + allKeys
+    let hasInheritedProxy = environment.keys.contains { key in
+      proxyKeys.contains { namesMatch(key, $0) }
     }
 
     if hasInheritedProxy {
@@ -119,11 +125,11 @@ internal enum CodexProcessEnvironment {
       install(systemProxy.socksProxy, for: allKeys, in: &environment)
     }
 
-    let hasEffectiveProxy = (httpKeys + httpsKeys + allKeys).contains {
-      !(environment[$0] ?? "").isEmpty
+    let hasEffectiveProxy = environment.contains { key, value in
+      !value.isEmpty && proxyKeys.contains { namesMatch(key, $0) }
     }
     if hasEffectiveProxy {
-      if noProxyKeys.contains(where: { environment[$0] != nil }) {
+      if environment.keys.contains(where: { key in noProxyKeys.contains { namesMatch(key, $0) } }) {
         mirrorExistingValue(for: noProxyKeys, in: &environment)
       } else {
         let noProxy = normalizedBypassHosts(systemProxy.bypassHosts).joined(separator: ",")
@@ -137,13 +143,15 @@ internal enum CodexProcessEnvironment {
     for keys: [String],
     in environment: inout [String: String]
   ) {
-    let existingValues = keys.compactMap { key in
-      environment[key].map { (key: key, value: $0) }
-    }
-    guard existingValues.count == 1, let existingValue = existingValues.first?.value else {
-      return
-    }
-    install(existingValue, for: keys, in: &environment)
+    #if !os(Windows)
+      let existingValues = keys.compactMap { key in
+        environment[key].map { (key: key, value: $0) }
+      }
+      guard existingValues.count == 1, let existingValue = existingValues.first?.value else {
+        return
+      }
+      install(existingValue, for: keys, in: &environment)
+    #endif
   }
 
   private static func install(
@@ -152,9 +160,24 @@ internal enum CodexProcessEnvironment {
     in environment: inout [String: String]
   ) {
     guard let value else { return }
-    for key in keys {
-      environment[key] = value
-    }
+    #if os(Windows)
+      // Windows already resolves names case-insensitively; aliases would be duplicates.
+      for key in keys.prefix(1) {
+        environment[key] = value
+      }
+    #else
+      for key in keys {
+        environment[key] = value
+      }
+    #endif
+  }
+
+  static func namesMatch(_ lhs: String, _ rhs: String) -> Bool {
+    #if os(Windows)
+      return WindowsProcessEnvironment.namesMatch(lhs, rhs)
+    #else
+      return lhs == rhs
+    #endif
   }
 
   private static func normalizedBypassHosts(_ hosts: [String]) -> [String] {

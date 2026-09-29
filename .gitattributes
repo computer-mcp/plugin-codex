@@ -1,0 +1,6 @@
+# Protocol provenance verifies original file bytes on every platform.
+Sources/CodexAdapter/Resources/Protocol/** -text
+# Runtime notice provenance is bound to the original upstream bytes.
+Vendor/SwiftWindowsRuntime/** -text
+# Every platform archive must match the manifest stored at its release tag.
+computer-mcp-plugin.toml -text
