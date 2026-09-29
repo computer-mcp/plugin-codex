@@ -43,6 +43,10 @@ def verify(archive, receipt_path, manifest, destination=None):
         raise ValueError("Archive receipt must declare its file inventory")
     for name, value in inventory.items():
         safe_path(name)
+        if receipt.get("platform") == "windows":
+            from windows_runtime import is_msvc_runtime
+            if is_msvc_runtime(PurePosixPath(name).name):
+                raise ValueError("Microsoft runtime DLLs must be installed separately, not bundled")
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ValueError("Archive inventory requires exact SHA-256 digests")
     expected_name = validate_architectures(manifest, receipt["architectures"], receipt["platform"])

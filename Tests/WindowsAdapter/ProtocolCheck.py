@@ -78,7 +78,7 @@ def remove_private_state(root):
     return repaired
 
 
-def run(adapter, codex, evidence_directory=None, app_local_runtime=False):
+def run(adapter, codex, evidence_directory=None, app_local_runtime=False, package_receipt=None):
     if app_local_runtime and os.name != "nt":
         raise ValueError("App-local runtime acceptance requires native Windows")
     if evidence_directory is not None:
@@ -124,6 +124,18 @@ def run(adapter, codex, evidence_directory=None, app_local_runtime=False):
     confirmed = False
     phase = "executable versions"
     try:
+        prerequisites = []
+        if app_local_runtime:
+            phase = "Microsoft runtime prerequisites"
+            if package_receipt is None:
+                raise ValueError("App-local acceptance requires the verified package receipt")
+            package = json.loads(package_receipt.read_text(encoding="utf-8"))
+            if package["files"]["bin/codex-mcp-adapter.exe"] != receipt["adapter_sha256"]:
+                raise ValueError("Runtime prerequisite receipt does not identify this adapter")
+            prerequisites = runtime.verify_prerequisites(
+                adapter, system_directory, package["windows_runtime"]["external_prerequisites"])
+            receipt["external_prerequisites"] = prerequisites
+            phase = "executable versions"
         for executable, key in [(adapter, "adapter_version"), (codex, "codex_version")]:
             receipt[key] = subprocess.run([str(executable), "--version"], env=environment,
                                           capture_output=True, text=True, check=True, timeout=10).stdout.strip()
@@ -154,7 +166,7 @@ def run(adapter, codex, evidence_directory=None, app_local_runtime=False):
                 phase = f"connection {attempt + 1} native lifecycle"
                 if app_local_runtime:
                     receipt["module_observations"].append(runtime.verify_app_local_modules(
-                        runtime.loaded_modules(process.pid), adapter, system_directory))
+                        runtime.loaded_modules(process.pid), adapter, system_directory, prerequisites))
                 started = client.call("thread.start")
                 thread_id = started["thread"]["id"]
                 origin = client.last_invocation
@@ -242,9 +254,10 @@ if __name__ == "__main__":
     parser.add_argument("--codex", type=Path, required=True)
     parser.add_argument("--evidence-directory", type=Path)
     parser.add_argument("--app-local-runtime", action="store_true")
+    parser.add_argument("--package-receipt", type=Path)
     options = parser.parse_args()
     for executable in [options.adapter, options.codex]:
         if not executable.is_absolute() or not executable.is_file():
             parser.error("Executables must be existing absolute file paths")
     print(json.dumps(run(options.adapter, options.codex, options.evidence_directory,
-                         options.app_local_runtime), indent=2))
+                         options.app_local_runtime, options.package_receipt), indent=2))

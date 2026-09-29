@@ -25,6 +25,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot identify acceptance source' }
     runnerArchitecture = $env:RUNNER_ARCH
     existingSwiftCommands = @((Get-Command swift -All -ErrorAction SilentlyContinue).Source)
     swiftToolchainInstalledByThisJob = $false
+    microsoftRuntime = 'system-installed prerequisite; native versions and module paths verified against the package receipt'
     pristineWindowsImage = $false
     sourceRebuilt = $false
     authenticatedModel = $false
@@ -52,7 +53,7 @@ if ((Get-FileHash $codexBinary -Algorithm SHA256).Hash.ToLowerInvariant() -ne $m
     throw 'Native Codex executable checksum mismatch'
 }
 python (Join-Path $fixture 'ProtocolCheck.py') --adapter (Join-Path $relocated 'bin/codex-mcp-adapter.exe') `
-    --codex $codexBinary --evidence-directory (Join-Path $evidence 'protocol') --app-local-runtime `
+    --codex $codexBinary --evidence-directory (Join-Path $evidence 'protocol') --app-local-runtime --package-receipt $receiptPath `
     *> (Join-Path $evidence 'protocol.log')
 $code = $LASTEXITCODE
 Get-Content (Join-Path $evidence 'protocol.log') -Tail 80
