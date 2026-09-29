@@ -582,11 +582,15 @@ final class CodexAppServerRuntimeTests {
     await runtime.shutdown()
   }
 
-  @Test
-  func testConnectionStartupIsBoundedByEndToEndDeadline() async throws {
+  @Test(arguments: [false, true])
+  func testConnectionStartupIsBoundedByEndToEndDeadline(ignoreTermination: Bool) async throws {
     let fixture = try AppServerProcessFixture()
     defer { fixture.remove() }
     try Data().write(to: fixture.hangInitializeFile)
+    if ignoreTermination {
+      try Data().write(
+        to: fixture.directory.appendingPathComponent("ignore-initialize-termination"))
+    }
     let runtime = fixture.makeRuntime(requestTimeoutSeconds: 1)
     let clock = ContinuousClock()
     let started = clock.now
@@ -599,7 +603,22 @@ final class CodexAppServerRuntimeTests {
     #expect(elapsed < .seconds(3))
     let processID = try await fixture.waitForLatestPID(count: 1)
     #expect(await waitForProcessExit(processID))
-    #expect(!FileManager.default.fileExists(atPath: fixture.leaseDirectory.path))
+    let status = await runtime.status()
+    let process = try #require(status.objectValue?["process"]?.objectValue)
+    #expect(process["cleanup_confirmed"] == .bool(true))
+    let supervisorID = Int32(try #require(process["supervisor_process_id"]?.intValue))
+    let groupID = Int32(try #require(process["process_group_id"]?.intValue))
+    #expect(!processExists(supervisorID))
+    let groupProbe = Darwin.kill(-groupID, 0)
+    let groupError = errno
+    #expect(groupProbe == -1 && groupError == ESRCH)
+    #expect(try await runtime.workResources().isEmpty)
+    #expect(status.objectValue?["current_request_count"] == .integer(0))
+    if ignoreTermination {
+      #expect(process["termination_escalated"] == .bool(true))
+      // SIGKILL cannot run the child's EXIT trap; filesystem residue is not live ownership.
+      #expect(FileManager.default.fileExists(atPath: fixture.leaseDirectory.path))
+    }
     await runtime.shutdown()
   }
 
@@ -1534,6 +1553,9 @@ struct AppServerProcessFixture {
 
       IFS= read -r line || exit 74
       if [ -f "$fixture_dir/hang-initialize" ]; then
+        if [ -f "$fixture_dir/ignore-initialize-termination" ]; then
+          trap '' HUP INT TERM
+        fi
         /bin/sleep 60
         exit 76
       fi
