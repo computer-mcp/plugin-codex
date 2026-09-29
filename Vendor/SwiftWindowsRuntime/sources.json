@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "swift_release": "6.2.3",
+  "swift_source_tag": "swift-6.2.3-RELEASE",
+  "sources": [
+    {
+      "repository": "swiftlang/swift",
+      "tag": "swift-6.2.3-RELEASE",
+      "revision": "484e622d1c0afcae5b12a31c090a74ad0901e44f",
+      "source_path": "LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/swiftlang/swift/484e622d1c0afcae5b12a31c090a74ad0901e44f/LICENSE.txt",
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55",
+      "bytes": 11751,
+      "file": "swift/LICENSE.txt"
+    },
+    {
+      "repository": "swiftlang/swift-corelibs-foundation",
+      "tag": "swift-6.2.3-RELEASE",
+      "revision": "edfa17dd3623877a38967ae3edd356942fe4f655",
+      "source_path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/swiftlang/swift-corelibs-foundation/edfa17dd3623877a38967ae3edd356942fe4f655/LICENSE",
+      "sha256": "0ca84095d1de77cad1a866ebbad28f8db98a0826c6055d92b0608c5baa1643e2",
+      "bytes": 11759,
+      "file": "swift-corelibs-foundation/LICENSE"
+    },
+    {
+      "repository": "swiftlang/swift-foundation",
+      "tag": "swift-6.2.3-RELEASE",
+      "revision": "7242fa9cb8993aaf9a0a72522206b96a45da9c28",
+      "source_path": "LICENSE.md",
+      "url": "https://raw.githubusercontent.com/swiftlang/swift-foundation/7242fa9cb8993aaf9a0a72522206b96a45da9c28/LICENSE.md",
+      "sha256": "2245a990b635558be210fb3eb4f8a6f7a49aebc0fefbf5859146a65ddc7ddcf3",
+      "bytes": 11750,
+      "file": "swift-foundation/LICENSE.md"
+    },
+    {
+      "repository": "swiftlang/swift-foundation",
+      "tag": "swift-6.2.3-RELEASE",
+      "revision": "7242fa9cb8993aaf9a0a72522206b96a45da9c28",
+      "source_path": "NOTICE.txt",
+      "url": "https://raw.githubusercontent.com/swiftlang/swift-foundation/7242fa9cb8993aaf9a0a72522206b96a45da9c28/NOTICE.txt",
+      "sha256": "c2e757911b86a76230099804831d8d847a865e88b5912171627492a7a49f0456",
+      "bytes": 15315,
+      "file": "swift-foundation/NOTICE.txt"
+    },
+    {
+      "repository": "swiftlang/swift-foundation-icu",
+      "tag": "swift-6.2.3-RELEASE",
+      "revision": "ddd11fa3f970bd34924c418835986167b8e6efeb",
+      "source_path": "LICENSE.md",
+      "url": "https://raw.githubusercontent.com/swiftlang/swift-foundation-icu/ddd11fa3f970bd34924c418835986167b8e6efeb/LICENSE.md",
+      "sha256": "2245a990b635558be210fb3eb4f8a6f7a49aebc0fefbf5859146a65ddc7ddcf3",
+      "bytes": 11750,
+      "file": "swift-foundation-icu/LICENSE.md"
+    },
+    {
+      "repository": "swiftlang/swift-corelibs-libdispatch",
+      "tag": "swift-6.2.3-RELEASE",
+      "revision": "2df91f94651f2d924d7506c9d14685929386d779",
+      "source_path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/swiftlang/swift-corelibs-libdispatch/2df91f94651f2d924d7506c9d14685929386d779/LICENSE",
+      "sha256": "0ca84095d1de77cad1a866ebbad28f8db98a0826c6055d92b0608c5baa1643e2",
+      "bytes": 11759,
+      "file": "swift-corelibs-libdispatch/LICENSE"
+    },
+    {
+      "repository": "swiftlang/swift-experimental-string-processing",
+      "tag": "swift-6.2.3-RELEASE",
+      "revision": "91177e6225c63e885872b83d48e254b1270fa15a",
+      "source_path": "LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/swiftlang/swift-experimental-string-processing/91177e6225c63e885872b83d48e254b1270fa15a/LICENSE.txt",
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55",
+      "bytes": 11751,
+      "file": "swift-experimental-string-processing/LICENSE.txt"
+    },
+    {
+      "repository": "curl/curl",
+      "tag": "curl-8_9_1",
+      "revision": "83bedbd730d62b83744cc26fa0433d3f6e2e4cd6",
+      "source_path": "COPYING",
+      "url": "https://raw.githubusercontent.com/curl/curl/83bedbd730d62b83744cc26fa0433d3f6e2e4cd6/COPYING",
+      "sha256": "adb1fc06547fd136244179809f7b7c2d2ae6c4534f160aa513af9b6a12866a32",
+      "bytes": 1088,
+      "file": "curl/COPYING"
+    },
+    {
+      "repository": "madler/zlib",
+      "tag": "v1.3.1",
+      "revision": "51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf",
+      "source_path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/madler/zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf/LICENSE",
+      "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+      "bytes": 1002,
+      "file": "zlib/LICENSE"
+    },
+    {
+      "repository": "unicode-org/icu",
+      "tag": "release-74-1",
+      "revision": "9edac7b78327a1cb58db29e2714b15f9fa14e4d7",
+      "source_path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/unicode-org/icu/9edac7b78327a1cb58db29e2714b15f9fa14e4d7/LICENSE",
+      "sha256": "17510cf7a58b4879b887ec05a45d72cf1b73544dd9ec7e72f20110ed104229ee",
+      "bytes": 25185,
+      "file": "icu/LICENSE",
+      "relationship": "FoundationICU vendored uvernum.h identifies ICU74.1.0; includes original Unicode/ICU and third-party notices."
+    },
+    {
+      "repository": "apple-oss-distributions/ICU",
+      "tag": "ICU-74000.403",
+      "revision": "c9f69cae28475b0a32288a48fe223d07b1be4fd3",
+      "source_path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/ICU/c9f69cae28475b0a32288a48fe223d07b1be4fd3/LICENSE",
+      "sha256": "92841ff27a1b2d1030b00e0958af4d1f70353ff42c5dad7041f1950e909ccc5e",
+      "bytes": 22559,
+      "file": "apple-icu/LICENSE",
+      "relationship": "Supplemental Apple ICU74 distribution notices. FoundationICU README identifies Apple OSS ICU extraction, but its exact Apple extraction tag is not established by this notice record."
+    }
+  ]
+}
