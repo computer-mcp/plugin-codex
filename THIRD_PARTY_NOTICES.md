@@ -4,7 +4,7 @@ The adapter retains the Computer MCP source-visible license for extracted and
 original integration code. Moving that code into this repository does not
 change its ownership or grant additional distribution rights.
 
-The official MCP Swift SDK and swift-codex are MIT-licensed. Swift Subprocess
+The MCP Swift SDK transport fork and swift-codex are MIT-licensed. Swift Subprocess
 and other Swift dependencies retain their own upstream licenses. The packaging
 script copies license and notice files from each pinned SwiftPM checkout into
 `ThirdPartyNotices/`, together with the unchanged `Package.resolved`. This is a

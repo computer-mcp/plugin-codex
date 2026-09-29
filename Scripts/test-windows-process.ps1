@@ -10,6 +10,12 @@ $sdkRevision = git -C $sdk rev-parse HEAD
 if ($LASTEXITCODE -ne 0 -or $sdkRevision -cnotmatch '^[0-9a-f]{40}$') { throw 'Cannot identify SDK source' }
 git -C $sdk diff --quiet HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Native process tests require an unchanged committed SDK candidate' }
+$shippingLock = Get-Content (Join-Path $repository 'Package.resolved') -Raw | ConvertFrom-Json
+$sdkPin = @($shippingLock.pins | Where-Object { $_.identity -eq 'swift-codex' })
+if ($sdkPin.Count -ne 1 -or $sdkPin[0].state.revision -ne $sdkRevision -or
+    $sdkPin[0].location -ne 'https://github.com/swift-library/swift-codex.git') {
+    throw 'Native process tests require the shipping SDK revision'
+}
 $adapterRevision = git -C $repository rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify adapter source' }
 if (Test-Path $OutputDirectory) { throw 'Native process tests require a fresh output directory' }

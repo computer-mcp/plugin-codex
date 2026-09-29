@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       windows_sdk_revision:
-        description: 'Exact swift-codex candidate commit for the isolated Windows source audit; empty runs normal packaging'
+        description: 'Expected locked swift-codex commit for Windows checks; empty runs macOS packaging'
         required: false
         type: string
       windows_validation_scope:
@@ -181,7 +181,7 @@ jobs:
         with:
           swift-version: swift-6.2.3-release
           swift-build: 6.2.3-RELEASE
-      - name: Test inherited host pipes with the complete MCP candidate
+      - name: Test inherited host pipes with the shipping MCP dependency
         shell: pwsh
         run: ./Scripts/test-windows-host-mcp.ps1 -SDKPath .build/windows-host-sdk -OutputDirectory .build/windows-host-mcp
       - name: Preserve native host MCP acceptance

@@ -1,8 +1,8 @@
 {
   "codexVersion": "0.154.0",
   "sdk": {
-    "version": "0.3.0",
-    "revision": "bb4784476fd1b1322a658d2e8b030e2196e0fe7c"
+    "version": "0.4.0",
+    "revision": "73442b99c198b6465a308d8c8d6b9498f6154834"
   },
   "upstream": {
     "tag": "rust-v0.154.0",

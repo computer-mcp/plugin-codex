@@ -6,6 +6,11 @@ hashes, and runs help, version and the standard MCP protocol check. The native
 Codex release archive is pinned by checksum and used only in the disposable
 candidate; it is neither installed nor included in the plugin payload.
 
+The audit uses the adapter's shipping dependency graph. The requested SDK
+revision must equal the lock; resolved SDK/MCP checkout identities and the
+unchanged shipping lock are verified before building. No editable dependency
+override is part of this acceptance.
+
 `ProtocolCheck.py` uses the existing workflow's standard MCP client with two
 successive adapter connections, isolated homes and no inherited credentials.
 It verifies catalog/resource discovery, database availability, real App Server

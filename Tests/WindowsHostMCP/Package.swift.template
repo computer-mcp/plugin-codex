@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
   name: "WindowsHostMCPValidation",
   dependencies: [
-    .package(name: "swift-sdk", path: "__MCP_PATH__"),
+    .package(url: "__MCP_URL__", exact: "__MCP_VERSION__"),
     .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.1"),
     .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
   ],

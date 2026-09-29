@@ -12,6 +12,16 @@ git -C $sdk diff --quiet HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Host MCP tests require an unchanged committed SDK candidate' }
 $adapterRevision = git -C $repository rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify adapter source' }
+$shippingPath = Join-Path $repository 'Package.resolved'
+$shippingHash = (Get-FileHash $shippingPath -Algorithm SHA256).Hash
+$shippingLock = Get-Content $shippingPath -Raw | ConvertFrom-Json
+$sdkPin = @($shippingLock.pins | Where-Object { $_.identity -eq 'swift-codex' })
+$mcpPin = @($shippingLock.pins | Where-Object { $_.identity -eq 'swift-sdk' })
+if ($sdkPin.Count -ne 1 -or $sdkPin[0].state.revision -ne $sdkRevision -or
+    $mcpPin.Count -ne 1 -or $mcpPin[0].location -ne 'https://github.com/computer-mcp/swift-sdk.git' -or
+    $mcpPin[0].state.version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+    throw 'Host MCP checks require the shipping dependency identities'
+}
 if (Test-Path $OutputDirectory) { throw 'Host MCP tests require a fresh output directory' }
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
 $root = (Resolve-Path $OutputDirectory).Path
@@ -21,29 +31,25 @@ $sources = Join-Path $consumer 'Sources/HostPipe'
 $tests = Join-Path $consumer 'Tests/HostPipeTests'
 $childSources = Join-Path $consumer 'Sources/HostPipeFixture'
 New-Item -ItemType Directory -Path $evidence, $sources, $tests, $childSources | Out-Null
-$candidateDirectory = Join-Path $sdk 'Tests/DependencyCandidates/MCPTransport'
-$metadata = Get-Content (Join-Path $candidateDirectory 'upstream.json') -Raw | ConvertFrom-Json
-$patch = Join-Path $candidateDirectory 'windows-transports.patch'
-if ((Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant() -ne $metadata.patchSHA256) {
-    throw 'MCP candidate checksum mismatch'
-}
-$mcp = Join-Path $root 'swift-sdk'
-git -c core.autocrlf=false clone --no-checkout $metadata.repository $mcp
-if ($LASTEXITCODE -ne 0) { throw 'MCP source clone failed' }
-git -C $mcp checkout --detach $metadata.revision
-if ($LASTEXITCODE -ne 0) { throw 'MCP source checkout failed' }
-$actualMCP = git -C $mcp rev-parse HEAD
-if ($LASTEXITCODE -ne 0 -or $actualMCP -ne $metadata.revision) { throw 'MCP source revision mismatch' }
-git -C $mcp apply --check $patch
-if ($LASTEXITCODE -ne 0) { throw 'MCP patch does not apply' }
-git -C $mcp apply $patch
-if ($LASTEXITCODE -ne 0) { throw 'MCP patch application failed' }
-Copy-Item $patch $evidence
-
 $fixture = Join-Path $repository 'Tests/WindowsHostMCP'
 $manifest = (Get-Content (Join-Path $fixture 'Package.swift.template') -Raw).Replace(
-    '__MCP_PATH__', $mcp.Replace('\', '/').Replace('"', '\"'))
+    '__MCP_URL__', $mcpPin[0].location).Replace('__MCP_VERSION__', $mcpPin[0].state.version)
 $manifest | Set-Content (Join-Path $consumer 'Package.swift')
+Copy-Item $shippingPath (Join-Path $consumer 'Package.resolved')
+Copy-Item $shippingPath (Join-Path $evidence 'shipping-Package.resolved')
+swift package --package-path $consumer resolve *> (Join-Path $evidence 'resolve.log')
+if ($LASTEXITCODE -ne 0) { throw 'Host MCP consumer resolution failed' }
+$consumerLock = Get-Content (Join-Path $consumer 'Package.resolved') -Raw | ConvertFrom-Json
+foreach ($pin in $consumerLock.pins) {
+    $expected = @($shippingLock.pins | Where-Object { $_.identity -eq $pin.identity })
+    if ($expected.Count -ne 1 -or $pin.location -ne $expected[0].location -or
+        $pin.state.revision -ne $expected[0].state.revision -or $pin.state.version -ne $expected[0].state.version) {
+        throw "Host MCP consumer differs from shipping dependency: $($pin.identity)"
+    }
+}
+if (@($consumerLock.pins | Where-Object { $_.identity -eq 'swift-sdk' }).Count -ne 1) {
+    throw 'Host MCP consumer did not resolve the shipping MCP dependency'
+}
 Copy-Item (Join-Path $fixture 'HostPipeTests.swift') $tests
 Copy-Item (Join-Path $fixture 'HostPipeFixture.swift') $childSources
 Copy-Item (Join-Path $fixture 'HostProcess') (Join-Path $consumer 'Sources/HostProcess') -Recurse
@@ -60,7 +66,8 @@ if ((Get-FileHash $copy -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceHa
 [pscustomobject]@{
     adapterRevision = $adapterRevision
     sdkRevision = $sdkRevision
-    mcpCandidate = $metadata
+    mcpDependency = $mcpPin[0]
+    shippingLockSHA256 = $shippingHash.ToLowerInvariant()
     source = 'Sources/CodexAdapter/MCPInheritedPipeTransport.swift'
     sourceSHA256 = $sourceHash
     evidenceClass = 'native-inherited-host-mcp-transport'
@@ -87,7 +94,7 @@ try {
     $env:PATH = "$testing;$xctest;$originalPath"
     foreach ($configuration in @('debug', 'release')) {
         $buildLog = Join-Path $evidence "$configuration-fixture.log"
-        swift build --package-path $consumer --product HostPipeFixture -c $configuration *> $buildLog
+        swift build --package-path $consumer --product HostPipeFixture -c $configuration --disable-automatic-resolution *> $buildLog
         $fixtureCode = $LASTEXITCODE
         if ($fixtureCode -ne 0) {
             Get-Content $buildLog -Tail 60
@@ -100,7 +107,7 @@ try {
         $env:HOST_PIPE_FIXTURE_PATH = Join-Path ($binaryPath | Select-Object -Last 1) 'HostPipeFixture.exe'
         if (!(Test-Path $env:HOST_PIPE_FIXTURE_PATH -PathType Leaf)) { throw 'Native child executable is missing' }
         $log = Join-Path $evidence "$configuration-tests.log"
-        swift test --package-path $consumer --no-parallel -c $configuration -Xswiftc -enable-testing *> $log
+        swift test --package-path $consumer --no-parallel -c $configuration --disable-automatic-resolution -Xswiftc -enable-testing *> $log
         $code = $LASTEXITCODE
         Get-Content $log -Tail 60
         $results += [pscustomobject]@{ configuration = $configuration; fixtureExitCode = $fixtureCode; testExitCode = $code }
@@ -113,3 +120,6 @@ try {
     if (Test-Path $lock) { Copy-Item $lock $evidence }
 }
 if ($results.Where({ $_.testExitCode -ne 0 }).Count -gt 0) { exit 1 }
+if ((Get-FileHash $shippingPath -Algorithm SHA256).Hash -ne $shippingHash) {
+    throw 'Shipping dependency lock changed during host MCP acceptance'
+}

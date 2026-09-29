@@ -10,7 +10,7 @@ dependency.
 
 | Package | Responsibility |
 | --- | --- |
-| Official MCP Swift SDK 0.12.1 | Standard northbound MCP transport, tools and results |
+| `computer-mcp/swift-sdk` transport fork | Standard northbound MCP transport, tools and results; native Windows stdio and complete POSIX frame writes |
 | swift-codex | App Server client and Exec client, each with its own lifecycle |
 | swift-subprocess 0.4.0 | Existing process infrastructure dependency |
 | swift-argument-parser 1.8.2 | Named options, schema-comparison subcommand, validation and generated CLI help |

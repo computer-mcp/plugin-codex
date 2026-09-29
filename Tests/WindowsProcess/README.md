@@ -2,7 +2,8 @@
 
 `Scripts/test-windows-process.ps1 -SDKPath SDK_CHECKOUT -OutputDirectory OUTPUT`
 stages the exact production Windows process source and records its hashes. It
-uses the complete swift-codex checkout and that SDK's native process fixture.
+uses the complete swift-codex checkout matching the shipping lock and that SDK's
+native process fixture.
 Run it on Windows with the selected Swift toolchain. The output directory must
 be new; the script restores its temporary environment settings. Native filesystem
 sources are typechecked before SDK fixture builds so WinSDK import failures

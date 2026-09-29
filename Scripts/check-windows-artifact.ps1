@@ -26,7 +26,7 @@ gh run download $SourceRun --repo $env:GITHUB_REPOSITORY --name $name --dir $dow
 if ($LASTEXITCODE -ne 0) { throw 'Cannot download selected source artifact' }
 $inputs = Get-Content (Join-Path $download 'inputs.json') -Raw | ConvertFrom-Json
 $link = Get-Content (Join-Path $download 'linked-product-results.json') -Raw | ConvertFrom-Json
-if ($inputs.adapterRevision -ne $run.head_sha -or $inputs.sdkCandidateRevision -ne $SDKRevision -or
+if ($inputs.adapterRevision -ne $run.head_sha -or $inputs.sdkRevision -ne $SDKRevision -or
     !$inputs.completeAdapter -or $link.linkExitCode -ne 0) {
     throw 'Artifact does not bind the requested complete linked adapter and SDK'
 }
