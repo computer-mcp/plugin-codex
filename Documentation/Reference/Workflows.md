@@ -70,7 +70,7 @@ The configured executable can be an absolute path, a path relative to the
 workspace, or a name on the child process PATH. Resolution and launch share the
 same environment. Missing programs fail explicitly without loading shell profiles.
 
-Exec event reads acceptExec event reads accept `after_cursor` (default 0) and `max_results`
+Exec event reads accept `after_cursor` (default 0) and `max_results`
 (default 100, range 1–1000). Bounded event history reports missed rows; clients
 must not treat an evicted cursor as a complete history.
 
@@ -78,6 +78,11 @@ Successful results preserve the existing JSON text and
 `structuredContent.result` envelope. Tool execution and argument errors return
 `isError: true`; unknown tools are MCP protocol errors. Inspect actual catalog
 schemas for the complete input contract.
+
+Retained events and approval records redact credentials before storage. Known
+native token-usage and Goal counters preserve their integer or null values.
+Usage containers still receive recursive credential redaction; a string in a
+counter field is not treated as a public measurement.
 
 Host permissions are checked on each invocation, including callbacks.
 MCP disconnection shuts down each owned provider. Finish or cancel active work
