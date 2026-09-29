@@ -11,8 +11,8 @@ let package = Package(
     .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.1"),
     .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1"),
     .package(url: "https://github.com/apple/swift-argument-parser", exact: "1.8.2"),
-    .package(url: "https://github.com/computer-mcp/swift-sdk.git", exact: "0.13.0-computer-mcp.1"),
-    .package(url: "https://github.com/swift-library/swift-codex.git", exact: "0.4.0"),
+    .package(url: "https://github.com/computer-mcp/swift-sdk.git", exact: "0.13.1-computer-mcp.1"),
+    .package(url: "https://github.com/swift-library/swift-codex.git", exact: "0.4.1"),
     .package(url: "https://github.com/swiftlang/swift-subprocess.git", exact: "0.4.0"),
   ],
   targets: [
