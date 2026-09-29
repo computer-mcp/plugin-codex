@@ -43,7 +43,8 @@ On macOS, building requires macOS 14 or newer and Swift 6.2 or newer.
 Run `swift build` and `swift test`. Windows x86_64 packaging uses Swift 6.2.3,
 PowerShell and the pinned SQLite build described in
 [Installation](Documentation/Reference/Installation.md). The Windows adapter
-serves standard MCP over stdio; it does not provide a Windows host GUI. Launch
+serves standard MCP over stdio and requires the user-installed official
+Microsoft Visual C++ v14 x64 runtime. It does not provide a Windows host GUI. Launch
 `.build/debug/codex-mcp-adapter` through an MCP stdio client, never as an
 unbounded unattended shell command. `--help` prints usage without serving.
 

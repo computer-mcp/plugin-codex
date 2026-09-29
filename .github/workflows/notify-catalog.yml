@@ -5,8 +5,8 @@ on:
   workflow_dispatch:
   workflow_call:
     secrets:
-      CATALOG_DISPATCH_TOKEN:
-        description: Existing receiver-scoped Actions write authority
+      CATALOG_APP_PRIVATE_KEY:
+        description: Private key of the receiver-scoped catalog GitHub App
         required: true
     outputs:
       run_url:
@@ -23,6 +23,7 @@ jobs:
     steps:
       - name: Request complete catalog reconciliation
         id: catalog
-        uses: computer-mcp/computer-mcp.github.io/.github/actions/notify-catalog@fc27dd0f370d028a3e5021e3585274891f696578
+        uses: computer-mcp/computer-mcp.github.io/.github/actions/notify-catalog@50298a84b08afdbc2642f4c765cce7c7dccf81e0
         with:
-          token: ${{ secrets.CATALOG_DISPATCH_TOKEN }}
+          client-id: ${{ vars.CATALOG_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}

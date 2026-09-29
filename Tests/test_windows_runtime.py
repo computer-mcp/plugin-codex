@@ -1,6 +1,8 @@
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
+import struct
 import unittest
 from unittest.mock import patch
 
@@ -30,7 +32,8 @@ class WindowsRuntimeTests(unittest.TestCase):
                 "swiftCore.dll": ["Foundation.dll", "KERNEL32.dll"],
                 "VCRUNTIME140.dll": ["api-ms-win-crt-runtime-l1-1-0.dll"],
             }
-            with patch.object(runtime, "imports", side_effect=lambda path, _: ("x86_64", graph[path.name])):
+            with patch.object(runtime, "imports", side_effect=lambda path, _: ("x86_64", graph[path.name])), \
+                    patch.object(runtime, "file_version", return_value="14.44.35211.0"):
                 report = runtime.audit(executable, [libraries], system, Path("inspector"))
             rows = {row["name"]: row for row in report["libraries"]}
             self.assertEqual(len(rows), 5)
@@ -38,6 +41,58 @@ class WindowsRuntimeTests(unittest.TestCase):
             self.assertEqual(rows["VCRUNTIME140.dll"]["role"], "external-msvc-runtime")
             self.assertEqual(rows["KERNEL32.dll"]["role"], "windows-system")
             self.assertFalse(report["relocation_verified"])
+
+    def test_microsoft_runtime_remains_external_when_found_in_toolchain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "VCRUNTIME140.dll"
+            source.write_bytes(b"toolchain")
+            self.assertEqual(runtime.resolve(source.name, [{source.name.lower(): source}], {}),
+                             ("external-msvc-runtime", source))
+
+    def test_prerequisites_reject_missing_old_wrong_architecture_and_bundled_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package, system = root / "package", root / "system"
+            package.mkdir()
+            system.mkdir()
+            def pe(path, machine):
+                header = bytearray(64)
+                header[:2] = b"MZ"
+                struct.pack_into("<I", header, 60, 64)
+                path.write_bytes(header + b"PE\0\0" + struct.pack("<H", machine))
+            executable = package / "adapter.exe"
+            pe(executable, 0x8664)
+            requirement = [{"name": "VCRUNTIME140.dll", "minimum_version": "14.44.35211.0"}]
+            with self.assertRaisesRegex(ValueError, "missing vcruntime"):
+                runtime.verify_prerequisites(executable, system, requirement)
+            dll = system / "VCRUNTIME140.dll"
+            pe(dll, 0xAA64)
+            with self.assertRaisesRegex(ValueError, "architecture mismatch"):
+                runtime.verify_prerequisites(executable, system, requirement)
+            pe(dll, 0x8664)
+            with patch.object(runtime, "file_version", return_value="14.43.35211.0"):
+                with self.assertRaisesRegex(ValueError, "Update the official"):
+                    runtime.verify_prerequisites(executable, system, requirement)
+            with patch.object(runtime, "file_version", return_value="14.44.35211.1"):
+                rows = runtime.verify_prerequisites(executable, system, requirement)
+            self.assertEqual(rows[0]["sha256"], runtime.digest(dll))
+            swift = package / "swiftCore.dll"
+            swift.write_bytes(b"swift")
+            observed = runtime.verify_app_local_modules([executable, swift, dll], executable, system, rows)
+            self.assertEqual(observed[-1]["role"], "external-msvc-runtime")
+            with self.assertRaisesRegex(ValueError, "unverified Microsoft"):
+                runtime.verify_app_local_modules([swift, dll], executable, system)
+            (package / dll.name).write_bytes(dll.read_bytes())
+            with self.assertRaisesRegex(ValueError, "not bundled"):
+                runtime.verify_prerequisites(executable, system, requirement)
+            with self.assertRaisesRegex(ValueError, "not bundled"):
+                runtime.verify_app_local_modules([swift, dll], executable, system, rows)
+
+    @unittest.skipUnless(os.name == "nt", "Native version resource requires Windows")
+    def test_native_version_resource_and_pe_architecture(self):
+        path = Path(os.environ["SystemRoot"]) / "System32/kernel32.dll"
+        self.assertIn(runtime.pe_architecture(path), {"x86_64", "aarch64"})
+        self.assertEqual(len(runtime.version_tuple(runtime.file_version(path))), 4)
 
     def test_conflicting_runtime_versions_and_missing_imports_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:

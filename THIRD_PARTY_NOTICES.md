@@ -24,10 +24,12 @@ binds those texts to upstream commits and maps runtime libraries to notices.
 public-domain statement and the pinned source identity. The package receipt
 separately binds the selected runtime DLLs and compiled SQLite library.
 
-Microsoft Visual C++ runtime files retain their separate Microsoft redistribution
-terms. The applicable publisher license must permit redistribution; their
-presence in the Swift toolchain does not establish that permission. See the
-[Microsoft redistribution guidance](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170).
+The Microsoft Visual C++ runtime is a user-installed prerequisite, supplied by
+Microsoft's official installer. The plugin archive carries the Swift/open-source
+runtime closure and records external Microsoft runtime requirements in its receipt.
+The upstream provenance mapping includes Microsoft entries for identification;
+those entries are not a bundled-file inventory. See the
+[official runtime downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170).
 
 An ad-hoc signature and checksum support local integrity checks. They do not
 establish official publisher provenance, Developer ID signing, notarization, or

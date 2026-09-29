@@ -3,7 +3,15 @@
 On macOS the package owns `bin/codex-mcp-adapter` and its adjacent
 `codex-plugin_CodexAdapter.bundle`. On Windows it owns
 `bin/codex-mcp-adapter.exe`, `codex-plugin_CodexAdapter.resources` and the required
-runtime DLLs in `bin/`. Codex itself remains an external dependency.
+Swift/open-source runtime DLLs in `bin/`. Codex itself remains an external dependency.
+
+Before launching on Windows x86_64, install the latest supported
+[Microsoft Visual C++ v14 x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)
+from Microsoft. The plugin does not include Microsoft runtime DLLs or install
+the redistributable. Its release receipt records the minimum tested version for
+each imported Microsoft DLL under `windows_runtime.external_prerequisites`.
+If Windows reports a missing `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` or
+`MSVCP140.dll`, install or update that official x64 package before retrying.
 Installing this package never installs, updates or removes Codex, changes global
 PATH, or grants a profile access to tools.
 
@@ -38,7 +46,8 @@ builds SQLite from the checksummed source in `Scripts/windows-sqlite.json`,
 verifies its required features, and passes the resulting headers and static
 library to SwiftPM. It copies the recursively inspected Swift runtime DLLs
 beside the adapter and verifies their architecture and notice coverage. The
-Windows receipt records each DLL's source digest and the SQLite build identity.
+Windows receipt records each bundled DLL's source digest, the imported Microsoft
+runtime version floors and the SQLite build identity.
 See [third-party components](../../THIRD_PARTY_NOTICES.md) for distribution terms.
 
 Package inputs must be regular files and directories. Symbolic links and special
@@ -53,7 +62,9 @@ and manual dispatch. It checks formatting, tests and the dependency lock, then
 retains both native ZIPs and receipts as downloadable workflow artifacts. A
 separate Windows job installs no Swift toolchain, relocates the exact ZIP and
 runs the adapter with system-only child PATH. It records actual loaded module
-paths and digests, MCP discovery, reconnect and joined native process cleanup.
+paths and digests, verifies the system-installed Microsoft runtime architecture
+and versions against the receipt, and checks MCP discovery, reconnect and joined
+native process cleanup.
 Hosted runners can contain preinstalled software; this gate does not claim a
 pristine Windows installation or authenticated model execution. These outputs
 are validation builds, not published or verified official releases.
