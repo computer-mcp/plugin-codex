@@ -36,7 +36,10 @@ installed-gateway checks against the exact adapter bytes.
 Accept the complete host/plugin/SDK combination before delivery. Create a formal
 signed tag only for the accepted commit; `upload-release.yml` promotes the
 already-built artifact from its verified source run into the matching draft.
-The upload also verifies the archive's manifest against the formal tag.
+The upload verifies every platform archive's inventory and manifest against the
+formal tag before uploading any asset. It promotes both declared native archives
+and their receipts from the same successful source run without rebuilding.
+An already uploaded asset must have the same digest; conflicting bytes fail.
 Candidate retries keep the intended product version and use a new run identity.
 A public tag and archive remain immutable. Only changed components are released.
 See [Installation](../Reference/Installation.md) for packaging, installation,

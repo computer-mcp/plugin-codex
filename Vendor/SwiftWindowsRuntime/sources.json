@@ -115,5 +115,125 @@
       "file": "apple-icu/LICENSE",
       "relationship": "Supplemental Apple ICU74 distribution notices. FoundationICU README identifies Apple OSS ICU extraction, but its exact Apple extraction tag is not established by this notice record."
     }
-  ]
+  ],
+  "runtime_libraries": {
+    "swiftcore.dll": {
+      "sources": [
+        "swift/LICENSE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "swift_concurrency.dll": {
+      "sources": [
+        "swift/LICENSE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "swiftsynchronization.dll": {
+      "sources": [
+        "swift/LICENSE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "swiftwinsdk.dll": {
+      "sources": [
+        "swift/LICENSE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "swiftcrt.dll": {
+      "sources": [
+        "swift/LICENSE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "foundation.dll": {
+      "sources": [
+        "swift-corelibs-foundation/LICENSE"
+      ],
+      "license_scope": "open-source"
+    },
+    "foundationessentials.dll": {
+      "sources": [
+        "swift-foundation/LICENSE.md",
+        "swift-foundation/NOTICE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "foundationinternationalization.dll": {
+      "sources": [
+        "swift-foundation/LICENSE.md",
+        "swift-foundation/NOTICE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "foundationnetworking.dll": {
+      "sources": [
+        "swift-corelibs-foundation/LICENSE",
+        "curl/COPYING",
+        "zlib/LICENSE"
+      ],
+      "license_scope": "open-source"
+    },
+    "dispatch.dll": {
+      "sources": [
+        "swift-corelibs-libdispatch/LICENSE"
+      ],
+      "license_scope": "open-source"
+    },
+    "blocksruntime.dll": {
+      "sources": [
+        "swift-corelibs-libdispatch/LICENSE"
+      ],
+      "license_scope": "open-source"
+    },
+    "swiftdispatch.dll": {
+      "sources": [
+        "swift/LICENSE.txt",
+        "swift-corelibs-libdispatch/LICENSE"
+      ],
+      "license_scope": "open-source"
+    },
+    "swift_regexparser.dll": {
+      "sources": [
+        "swift-experimental-string-processing/LICENSE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "swift_stringprocessing.dll": {
+      "sources": [
+        "swift-experimental-string-processing/LICENSE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "swiftregexbuilder.dll": {
+      "sources": [
+        "swift-experimental-string-processing/LICENSE.txt"
+      ],
+      "license_scope": "open-source"
+    },
+    "_foundationicu.dll": {
+      "sources": [
+        "swift-foundation-icu/LICENSE.md",
+        "icu/LICENSE",
+        "apple-icu/LICENSE"
+      ],
+      "license_scope": "open-source"
+    },
+    "msvcp140.dll": {
+      "sources": [],
+      "license_scope": "Microsoft Visual C++ Redistributable",
+      "redistribution_reference": "https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170"
+    },
+    "vcruntime140.dll": {
+      "sources": [],
+      "license_scope": "Microsoft Visual C++ Redistributable",
+      "redistribution_reference": "https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170"
+    },
+    "vcruntime140_1.dll": {
+      "sources": [],
+      "license_scope": "Microsoft Visual C++ Redistributable",
+      "redistribution_reference": "https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170"
+    }
+  }
 }

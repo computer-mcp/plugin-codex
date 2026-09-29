@@ -9,9 +9,11 @@ import unittest
 class ProtocolCheckoutTests(unittest.TestCase):
     def test_windows_checkout_preserves_hash_bound_resource_bytes(self):
         repository = Path(__file__).resolve().parents[1]
-        relative = Path('Sources/CodexAdapter/Resources/Protocol')
+        relatives = [Path('Sources/CodexAdapter/Resources/Protocol'), Path('Vendor/SwiftWindowsRuntime')]
         originals = {path.relative_to(repository): path.read_bytes()
-                     for path in (repository / relative).rglob('*') if path.is_file()}
+                     for relative in relatives for path in (repository / relative).rglob('*') if path.is_file()}
+        manifest = Path('computer-mcp-plugin.toml')
+        originals[manifest] = (repository / manifest).read_bytes()
         self.assertTrue(originals)
         with tempfile.TemporaryDirectory(prefix='protocol-checkout-') as directory:
             root = Path(directory)
@@ -28,7 +30,7 @@ class ProtocolCheckoutTests(unittest.TestCase):
                 subprocess.run(['git', '-c', 'core.autocrlf=true', *arguments], cwd=index_root,
                                check=True, capture_output=True)
             git('init', '--quiet')
-            git('add', '--', '.gitattributes', relative.as_posix())
+            git('add', '--', '.gitattributes', manifest.as_posix(), *(relative.as_posix() for relative in relatives))
             git('checkout-index', '--all', '--prefix=' + str(checkout) + os.sep)
             for path, expected in originals.items():
                 with self.subTest(resource=path.as_posix()):

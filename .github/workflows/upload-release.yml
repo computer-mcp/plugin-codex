@@ -1,4 +1,4 @@
-name: Upload verified release archive
+name: Upload verified release archives
 on:
   workflow_dispatch:
     inputs:
@@ -25,7 +25,8 @@ jobs:
       SOURCE_RUN: ${{ inputs.source_run }}
       RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
-      - name: Verify source and draft, then upload the existing archive
+      - name: Verify accepted source and commit-bound draft
+        id: source
         shell: bash
         run: |
           set -euo pipefail
@@ -50,31 +51,60 @@ jobs:
             then .[0] else error("Expected one commit-bound draft release") end
           ' releases.json > release.json
           release_id=$(jq -r .id release.json)
-          gh run download "$SOURCE_RUN" --name "codex-plugin-ARM64-$source_sha" --dir artifact
-          cd artifact
-          expected=$(jq -r .archive_sha256 receipt.json)
-          [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
-          printf '%s  codex-plugin.zip\n' "$expected" | sha256sum --check --strict
-          unzip -t codex-plugin.zip
-          python3 - <<'PY'
-          import os, tomllib, zipfile
-          with zipfile.ZipFile("codex-plugin.zip") as archive:
-              manifest = tomllib.loads(archive.read("computer-mcp-plugin.toml").decode())
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+      - name: Verify and promote every declared native archive
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          RELEASE_ID: ${{ steps.source.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import json, os, re, tomllib
+          from pathlib import Path
+          manifest = tomllib.loads(Path("computer-mcp-plugin.toml").read_text())
           if manifest["id"] != "codex" or "v" + manifest["version"] != os.environ["RELEASE_TAG"]:
               raise SystemExit("Release tag does not match the accepted plugin manifest")
-          PY
-          gh api "repos/$GH_REPO/releases/$release_id/assets" > assets.json
-          existing=$(jq -r '.[] | select(.name == "codex-plugin.zip") | .id' assets.json)
-          if [[ -n "$existing" ]]; then
-            jq -e --argjson id "$existing" --arg digest "sha256:$expected" '
-              .[] | select(.id == $id) |
-              .state == "starter" or (.state == "uploaded" and .digest == $digest)
-            ' assets.json > /dev/null
-            if jq -e --argjson id "$existing" '.[] | select(.id == $id) | .state == "uploaded"' assets.json > /dev/null; then
-              exit 0
+          names = [item["name"] for item in manifest["compatibility"]["artifacts"]]
+          if not names or len(set(names)) != len(names) or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.zip", name) for name in names):
+              raise SystemExit("Expected unique declared native archives")
+          Path("archive-names.json").write_text(json.dumps(names))
+          PYTHON
+          while IFS= read -r archive; do
+            name=${archive%.zip}
+            gh run download "$SOURCE_RUN" --name "$name-$SOURCE_SHA" --dir "artifacts/$name"
+            python3 Scripts/check-package.py --archive "artifacts/$name/$archive" --receipt "artifacts/$name/receipt.json" > "artifacts/$name/verification.json"
+          done < <(jq -r '.[]' archive-names.json)
+          # Upload only after every declared archive passes its exact source-bound check.
+          upload_asset() {
+            local file=$1 name=$2 content_type=$3 expected existing
+            expected=$(sha256sum "$file" | cut -d' ' -f1)
+            gh api --paginate "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" --slurp | jq 'add' > assets.json
+            existing=$(jq -er --arg name "$name" '[.[] | select(.name == $name)] | if length <= 1 then (.[0].id // "") else error("Duplicate release asset") end' assets.json)
+            if [[ -n "$existing" ]]; then
+              jq -e --argjson id "$existing" --arg digest "sha256:$expected" '
+                .[] | select(.id == $id) |
+                .state == "starter" or (.state == "uploaded" and .digest == $digest)
+              ' assets.json > /dev/null
+              if jq -e --argjson id "$existing" '.[] | select(.id == $id) | .state == "uploaded"' assets.json > /dev/null; then
+                return
+              fi
+              gh api "repos/$GH_REPO/releases/$RELEASE_ID" | jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_SHA" '.draft and .tag_name == $tag and .target_commitish == $sha' > /dev/null
+              gh api --method DELETE "repos/$GH_REPO/releases/assets/$existing"
             fi
-            gh api --method DELETE "repos/$GH_REPO/releases/assets/$existing"
-          fi
-          gh api --method POST "https://uploads.github.com/repos/$GH_REPO/releases/$release_id/assets?name=codex-plugin.zip" \
-            --input codex-plugin.zip -H 'Content-Type: application/zip' > uploaded.json
-          jq -e --arg digest "sha256:$expected" '.state == "uploaded" and .digest == $digest' uploaded.json > /dev/null
+            # Re-read immediately before upload; published releases are immutable.
+            gh api "repos/$GH_REPO/releases/$RELEASE_ID" | jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_SHA" '.draft and .tag_name == $tag and .target_commitish == $sha' > /dev/null
+            gh api --method POST "https://uploads.github.com/repos/$GH_REPO/releases/$RELEASE_ID/assets?name=$name" \
+              --input "$file" -H "Content-Type: $content_type" > uploaded.json
+            jq -e --arg digest "sha256:$expected" '.state == "uploaded" and .digest == $digest' uploaded.json > /dev/null
+          }
+          while IFS= read -r archive; do
+            name=${archive%.zip}
+            upload_asset "artifacts/$name/$archive" "$archive" application/zip
+            upload_asset "artifacts/$name/receipt.json" "$name.receipt.json" application/json
+          done < <(jq -r '.[]' archive-names.json)

@@ -6,8 +6,20 @@ description = 'Codex execution and protocol inspection through standard MCP.'
 [[mcp]]
 id = 'app-server'
 transport = 'stdio'
-executable = { path = 'bin/codex-mcp-adapter' }
+executable = { platform_paths = { macos = 'bin/codex-mcp-adapter', windows = 'bin/codex-mcp-adapter.exe' } }
 capabilities = ['tools']
 
 [compatibility]
+minimum_host = '1.3.0'
+platforms = ['macos', 'windows']
+architectures = ['arm64', 'x86_64']
+
+[[compatibility.artifacts]]
+name = 'codex-plugin-macos-arm64.zip'
+platforms = ['macos']
 architectures = ['arm64']
+
+[[compatibility.artifacts]]
+name = 'codex-plugin-windows-x86_64.zip'
+platforms = ['windows']
+architectures = ['x86_64']

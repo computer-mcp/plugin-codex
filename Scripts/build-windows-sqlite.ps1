@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$OutputDirectory)
+param([Parameter(Mandatory = $true)][string]$OutputDirectory, [switch]$AsJSON)
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'SQLite Windows input requires a native Windows toolchain' }
@@ -53,4 +53,5 @@ $receipt = [pscustomobject]@{
     verification = (Get-Content (Join-Path $root 'verify.json') -Raw | ConvertFrom-Json)
 }
 $receipt | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $root 'receipt.json')
-[pscustomobject]@{ includeDirectory = $include; libraryDirectory = $root; receipt = $receipt }
+$result = [pscustomobject]@{ includeDirectory = $include; libraryDirectory = $root; receipt = $receipt }
+if ($AsJSON) { $result | ConvertTo-Json -Depth 10 } else { $result }

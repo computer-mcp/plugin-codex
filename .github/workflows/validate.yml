@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       windows_sdk_revision:
-        description: 'Expected locked swift-codex commit for Windows checks; empty runs macOS packaging'
+        description: 'Expected locked swift-codex commit for focused Windows checks; empty runs native packaging on both platforms'
         required: false
         type: string
       windows_validation_scope:
@@ -78,15 +78,94 @@ jobs:
       - name: Validate package ownership and publication
         run: python3 -m unittest discover -s Tests -p 'test_*.py' -v
       - name: Build relocatable adapter and receipt
-        run: python3 Scripts/package.py --output dist --configuration release
+        run: |
+          python3 Scripts/package.py --output dist --configuration release
+          python3 Scripts/check-package.py --archive dist/codex-plugin-macos-arm64.zip --receipt dist/receipt.json --destination .build/accepted-package
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: codex-plugin-${{ runner.arch }}-${{ github.sha }}
+          name: codex-plugin-macos-arm64-${{ github.sha }}
           path: |
-            dist/codex-plugin.zip
+            dist/codex-plugin-macos-arm64.zip
             dist/receipt.json
           if-no-files-found: error
           retention-days: 14
+
+  windows-package:
+    if: ${{ inputs.windows_sdk_revision == '' }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057
+        with:
+          swift-version: swift-6.2.3-release
+          swift-build: 6.2.3-RELEASE
+      - name: Validate native package ownership and inputs
+        shell: pwsh
+        run: |
+          python Scripts/version.py check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($pattern in @('test_package*.py', 'test_windows*.py', 'test_protocol*.py', 'test_version.py')) {
+            python -m unittest discover -s Tests -p $pattern -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          swift package resolve
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- Package.resolved
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the native archive and runtime receipt
+        shell: pwsh
+        run: |
+          python Scripts/package.py --output dist --configuration release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- Package.resolved computer-mcp-plugin.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-x86_64-${{ github.sha }}
+          path: |
+            dist/codex-plugin-windows-x86_64.zip
+            dist/receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-package-acceptance:
+    needs: windows-package
+    runs-on: windows-2022
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - name: Download the exact package from this run
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name "codex-plugin-windows-x86_64-$env:GITHUB_SHA" --dir accepted-artifact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check relocated package with app-local runtime
+        shell: pwsh
+        run: ./Scripts/check-windows-package.ps1 -ArtifactDirectory accepted-artifact -OutputDirectory .build/windows-package-acceptance
+      - name: Preserve exact archive acceptance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codex-plugin-windows-package-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/windows-package-acceptance/evidence/
+          include-hidden-files: true
+          if-no-files-found: error
 
   windows-candidate:
     if: ${{ inputs.windows_sdk_revision != '' && inputs.windows_validation_scope != 'host-mcp' && inputs.windows_validation_scope != 'artifact' }}

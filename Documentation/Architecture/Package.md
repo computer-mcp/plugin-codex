@@ -1,6 +1,8 @@
 # Package
 
-The package targets macOS 14 and Swift tools 6.2. `CodexMCPAdapter` owns argument
+The package uses Swift tools 6.2 and supports macOS 14 and Windows x86_64.
+Windows archives use the reviewed Swift 6.2.3 runtime and pinned SQLite static
+build. `CodexMCPAdapter` owns argument
 handling; `CodexAdapter` owns configuration, MCP projection and Codex domain
 implementation. Runtime tests live in `CodexAdapterTests`; command parsing tests
 live in `CodexMCPAdapterTests`. Computer MCP Core is not a

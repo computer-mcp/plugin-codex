@@ -39,8 +39,11 @@ large histories can exceed transport, output or timeout limits. See the
 
 ## Build and run
 
-Building requires macOS 14 or newer and Swift 6.2 or newer.
-Run `swift build` and `swift test`. Launch
+On macOS, building requires macOS 14 or newer and Swift 6.2 or newer.
+Run `swift build` and `swift test`. Windows x86_64 packaging uses Swift 6.2.3,
+PowerShell and the pinned SQLite build described in
+[Installation](Documentation/Reference/Installation.md). The Windows adapter
+serves standard MCP over stdio; it does not provide a Windows host GUI. Launch
 `.build/debug/codex-mcp-adapter` through an MCP stdio client, never as an
 unbounded unattended shell command. `--help` prints usage without serving.
 
