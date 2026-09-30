@@ -38,6 +38,8 @@ jobs:
           python-version: '3.13'
       - name: Install dependency gate tooling
         run: brew install jq ripgrep
+      - name: Verify canonical brand delivery
+        run: python3 Scripts/check-brand.py
       - name: Validate Swift package
         env:
           BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
