@@ -162,3 +162,11 @@ Do not install or bundle vendor Codex binaries. Keep generated schema provenance
 Use Swift Testing. Run strict swift-format lint, swift build, swift test, schema
 drift checks, and an isolated standard MCP client before handoff. Logs must never
 write to the protocol stdout. Do not publish repositories or releases implicitly.
+
+## Brand delivery
+
+The main Computer MCP repository owns ProductIdentity and BRAND. Imported
+`Documentation/Brand/header.svg` travels with the packaged manual;
+`.github/brand/social.png` supplies the repository preview. `brand.lock.json`
+binds both to canonical exports. Run `python3 Scripts/check-brand.py` locally
+and in CI. Update imports with the main repository's `Scripts/brand.py sync`.

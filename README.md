@@ -1,4 +1,9 @@
-# Codex Plugin
+![Computer MCP — Codex](Documentation/Brand/header.svg)
+
+# Computer MCP — Codex
+
+Part of the [Computer MCP](https://computer-mcp.github.io/) family.
+**Let ChatGPT use your local tools.**
 
 This independent Swift package projects Codex execution through standard MCP.
 It reuses Computer MCP's existing execution implementations and swift-codex.
