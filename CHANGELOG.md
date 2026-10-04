@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Licensed under FSL-1.1-ALv2 (Functional Source License 1.1, Apache 2.0
+  future license): any use other than a competing product or service is
+  permitted, and each release becomes available under Apache-2.0 two years
+  after publication. Published releases keep their original license.
+
 ## 0.3.0 — 2026-09-29
 
 - Projects the stable Codex App Server methods from swift-codex 0.4.1 with

@@ -33,3 +33,6 @@ The [documentation index](Documentation/README.md) links current architecture
 and reference material. Agent work routes live in AGENTS.md; public usage lives
 in the root README. GitHub collaboration files belong in .github/ and contributor
 policy belongs in root governance files.
+
+Contributions are licensed under this repository's [LICENSE](LICENSE),
+FSL-1.1-ALv2.

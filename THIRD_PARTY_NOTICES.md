@@ -1,8 +1,7 @@
 # Third-party components
 
-The adapter retains the Computer MCP source-visible license for extracted and
-original integration code. Moving that code into this repository does not
-change its ownership or grant additional distribution rights.
+The adapter's original and extracted integration code is Computer MCP code
+licensed under this repository's [LICENSE](LICENSE), FSL-1.1-ALv2.
 
 The MCP Swift SDK transport fork and swift-codex are MIT-licensed. Swift Subprocess
 and other Swift dependencies retain their own upstream licenses. The packaging
