@@ -5,7 +5,7 @@ The root `computer-mcp-plugin.toml` owns the adapter's version.
 rejects drift. `update --kind … --reason …` changes the manifest and
 refreshes the constant. `check --base COMMIT` rejects version regression;
 `check --tag vVERSION` verifies both the manifest version and the tag's commit.
-CI checks the pull request base or previous main commit without changing files.
+CI checks the pull request base or previous `master` commit without changing files.
 An actual packaged executable's `--version` must match
 the byte-identical packaged manifest. Never infer a candidate version from an
 installed adapter or another worktree.
@@ -25,7 +25,7 @@ Codex executable version; these versions need not be equal.
 
 `Scripts/package.py --output …` checks the declared/generated versions and lock,
 builds the archive, validates its executable and emits a file/digest receipt.
-The `Validate and package` workflow runs the same source checks and publishes an
+The CI workflow (`ci.yml`) runs the same source checks and publishes an
 immutable CI candidate artifact. Check the relocated candidate with a standard
 MCP client and `Scripts/check-workflow.py --adapter … --codex …`. The latter
 uses an isolated home and fixed loopback model for native approvals, turns,
@@ -34,7 +34,7 @@ model authentication. Host integration uses the Computer MCP repository's fixed
 installed-gateway checks against the exact adapter bytes.
 
 Accept the complete host/plugin/SDK combination before delivery. Create a formal
-signed tag only for the accepted commit; `upload-release.yml` promotes the
+signed tag only for the accepted commit; `release.yml` promotes the
 already-built artifact from its verified source run into the matching draft.
 The upload verifies every platform archive's inventory and manifest against the
 formal tag before uploading any asset. It promotes both declared native archives
@@ -42,8 +42,10 @@ and their receipts from the same successful source run without rebuilding.
 An already uploaded asset must have the same digest; conflicting bytes fail.
 Candidate retries keep the intended product version and use a new run identity.
 A public tag and archive remain immutable. Only changed components are released.
-See [Installation](../Reference/Installation.md) for packaging, installation,
-upgrade and rollback commands.
+`CHANGELOG.md` records each public release. See
+[Installation](../Reference/Installation.md) for packaging, installation,
+upgrade and rollback commands, and [Release](../Reference/Release.md) for
+publication and catalog notification.
 
 Reusable successful evidence must match source, dependency lock, check definition,
 toolchain, target configuration and artifact digest. Missing or changed inputs

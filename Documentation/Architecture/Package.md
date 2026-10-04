@@ -14,7 +14,7 @@ dependency.
 | --- | --- |
 | `computer-mcp/swift-sdk` transport fork | Standard northbound MCP transport, tools and results; native Windows stdio and complete POSIX frame writes |
 | swift-codex | App Server client and Exec client, each with its own lifecycle |
-| swift-subprocess 0.4.0 | Existing process infrastructure dependency |
+| swift-subprocess 0.4.0 | Child process launch and line I/O on Apple platforms |
 | swift-argument-parser 1.8.2 | Named options, schema-comparison subcommand, validation and generated CLI help |
 | Apple Swift System 1.8.1 | Typed CRT descriptors for inherited Windows MCP pipe handles; already shared by the MCP dependency |
 | Apple Swift Crypto 4.5.2 | SHA-256 on Windows; Apple platforms retain CryptoKit |
@@ -25,9 +25,9 @@ SDK version, resolved revision and public Git tag agree. CI requires this check
 before packaging. Its dependency notices ship with the
 adapter artifact, independently of host dependencies.
 
-Argument Parser keeps command structure and help in one declaration instead of
-fixed-position argument handling. Serving and schema comparison delegate to the
-same use cases as before parameter parsing; parser errors do not start Codex.
+Argument Parser keeps command structure and help in one declaration. Parsing
+completes before serving or schema comparison starts, so parser errors never
+start Codex.
 
 Use the SDK's public clients, including App Server raw request, notification and server-request access, for
 protocol initialization and request correlation. Domain ownership, input validation and MCP projection belong in this package.

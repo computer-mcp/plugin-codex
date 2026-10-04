@@ -9,7 +9,8 @@ Part of the [Computer MCP](https://computer-mcp.github.io/) family.
 **Wherever you chat, your computer is there.**
 
 This independent Swift package projects Codex execution through standard MCP.
-It reuses Computer MCP's existing execution implementations and swift-codex.
+It builds on swift-codex's App Server and Exec clients and the Computer MCP fork
+of the MCP Swift SDK.
 The host owns registration, caller grants, workspace authorization and audit.
 The plugin does not link Computer MCP Core or install the vendor Codex binary.
 

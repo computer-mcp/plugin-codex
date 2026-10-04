@@ -1279,20 +1279,6 @@ struct CodexAppServerProvider: Sendable {
     return value
   }
 
-  private static func optionalBoundedInt(
-    _ key: String,
-    in object: [String: JSONValue],
-    range: ClosedRange<Int>
-  ) throws -> Int? {
-    guard let raw = object[key] else { return nil }
-    guard let value = raw.intValue, range.contains(value) else {
-      throw CodexToolError.invalidArguments(
-        "codex.argument_invalid: '\(key)' must be an integer between \(range.lowerBound) and \(range.upperBound)."
-      )
-    }
-    return value
-  }
-
   private static let emptySchema = objectSchema()
   private static let cursorSchema = objectSchema(properties: [
     "after_cursor": integerSchema(minimum: 0),
