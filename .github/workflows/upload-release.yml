@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   upload:
-    if: github.repository == 'computer-mcp/plugin-codex' && github.ref == 'refs/heads/main'
+    if: github.repository == 'computer-mcp/plugin-codex' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -34,7 +34,7 @@ jobs:
           gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN" > run.json
           jq -e --arg repo "$GH_REPO" '
             .status == "completed" and .conclusion == "success" and
-            .event == "push" and .head_branch == "main" and
+            .event == "push" and .head_branch == "master" and
             .path == ".github/workflows/validate.yml" and
             .head_repository.full_name == $repo' run.json > /dev/null
           source_sha=$(jq -r .head_sha run.json)

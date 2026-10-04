@@ -2,7 +2,7 @@ name: Validate and package
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:
     inputs:
       windows_sdk_revision:
@@ -38,8 +38,6 @@ jobs:
           python-version: '3.13'
       - name: Install dependency gate tooling
         run: brew install jq ripgrep
-      - name: Verify canonical brand delivery
-        run: python3 Scripts/check-brand.py
       - name: Validate Swift package
         env:
           BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -304,3 +302,5 @@ jobs:
           path: .build/windows-artifact/evidence/
           include-hidden-files: true
           if-no-files-found: error
+  brand:
+    uses: computer-mcp/.github/.github/workflows/brand-check.yml@9b58c7b9823a808273c8a60d4676c6555b2bcaad # master
