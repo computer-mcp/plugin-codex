@@ -45,7 +45,7 @@ arguments, printed output and release metadata.
 For an operator-driven publication or a missed/failed notification, explicitly dispatch:
 
 ```sh
-gh workflow run notify-catalog.yml --repo computer-mcp/plugin-codex --ref main
+gh workflow run notify-catalog.yml --repo computer-mcp/plugin-codex --ref master
 ```
 
 This schedules notification using its configured authority; it does not publish or rewrite a
@@ -55,5 +55,5 @@ contains the exact expected release identities and generation. If the release is
 notification fails, retry notification without changing or republishing the release. Complete
 reconciliation is idempotent and repairs duplicate/missed events.
 
-See the central [catalog publication and notification contract](https://github.com/computer-mcp/computer-mcp.github.io/blob/main/docs/plugin-catalog.md)
+See the central [catalog publication and notification contract](https://github.com/computer-mcp/computer-mcp.github.io/blob/master/docs/plugin-catalog.md)
 for provenance, credentials, retry bounds and deployment semantics.

@@ -165,8 +165,10 @@ write to the protocol stdout. Do not publish repositories or releases implicitly
 
 ## Brand delivery
 
-The main Computer MCP repository owns ProductIdentity and BRAND. Imported
-`Documentation/Brand/header.svg` travels with the packaged manual;
-`.github/brand/social.png` supplies the repository preview. `brand.lock.json`
-binds both to canonical exports. Run `python3 Scripts/check-brand.py` locally
-and in CI. Update imports with the main repository's `Scripts/brand.py sync`.
+The organization `.github` repository owns the design system and renders every
+image; the main Computer MCP repository owns ProductIdentity. Imported
+`Documentation/Brand/header-light.png` and `header-dark.png` travel with the
+packaged manual; `.github/brand/social.png` supplies the repository preview.
+`.github/brand/brand.lock.json` binds them to the organization exports, and CI
+verifies it with the shared brand-check workflow. Update imports with the
+organization repository's `python3 Brand/brand.py sync`.

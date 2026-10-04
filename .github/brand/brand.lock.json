@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "authority": "https://github.com/computer-mcp/.github",
+  "revision": "9042c987ef8b3482f63e3a037ae0d0d2fdeffb9a7768c03295c9a6a6c5a43ae2",
+  "consumer": "plugin-codex",
+  "files": {
+    "Documentation/Brand/header-light.png": "e2ad79795e34e787d8cc82d24bbdcd35b4ea380f653a22410d558d2d04fcd26d",
+    "Documentation/Brand/header-dark.png": "bc8b554857fe1575cdf4336a9172e2706db6f2972ff13d5f82e69ea8a1437e38",
+    ".github/brand/social.png": "2f54174a04b8dce5d6e91dc1993a6feb3c1c6ce526e128a489ea7400a885244e"
+  },
+  "entries": {
+    "README.md": [
+      "Codex",
+      "Documentation/Brand/header-light.png",
+      "Documentation/Brand/header-dark.png"
+    ]
+  }
+}
