@@ -1,4 +1,4 @@
-name: Validate and package
+name: CI
 on:
   pull_request:
   push:
@@ -21,7 +21,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: validate-${{ github.ref }}-${{ inputs.windows_validation_scope || 'all' }}
+  group: ci-${{ github.ref }}-${{ inputs.windows_validation_scope || 'all' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   package:

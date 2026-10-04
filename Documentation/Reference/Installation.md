@@ -57,7 +57,7 @@ published atomically without replacing any existing destination, including an
 empty directory created while the build is running. Failure removes only the
 packager's temporary staging directory; existing outputs remain unchanged.
 
-The repository's `Validate and package` workflow runs on pull requests, pushes
+The repository's CI workflow (`ci.yml`) runs on pull requests, `master` pushes
 and manual dispatch. It checks formatting, tests and the dependency lock, then
 retains both native ZIPs and receipts as downloadable workflow artifacts. A
 separate Windows job installs no Swift toolchain, relocates the exact ZIP and

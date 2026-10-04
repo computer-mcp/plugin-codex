@@ -1,9 +1,9 @@
-name: Upload verified release archives
+name: Release
 on:
   workflow_dispatch:
     inputs:
       source_run:
-        description: Successful Validate and package run ID
+        description: Successful CI run ID
         required: true
       release_tag:
         description: Existing draft release tag bound to the verified commit
@@ -35,7 +35,7 @@ jobs:
           jq -e --arg repo "$GH_REPO" '
             .status == "completed" and .conclusion == "success" and
             .event == "push" and .head_branch == "master" and
-            .path == ".github/workflows/validate.yml" and
+            .path == ".github/workflows/ci.yml" and
             .head_repository.full_name == $repo' run.json > /dev/null
           source_sha=$(jq -r .head_sha run.json)
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]

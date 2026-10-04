@@ -68,11 +68,11 @@ Use this check:
 
 ## Task Route
 
+- Before changing versions, dependencies, packaging or release workflows, read
+  `Documentation/Architecture/VersioningAndRelease.md` and use its existing project check entry points.
+
 - For repository-native documentation placement, read `Documentation/README.md`
   before editing.
-- For versions, dependencies and release work, read
-  `Documentation/Architecture/VersioningAndRelease.md`; use `Scripts/version.py`
-  and the existing package/dependency checks rather than another version ledger.
 - For current canonical structure, read
   `Documentation/Architecture/README.md` and the relevant architecture files.
 - For design-in-progress, use `Documentation/Proposals/*` when that subtree is

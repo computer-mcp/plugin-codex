@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $runJSON = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$SourceRun"
 if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect source run' }
 $run = $runJSON | ConvertFrom-Json
-if ($run.status -ne 'completed' -or $run.path -ne '.github/workflows/validate.yml' -or
+if ($run.status -ne 'completed' -or $run.path -ne '.github/workflows/ci.yml' -or
     $run.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or $run.head_sha -cnotmatch '^[0-9a-f]{40}$') {
     throw 'Source must be a completed validation run from this repository'
 }
