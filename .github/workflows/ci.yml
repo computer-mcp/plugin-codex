@@ -81,7 +81,7 @@ jobs:
         run: |
           python3 Scripts/package.py --output dist --configuration release
           python3 Scripts/check-package.py --archive dist/codex-plugin-macos-arm64.zip --receipt dist/receipt.json --destination .build/accepted-package
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-plugin-macos-arm64-${{ github.sha }}
           path: |
@@ -125,7 +125,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git diff --exit-code -- Package.resolved computer-mcp-plugin.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-plugin-windows-x86_64-${{ github.sha }}
           path: |
@@ -160,7 +160,7 @@ jobs:
         run: ./Scripts/check-windows-package.ps1 -ArtifactDirectory accepted-artifact -OutputDirectory .build/windows-package-acceptance
       - name: Preserve exact archive acceptance
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-plugin-windows-package-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/windows-package-acceptance/evidence/
@@ -189,7 +189,7 @@ jobs:
           ./Scripts/validate-windows-candidate.ps1 -SDKRevision $env:CODEX_CANDIDATE_REVISION -DatabaseOnly:$databaseOnly
       - name: Preserve Windows source audit
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-plugin-windows-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/windows-candidate/evidence/
@@ -227,7 +227,7 @@ jobs:
         run: ./Scripts/test-windows-process.ps1 -SDKPath .build/windows-process-sdk -OutputDirectory .build/windows-process
       - name: Preserve native process acceptance
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-plugin-windows-process-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/windows-process/evidence/
@@ -265,7 +265,7 @@ jobs:
         run: ./Scripts/test-windows-host-mcp.ps1 -SDKPath .build/windows-host-sdk -OutputDirectory .build/windows-host-mcp
       - name: Preserve native host MCP acceptance
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-plugin-windows-host-mcp-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/windows-host-mcp/evidence/
@@ -296,7 +296,7 @@ jobs:
         run: ./Scripts/check-windows-artifact.ps1 -SourceRun $env:SOURCE_RUN -SDKRevision $env:SDK_REVISION
       - name: Preserve native artifact acceptance
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-plugin-windows-artifact-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/windows-artifact/evidence/
