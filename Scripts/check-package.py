@@ -43,10 +43,6 @@ def verify(archive, receipt_path, manifest, destination=None):
         raise ValueError("Archive receipt must declare its file inventory")
     for name, value in inventory.items():
         safe_path(name)
-        if receipt.get("platform") == "windows":
-            from windows_runtime import is_msvc_runtime
-            if is_msvc_runtime(PurePosixPath(name).name):
-                raise ValueError("Microsoft runtime DLLs must be installed separately, not bundled")
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ValueError("Archive inventory requires exact SHA-256 digests")
     expected_name = validate_architectures(manifest, receipt["architectures"], receipt["platform"])
@@ -110,8 +106,7 @@ def verify(archive, receipt_path, manifest, destination=None):
                     output.parent.mkdir(parents=True, exist_ok=True)
                     with zipped.open(entry) as source, output.open("xb") as target:
                         shutil.copyfileobj(source, target, length=1024 * 1024)
-                    if os.name != "nt":
-                        output.chmod((entry.external_attr >> 16) & 0o777 or 0o644)
+                    output.chmod((entry.external_attr >> 16) & 0o777 or 0o644)
                 publish_directory(stage, destination)
                 stage = None
         finally:

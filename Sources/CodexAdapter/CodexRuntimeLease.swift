@@ -1,10 +1,5 @@
+import Darwin
 import Foundation
-
-#if os(Windows)
-  import WinSDK
-#else
-  import Darwin
-#endif
 
 struct CodexRuntimeRequestFailure: Codable, Equatable, Sendable {
   let kind: String
@@ -156,16 +151,7 @@ enum CodexRuntimeMaintenance {
 /// Read-only evidence for persisted receipts. Unknown access and reused IDs retain ownership;
 /// a numeric ID never grants authority to signal the process or confirm descendant cleanup.
 func codexRuntimeProcessMayExist(_ processID: Int32?) -> Bool {
-  #if os(Windows)
-    guard let processID, DWORD(bitPattern: processID) > 1 else { return false }
-    guard let handle = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(bitPattern: processID)) else {
-      return GetLastError() != DWORD(ERROR_INVALID_PARAMETER)
-    }
-    defer { CloseHandle(handle) }
-    return WaitForSingleObject(handle, 0) != DWORD(WAIT_OBJECT_0)
-  #else
-    guard let processID, processID > 1 else { return false }
-    errno = 0
-    return Darwin.kill(processID, 0) == 0 || errno != ESRCH
-  #endif
+  guard let processID, processID > 1 else { return false }
+  errno = 0
+  return Darwin.kill(processID, 0) == 0 || errno != ESRCH
 }

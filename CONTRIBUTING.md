@@ -22,8 +22,7 @@ python3 -m unittest discover -s Tests -p 'test_*.py'
 python3 Scripts/package.py --output OUTPUT_DIRECTORY --configuration release
 ```
 
-CI also packages and checks the Windows x86_64 archive on a Windows runner and
-runs the organization brand check. Exercise help, valid input and invalid input
+CI also runs the organization brand check. Exercise help, valid input and invalid input
 from outside the checkout. Keep command output contracts and generated resources
 covered by tests.
 

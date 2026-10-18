@@ -27,16 +27,11 @@ def command(arguments, cwd):
 def current_platform():
     if sys.platform == "darwin":
         return "macos"
-    if sys.platform == "win32":
-        return "windows"
-    raise ValueError("Native packaging requires macOS or Windows")
+    raise ValueError("Native packaging requires macOS")
 
 
 def input_kind(path):
-    metadata = path.lstat()
-    if getattr(metadata, "st_file_attributes", 0) & 0x400:
-        raise ValueError(f"Package input is a reparse point: {path}")
-    return metadata.st_mode
+    return path.lstat().st_mode
 
 
 def copy_file(source, destination):
@@ -111,10 +106,6 @@ def validate_architectures(manifest, architectures, platform="macos"):
 
 
 def publish_directory(source, destination):
-    if sys.platform == "win32":
-        # Windows rename atomically refuses every existing destination.
-        os.rename(source, destination)
-        return
     # Darwin RENAME_EXCL atomically refuses an existing destination, including an empty directory.
     rename = ctypes.CDLL(None, use_errno=True).renamex_np
     rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
@@ -133,23 +124,11 @@ def package(output, configuration):
     stage = Path(tempfile.mkdtemp(prefix="codex-package-", dir=output.parent))
     try:
         platform = current_platform()
-        swift = "/usr/bin/swift" if platform == "macos" else shutil.which("swift")
-        if swift is None:
-            raise ValueError("Swift must be available to build the native archive")
-        build_arguments = []
-        sqlite = None
-        if platform == "windows":
-            shell = shutil.which("pwsh")
-            if shell is None:
-                raise ValueError("PowerShell is required for the native SQLite build")
-            sqlite = json.loads(command([shell, "-NoProfile", "-NonInteractive", "-File",
-                str(repo / "Scripts/build-windows-sqlite.ps1"), "-OutputDirectory", str(stage / "sqlite"), "-AsJSON"], repo))
-            build_arguments = ["-Xcc", "-I" + sqlite["includeDirectory"],
-                               "-Xlinker", "/LIBPATH:" + sqlite["libraryDirectory"]]
-        command([swift, "build", "-c", configuration, "--disable-automatic-resolution", *build_arguments], repo)
+        swift = "/usr/bin/swift"
+        command([swift, "build", "-c", configuration, "--disable-automatic-resolution"], repo)
         built = Path(command([swift, "build", "-c", configuration, "--show-bin-path"], repo))
-        executable = built / ("codex-mcp-adapter.exe" if platform == "windows" else "codex-mcp-adapter")
-        bundle = built / ("codex-plugin_CodexAdapter.resources" if platform == "windows" else "codex-plugin_CodexAdapter.bundle")
+        executable = built / "codex-mcp-adapter"
+        bundle = built / "codex-plugin_CodexAdapter.bundle"
         if not executable.is_file() or not bundle.is_dir():
             raise ValueError("The executable and its SwiftPM resource bundle must both be built")
         payload = stage / "package"
@@ -180,10 +159,6 @@ def package(output, configuration):
         for name in ["LICENSE", "NOTICE"]:
             copy_file(repo / ".build/checkouts/swift-codex/Vendor/CodexAppServerProtocolSchema" / name,
                       schema_notices / name)
-        runtime_receipt = None
-        if platform == "windows":
-            from windows_package import stage_runtime
-            runtime_receipt = stage_runtime(repo, binary_directory, notices, sqlite, swift, command, copy_file, copy_tree)
         validate_payload(payload)
         with (payload / "ThirdPartyNotices.txt").open("wb") as aggregate:
             for entry in sorted(notices.rglob("*")):
@@ -192,12 +167,9 @@ def package(output, configuration):
                     aggregate.write(entry.read_bytes())
                     aggregate.write(b"\n")
         binary = binary_directory / executable.name
-        if platform == "macos":
-            command(["/usr/bin/codesign", "--force", "--sign", "-", str(binary)], stage)
-            command(["/usr/bin/codesign", "--verify", "--strict", str(binary)], stage)
-            architectures = command(["/usr/bin/lipo", "-archs", str(binary)], stage).split()
-        else:
-            architectures = [runtime_receipt["architecture"]]
+        command(["/usr/bin/codesign", "--force", "--sign", "-", str(binary)], stage)
+        command(["/usr/bin/codesign", "--verify", "--strict", str(binary)], stage)
+        architectures = command(["/usr/bin/lipo", "-archs", str(binary)], stage).split()
         manifest = payload / "computer-mcp-plugin.toml"
         archive_name = validate_architectures(manifest, architectures, platform)
         declaration = tomllib.loads(manifest.read_text(encoding="utf-8"))
@@ -227,12 +199,10 @@ def package(output, configuration):
             for entry in sorted(payload.rglob("*")):
                 package_zip.write(entry, entry.relative_to(payload).as_posix())
         receipt = {"plugin_id": "codex", "configuration": configuration, "architectures": architectures,
-                   "platform": platform, "signature": "ad-hoc" if platform == "macos" else "unsigned",
+                   "platform": platform, "signature": "ad-hoc",
                    "publisher_verified": False, "published": False,
                    "archive": archive_name, "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
                    "archive_bytes": archive.stat().st_size, "files": inventory}
-        if runtime_receipt is not None:
-            receipt["windows_runtime"] = runtime_receipt
         (stage / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
         publish_directory(stage, output)
         return {"directory": str(output), "archive": str(output / archive.name),

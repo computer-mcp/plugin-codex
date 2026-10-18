@@ -102,24 +102,14 @@ extension ManagedLineProcess {
     }
 
     func validate() throws {
-      #if os(Windows)
-        let validPaths =
-          Self.isAbsoluteWindowsPath(executable)
-          && workingDirectory.isFileURL && Self.isAbsoluteWindowsPath(workingDirectory.path)
-        let validOwner = UInt32(bitPattern: ownerProcessID) > 1
-        let validEnvironment = environment.allSatisfy {
-          !$0.key.isEmpty && !$0.key.contains("\0") && !$0.value.contains("\0")
-        }
-      #else
-        let validPaths =
-          executable.hasPrefix("/")
-          && workingDirectory.isFileURL && workingDirectory.path.hasPrefix("/")
-        let validOwner = ownerProcessID > 1
-        let validEnvironment = environment.allSatisfy {
-          !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.contains("\0")
-            && !$0.value.contains("\0")
-        }
-      #endif
+      let validPaths =
+        executable.hasPrefix("/")
+        && workingDirectory.isFileURL && workingDirectory.path.hasPrefix("/")
+      let validOwner = ownerProcessID > 1
+      let validEnvironment = environment.allSatisfy {
+        !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.contains("\0")
+          && !$0.value.contains("\0")
+      }
       guard validPaths, validOwner, validEnvironment,
         !executable.contains("\0"), !workingDirectory.path.contains("\0"),
         arguments.allSatisfy({ !$0.contains("\0") }),
@@ -128,15 +118,6 @@ extension ManagedLineProcess {
         (1...16_777_216).contains(maximumMessageBytes)
       else { throw ManagedLineProcessError.invalidConfiguration }
     }
-
-    #if os(Windows)
-      private static func isAbsoluteWindowsPath(_ path: String) -> Bool {
-        let bytes = Array(path.replacingOccurrences(of: "/", with: "\\").utf8)
-        if bytes.starts(with: [92, 92]) { return bytes.count > 2 }
-        guard bytes.count >= 3, bytes[1] == 58, bytes[2] == 92 else { return false }
-        return (65...90).contains(bytes[0]) || (97...122).contains(bytes[0])
-      }
-    #endif
 
   }
 }

@@ -1,7 +1,6 @@
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 import stat
 import sys
@@ -47,8 +46,7 @@ class ArchiveAcceptanceTests(unittest.TestCase):
             self.assertEqual(result["files_verified"], 2)
             self.assertEqual((root / "relocated/computer-mcp-plugin.toml").read_bytes(), arguments[2].read_bytes())
             self.assertEqual((root / "relocated/bin/adapter").read_bytes(), b"executable bytes")
-            if os.name != "nt":
-                self.assertEqual((root / "relocated/bin/adapter").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((root / "relocated/bin/adapter").stat().st_mode & 0o777, 0o755)
 
     def test_unsafe_names_links_modes_and_case_aliases_fail_before_extraction(self):
         cases = [(name, b"content", stat.S_IFREG | 0o644) for name in (

@@ -1,12 +1,7 @@
 import CodexAppServerClient
 import CodexAppServerProtocol
+import CryptoKit
 import Foundation
-
-#if canImport(CryptoKit)
-  import CryptoKit
-#else
-  import Crypto
-#endif
 
 struct CodexRuntimeOwner: Codable, Equatable, Sendable {
   let workspaceID: String?
