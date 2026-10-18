@@ -1,0 +1,185 @@
+import Foundation
+import MCP
+import Testing
+
+@testable import CodexAdapter
+
+struct CodexExecutionProviderTests {
+  @Test(.timeLimit(.minutes(1)))
+  func execContractsRoundTripOverMCPAndClose() async throws {
+    let exec = ExecutionSpy()
+    let execution = CodexExecutionProvider(exec: exec)
+    let pair = await InMemoryTransport.createConnectedPair()
+    // The SDK drops messages delivered before its peer transport is connected.
+    try await pair.server.connect()
+    let serving = Task {
+      try await CodexAdapterServer.serve(transport: pair.server, execution: execution)
+    }
+    let client = MCP.Client(name: "extraction-tests", version: "1")
+    do {
+      _ = try await client.connect(transport: pair.client)
+      let catalog = try await client.listTools()
+      #expect(
+        Set(catalog.tools.map(\.name))
+          == Set(cases.map(\.name) + ProtocolTools.definitions.map(\.name)))
+      for (name, risk) in [
+        ("start", "full-shell"), ("resume", "full-shell"), ("cancel", "destructive"),
+        ("list", "read-only"), ("events", "read-only"), ("result", "read-only"),
+        ("release", "destructive"),
+      ] {
+        let tool = try #require(catalog.tools.first { $0.name == "codex.exec.\(name)" })
+        #expect(tool._meta?["io.github.computer-mcp/risk"] == .string(risk))
+        #expect(tool.annotations.readOnlyHint == (risk == "read-only"))
+      }
+      let origin = UUID()
+      for item in cases {
+        let meta: MCP.Metadata? =
+          item.name == "codex.exec.start" || item.name == "codex.exec.resume"
+          ? .init(additionalFields: [CodexWorkInvocation.metadataKey: .string(origin.uuidString)])
+          : nil
+        let request = try await client.send(
+          MCP.CallTool.request(
+            .init(
+              name: item.name, arguments: item.arguments, meta: meta)))
+        let result = try await request.value
+        #expect(result.isError == false)
+        #expect(
+          result.structuredContent?.objectValue?["result"]
+            == .object([
+              "operation": .string(item.operation), "arguments": .object(item.expected),
+            ]))
+        guard case .text(let text, _, _) = result.content.first else {
+          Issue.record("Missing text result for \(item.name)")
+          continue
+        }
+        #expect(
+          try JSONDecoder().decode(MCP.Value.self, from: Data(text.utf8))
+            == result.structuredContent?.objectValue?["result"])
+      }
+      #expect(await exec.invocations == [origin, origin, nil, nil, nil, nil, nil])
+      for value: MCP.Value in [
+        .null, .bool(true), .int(1), .array([]), .object([:]), .string(""),
+        .string("not-a-uuid"), .string(" " + origin.uuidString),
+        .string("{" + origin.uuidString + "}"),
+      ] {
+        await #expect(throws: MCPError.self) {
+          let response = try await client.send(
+            MCP.CallTool.request(
+              .init(
+                name: "codex.exec.start", arguments: ["prompt": .string("never invoked")],
+                meta: .init(additionalFields: [CodexWorkInvocation.metadataKey: value]))))
+          return try await response.value
+        }
+      }
+      #expect(await exec.operations.count == 7)
+      let invalid = try await client.callTool(name: "codex.exec.start", arguments: [:])
+      #expect(invalid.isError == true)
+      await #expect(throws: MCPError.self) { try await client.callTool(name: "codex.unknown") }
+      await client.disconnect()
+      try await serving.value
+    } catch {
+      await client.disconnect()
+      await pair.server.disconnect()
+      _ = try? await serving.value
+      throw error
+    }
+    #expect(await exec.operations.count == 7)
+    #expect(await exec.shutdowns == 1)
+  }
+
+  @Test func invalidArgumentsNeverReachExecution() async throws {
+    let spy = ExecutionSpy()
+    let provider = CodexExecutionProvider(exec: spy)
+    await #expect(throws: CodexToolError.self) {
+      try await provider.call(
+        name: "codex.exec.list", arguments: .object(["cwd": .string("/outside")]))
+    }
+    await #expect(throws: CodexToolError.self) {
+      try await provider.call(name: "codex.exec.list", arguments: .array([]))
+    }
+    #expect(await spy.operations.isEmpty)
+    _ = try await provider.call(name: "codex.exec.list", arguments: nil)
+    #expect(await spy.operations == ["exec.list"])
+  }
+
+  private struct CallCase {
+    let name: String
+    let operation: String
+    let arguments: [String: MCP.Value]
+    let expected: [String: MCP.Value]
+    let write: Bool
+    init(
+      _ name: String, _ arguments: [String: MCP.Value] = [:], expected: [String: MCP.Value]? = nil,
+      write: Bool = false
+    ) {
+      self.name = "codex." + name
+      operation = name
+      self.arguments = arguments
+      self.expected = expected ?? arguments
+      self.write = write
+    }
+  }
+
+  private var cases: [CallCase] {
+    [
+      .init("exec.start", ["prompt": .string("hello"), "model": .string("test")], write: true),
+      .init(
+        "exec.resume", ["upstream_session_id": .string("upstream")],
+        expected: ["upstream_session_id": .string("upstream"), "prompt": .null], write: true),
+      .init("exec.list"),
+      .init(
+        "exec.events", ["session_id": .string("session")],
+        expected: [
+          "session_id": .string("session"), "after_cursor": .int(0), "max_results": .int(100),
+        ]),
+      .init("exec.result", ["session_id": .string("session")]),
+      .init("exec.cancel", ["session_id": .string("session")], write: true),
+      .init("exec.release", ["session_id": .string("session")], write: true),
+    ]
+  }
+}
+
+private actor ExecutionSpy: CodexExecRuntimeProtocol {
+  var operations: [String] = []
+  var invocations: [UUID?] = []
+  var shutdowns = 0
+  func record(_ operation: String, _ arguments: [String: JSONValue] = [:]) -> JSONValue {
+    operations.append(operation)
+    invocations.append(CodexWorkInvocation.current)
+    return .object(["operation": .string(operation), "arguments": .object(arguments)])
+  }
+  func start(prompt: String, model: String?, options: JSONValue?) -> JSONValue {
+    record(
+      "exec.start", ["prompt": .string(prompt), "model": model.map(JSONValue.string) ?? .null])
+  }
+  func resume(upstreamSessionID: String, prompt: String?, model: String?, options: JSONValue?)
+    -> JSONValue
+  {
+    record(
+      "exec.resume",
+      [
+        "upstream_session_id": .string(upstreamSessionID),
+        "prompt": prompt.map(JSONValue.string) ?? .null,
+      ])
+  }
+  func list() -> JSONValue { record("exec.list") }
+  func events(sessionID: String, afterCursor: Int, maxResults: Int) -> JSONValue {
+    record(
+      "exec.events",
+      [
+        "session_id": .string(sessionID), "after_cursor": .number(Double(afterCursor)),
+        "max_results": .number(Double(maxResults)),
+      ])
+  }
+  func result(sessionID: String) -> JSONValue {
+    record("exec.result", ["session_id": .string(sessionID)])
+  }
+  func cancel(sessionID: String) -> JSONValue {
+    record("exec.cancel", ["session_id": .string(sessionID)])
+  }
+  func release(sessionID: String) -> JSONValue {
+    record("exec.release", ["session_id": .string(sessionID)])
+  }
+  func workResources() -> [CodexWorkResource] { [] }
+  func shutdown() { shutdowns += 1 }
+}

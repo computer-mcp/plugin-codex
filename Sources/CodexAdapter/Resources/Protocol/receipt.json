@@ -1,0 +1,46 @@
+{
+  "codexVersion": "0.154.0",
+  "sdk": {
+    "version": "0.4.1",
+    "revision": "35e4a3dc07e60f084efb8a06424a8315c2ab6f64"
+  },
+  "upstream": {
+    "tag": "rust-v0.154.0",
+    "commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340"
+  },
+  "adoptionSHA256": "a4b439ce69cb5993b2907c480fe7caf338a6e15dab2892746c0ad320cff794c3",
+  "files": {
+    "stable/ClientRequest.json": {
+      "sha256": "da767fedd73502ceb644f5d7974927e1a6b7f1917b092aaa029e81949abf0125",
+      "messages": 99
+    },
+    "stable/ClientNotification.json": {
+      "sha256": "706cf248d75027c84a3c63348d0ed507182e8eba40069dd17541793de029145a",
+      "messages": 1
+    },
+    "stable/ServerRequest.json": {
+      "sha256": "f339be472737a0003efa25fba2e6e6c9237e621cd065b6d6995c51256e9dc1fb",
+      "messages": 10
+    },
+    "stable/ServerNotification.json": {
+      "sha256": "2a52bea56cd6bd994a9d014e2af60d631446d810bd78181714e4b05375a9a222",
+      "messages": 81
+    },
+    "experimental/ClientRequest.json": {
+      "sha256": "4b1ea47e8a389402556b23451b5a690944e498dc31557b1bca3525631655f1f4",
+      "messages": 159
+    },
+    "experimental/ClientNotification.json": {
+      "sha256": "706cf248d75027c84a3c63348d0ed507182e8eba40069dd17541793de029145a",
+      "messages": 1
+    },
+    "experimental/ServerRequest.json": {
+      "sha256": "97149b290b077be5d970e7b1ade1e936d1152520b6c0187ce8745cb3d639b2cb",
+      "messages": 11
+    },
+    "experimental/ServerNotification.json": {
+      "sha256": "eb4317b57ce7cad32d6ab8a5b7d39eb765c8fb8f67acbc808dd6e55959411c93",
+      "messages": 81
+    }
+  }
+}

@@ -1,0 +1,813 @@
+import CodexExec
+import Foundation
+import Testing
+
+@testable import CodexAdapter
+
+@Suite(.serialized)
+
+final class CodexExecRuntimeTests {
+  @Test
+  func testStartInheritsNativeConfigurationAndUsesInitialDirectory() async throws {
+    let workspace = URL(fileURLWithPath: "/tmp/computer-mcp-workspace")
+    let adapter = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: [
+          #"{"type":"thread.started","thread_id":"thread-123"}"#,
+          #"{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"done"}}"#,
+          #"{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}"#,
+        ],
+        termination: successfulTermination(workspace: workspace, operation: .run)
+      )
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(),
+      workspaceURL: workspace,
+      client: adapter
+    )
+
+    let started = try await runtime.start(prompt: "Implement the change.", model: "gpt-5")
+    let sessionID = try requiredString("session_id", in: started)
+    let runRequests = await adapter.runRequests
+    let request = try #require(runRequests.first)
+
+    #expect((request.promptInput) == (.text("Implement the change.")))
+    #expect((request.outputMode) == (.jsonl))
+    #expect((request.options.workingDirectory) == (workspace.standardizedFileURL))
+    #expect((request.options.approvalMode) == nil)
+    #expect(request.options.sandboxMode == nil)
+    #expect((request.options.model) == ("gpt-5"))
+    #expect((request.options.additionalWritableDirectories) == ([]))
+    #expect(request.options.configOverrides.isEmpty)
+    #expect(!request.options.ignoreUserConfig)
+    #expect(!(request.options.dangerouslyBypassApprovalsAndSandbox))
+    #expect(!(request.options.fullAuto))
+    #expect(!(request.options.useOSS))
+    #expect(!request.options.skipGitRepoCheck)
+    #expect((request.options.profile) == nil)
+
+    let result = try await waitForResult(runtime: runtime, sessionID: sessionID)
+    #expect((result.objectValue?["state"]) == (.string("completed")))
+    #expect((result.objectValue?["upstream_session_id"]) == (.string("thread-123")))
+    #expect((result.objectValue?["final_message"]) == (.string("done")))
+    #expect(
+      (result.objectValue?["termination"]?.objectValue?["working_directory"])
+        == (.string(workspace.standardizedFileURL.path)))
+  }
+
+  @Test
+  func testResumeUsesOpaqueSessionSelectorAndExplicitNativeDefaults() async throws {
+    let workspace = URL(fileURLWithPath: "/tmp/resume-workspace")
+    let adapter = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: [
+          #"{"type":"thread.started","thread_id":"thread-resumed"}"#,
+          #"{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}"#,
+        ],
+        termination: successfulTermination(workspace: workspace, operation: .resume)
+      )
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(sandbox: .readOnly, approval: .onRequest),
+      workspaceURL: workspace,
+      client: adapter
+    )
+
+    _ = try await runtime.resume(
+      upstreamSessionID: "thread_original-1",
+      prompt: "Continue."
+    )
+    let resumeRequests = await adapter.resumeRequests
+    let request = try #require(resumeRequests.first)
+
+    #expect((request.selector) == (.sessionID("thread_original-1")))
+    #expect((request.promptInput) == (.text("Continue.")))
+    #expect((request.outputMode) == (.jsonl))
+    #expect((request.options.workingDirectory) == (workspace.standardizedFileURL))
+    #expect(request.options.approvalMode == "on-request")
+    #expect((request.options.sandboxMode) == ("read-only"))
+    #expect((request.options.additionalWritableDirectories) == ([]))
+    #expect(request.options.configOverrides.isEmpty)
+    #expect(!request.options.ignoreUserConfig)
+    #expect(!(request.options.dangerouslyBypassApprovalsAndSandbox))
+    #expect(!request.options.skipGitRepoCheck)
+  }
+
+  @Test
+  func testEventsUseBoundedCursorBufferAndReportMissedRows() async throws {
+    let lines =
+      (1...5).map {
+        #"{"type":"experimental.event","sequence":\#($0)}"#
+      } + [
+        #"{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}"#
+      ]
+    let adapter = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: lines,
+        termination: successfulTermination(
+          workspace: URL(fileURLWithPath: "/tmp/events"),
+          operation: .run
+        )
+      )
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(maxEvents: 3),
+      workspaceURL: URL(fileURLWithPath: "/tmp/events"),
+      client: adapter
+    )
+
+    let started = try await runtime.start(prompt: "Observe.", model: nil)
+    let sessionID = try requiredString("session_id", in: started)
+    _ = try await waitForResult(runtime: runtime, sessionID: sessionID)
+    let events = try await runtime.events(
+      sessionID: sessionID,
+      afterCursor: 0,
+      maxResults: 100
+    )
+
+    #expect((events.objectValue?["events"]?.arrayValue?.count) == (3))
+    #expect((events.objectValue?["missed_events"]) == (.number(5)))
+    #expect((events.objectValue?["next_cursor"]) == (.number(8)))
+  }
+
+  @Test
+  func testActiveSessionLimitFailsThenCancelledSessionCanBeEvicted() async throws {
+    let firstHandle = ControllableCodexExecHandle()
+    let secondHandle = FakeCodexExecHandle(
+      lines: [],
+      termination: successfulTermination(
+        workspace: URL(fileURLWithPath: "/tmp/limit"),
+        operation: .run
+      )
+    )
+    let adapter = FakeCodexExecClientAdapter(handles: [firstHandle, secondHandle])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(maxSessions: 1),
+      workspaceURL: URL(fileURLWithPath: "/tmp/limit"),
+      client: adapter
+    )
+
+    let first = try await runtime.start(prompt: "Wait.", model: nil)
+    let firstID = try requiredString("session_id", in: first)
+    await assertThrowsErrorAsync(
+      try await runtime.start(prompt: "Blocked.", model: nil)
+    ) { error in
+      #expect(((error as? CodexExecRuntimeError)?.code) == ("codex.exec.session_limit"))
+    }
+
+    let cancelled = try await runtime.cancel(sessionID: firstID)
+    #expect(cancelled.objectValue?["state"] == .string("cancellation_requested"))
+    _ = try await waitForResult(runtime: runtime, sessionID: firstID)
+    _ = try await runtime.start(prompt: "Replacement.", model: nil)
+    let runRequestCount = await adapter.runRequests.count
+    #expect((runRequestCount) == (2))
+  }
+
+  @Test
+  func testResultAndCancelReturnStableLifecycleErrors() async throws {
+    let handle = ControllableCodexExecHandle()
+    let adapter = FakeCodexExecClientAdapter(handles: [handle])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(),
+      workspaceURL: URL(fileURLWithPath: "/tmp/errors"),
+      client: adapter
+    )
+    let started = try await runtime.start(prompt: "Wait.", model: nil)
+    let sessionID = try requiredString("session_id", in: started)
+
+    await assertThrowsErrorAsync(try await runtime.result(sessionID: sessionID)) {
+      error in
+      #expect(((error as? CodexExecRuntimeError)?.code) == ("codex.exec.not_finished"))
+    }
+    await assertThrowsErrorAsync(try await runtime.result(sessionID: "missing")) {
+      error in
+      #expect(((error as? CodexExecRuntimeError)?.code) == ("codex.exec.session_unknown"))
+    }
+
+    _ = try await runtime.cancel(sessionID: sessionID)
+    let result = try await waitForResult(runtime: runtime, sessionID: sessionID)
+    #expect(result.objectValue?["cleanup_confirmed"] == .bool(true))
+    #expect((result.objectValue?["state"]) == (.string("cancelled")))
+    #expect(
+      (result.objectValue?["error"]?.objectValue?["code"]) == (.string("codex.exec.cancelled")))
+    await assertThrowsErrorAsync(try await runtime.cancel(sessionID: sessionID)) {
+      error in
+      #expect(((error as? CodexExecRuntimeError)?.code) == ("codex.exec.already_finished"))
+    }
+  }
+
+  @Test
+  func testMalformedJSONLFailureUsesStableCodeAndKeepsRawEvent() async throws {
+    let workspace = URL(fileURLWithPath: "/tmp/malformed")
+    let adapter = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: ["not-json"],
+        error: CodexExecError.malformedJSONL(
+          line: "not-json",
+          partialObservation: nil
+        )
+      )
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(),
+      workspaceURL: workspace,
+      client: adapter
+    )
+
+    let started = try await runtime.start(prompt: "Run.", model: nil)
+    let sessionID = try requiredString("session_id", in: started)
+    let result = try await waitForResult(runtime: runtime, sessionID: sessionID)
+    let events = try await runtime.events(
+      sessionID: sessionID,
+      afterCursor: 0,
+      maxResults: 10
+    )
+
+    #expect((result.objectValue?["state"]) == (.string("failed")))
+    #expect(
+      (result.objectValue?["error"]?.objectValue?["code"])
+        == (.string("codex.exec.malformed_jsonl")))
+    #expect(
+      events.objectValue?["events"]?.arrayValue?.contains(where: {
+        $0.objectValue?["kind"] == .string("jsonl.malformed")
+      }) == true)
+  }
+
+  @Test
+  func testResultBoundsFinalMessageAndCapturedStderr() async throws {
+    let workspace = URL(fileURLWithPath: "/tmp/bounded-result")
+    let largeText = String(repeating: "result-", count: 2_000)
+    let adapter = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: [
+          #"{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"\#(largeText)"}}"#
+        ],
+        termination: successfulTermination(
+          workspace: workspace,
+          operation: .run,
+          stderr: String(repeating: "stderr-", count: 2_000)
+        )
+      )
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(),
+      workspaceURL: workspace,
+      maxOutputBytes: 2_048,
+      client: adapter
+    )
+
+    let started = try await runtime.start(prompt: "Run.", model: nil)
+    let sessionID = try requiredString("session_id", in: started)
+    let result = try await waitForResult(runtime: runtime, sessionID: sessionID)
+    let termination = try #require(result.objectValue?["termination"]?.objectValue)
+
+    #expect((result.objectValue?["final_message_truncated"]) == (.bool(true)))
+    #expect(
+      (result.objectValue?["final_message_original_bytes"]?.intValue ?? 0)
+        > (result.objectValue?["final_message"]?.stringValue?.utf8.count ?? .max))
+    #expect((termination["stderr_truncated"]) == (.bool(true)))
+    #expect(
+      (termination["stderr_original_bytes"]?.intValue ?? 0)
+        > (termination["stderr"]?.stringValue?.utf8.count ?? .max))
+  }
+
+  @Test
+  func testInputValidationOccursBeforeLaunchingClient() async throws {
+    let adapter = FakeCodexExecClientAdapter(handles: [])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(),
+      workspaceURL: URL(fileURLWithPath: "/tmp/validation"),
+      client: adapter
+    )
+
+    await assertThrowsErrorAsync(try await runtime.start(prompt: "  ", model: nil)) {
+      error in
+      #expect(((error as? CodexExecRuntimeError)?.code) == ("codex.exec.invalid_prompt"))
+    }
+    await assertThrowsErrorAsync(
+      try await runtime.resume(upstreamSessionID: "../escape", prompt: nil)
+    ) { error in
+      #expect(
+        ((error as? CodexExecRuntimeError)?.code) == ("codex.exec.invalid_upstream_session_id"))
+    }
+    let runRequests = await adapter.runRequests
+    let resumeRequests = await adapter.resumeRequests
+    #expect((runRequests) == ([]))
+    #expect((resumeRequests) == ([]))
+  }
+
+  @Test
+  func execResumeSharesNativeThreadOwnershipWithAppServer() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let path = root.appendingPathComponent("owners.sqlite").path
+    let appOwner = try CodexThreadOwnerIndex(path: path, subject: "app-owner", codexHome: root)
+    let execOwner = try CodexThreadOwnerIndex(path: path, subject: "exec-owner", codexHome: root)
+    try appOwner.claim(threadID: "app-owned-thread")
+    let client = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: [#"{"type":"thread.started","thread_id":"exec-created-thread"}"#],
+        termination: successfulTermination(workspace: root, operation: .run))
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: root, client: client,
+      threadOwnerIndex: execOwner)
+    await #expect(throws: CodexToolError.self) {
+      try await runtime.resume(upstreamSessionID: "app-owned-thread", prompt: "must not run")
+    }
+    #expect(await client.resumeRequests.isEmpty)
+    let started = try await runtime.start(prompt: "new native thread")
+    _ = try await waitForResult(
+      runtime: runtime, sessionID: requiredString("session_id", in: started))
+    #expect(try execOwner.owns(threadID: "exec-created-thread"))
+    #expect(throws: CodexToolError.self) { try appOwner.check(threadID: "exec-created-thread") }
+    await runtime.shutdown()
+  }
+
+  @Test
+  func captureLossIsVisibleAfterProcessCleanup() async throws {
+    let partial = CodexExecPartialObservation(
+      finalMessageText: "preserved prefix", resolvedSessionID: "native-session",
+      outputCapture: .init(stdoutDroppedBytes: 128, stderrDroppedBytes: 256))
+    let client = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: [], error: CodexExecError.outputCaptureLimitExceeded(partialObservation: partial))
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"), client: client)
+    let started = try await runtime.start(prompt: "fixture")
+    let result = try await waitForResult(
+      runtime: runtime, sessionID: requiredString("session_id", in: started))
+    #expect(result.objectValue?["state"] == .string("failed"))
+    #expect(result.objectValue?["cleanup_confirmed"] == .bool(true))
+    #expect(
+      result.objectValue?["output_capture"]
+        == .object([
+          "complete": .bool(false), "stdout_dropped_bytes": .number(128),
+          "stderr_dropped_bytes": .number(256),
+        ]))
+    #expect(
+      result.objectValue?["error"]?.objectValue?["code"]
+        == .string("codex.exec.output_capture_limit"))
+    #expect(result.objectValue?["final_message"] == .string("preserved prefix"))
+    #expect(result.objectValue?["upstream_session_id"] == .string("native-session"))
+  }
+
+  @Test(arguments: [false, true])
+  func shutdownOwnsPendingLaunchAndCleansLateHandle(resume: Bool) async throws {
+    let events = AsyncStream<String>.makeStream()
+    let client = PendingExecClient(events: events.continuation)
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"), client: client)
+    var observations = events.stream.makeAsyncIterator()
+    let launch = Task {
+      if resume {
+        return try await runtime.resume(upstreamSessionID: "fixture", prompt: "fixture")
+      }
+      return try await runtime.start(prompt: "fixture")
+    }
+    #expect(await observations.next() == "launch-entered")
+    let shutdown = Task {
+      await runtime.shutdown()
+      events.continuation.yield("shutdown-returned")
+    }
+    #expect(await observations.next() == "launch-cancelled")
+    await client.release()
+    let started = try await launch.value
+    await shutdown.value
+    let sessionID = try requiredString("session_id", in: started)
+    let rows = await runtime.list().objectValue?["sessions"]?.arrayValue ?? []
+    #expect(rows.first?.objectValue?["state"] == .string("cancelled"))
+    #expect(rows.first?.objectValue?["cleanup_confirmed"] == .bool(true))
+    _ = try? await runtime.cancel(sessionID: sessionID)
+    _ = try await waitForResult(runtime: runtime, sessionID: sessionID)
+  }
+
+  @Test
+  func shutdownRejectsNewExecutionBeforeNativeLaunch() async throws {
+    let client = FakeCodexExecClientAdapter(handles: [])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"), client: client)
+    await runtime.shutdown()
+    for resume in [false, true] {
+      do {
+        if resume {
+          _ = try await runtime.resume(upstreamSessionID: "fixture", prompt: "fixture")
+        } else {
+          _ = try await runtime.start(prompt: "fixture")
+        }
+        Issue.record("Stopped runtime admitted execution")
+      } catch {
+        #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.stopped")
+      }
+    }
+    #expect(await client.runRequests.isEmpty)
+    #expect(await client.resumeRequests.isEmpty)
+  }
+
+  @Test
+  func stoppedRuntimeCannotClaimNativeThreadOwnership() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let index = try CodexThreadOwnerIndex(
+      path: root.appendingPathComponent("owners.sqlite").path, subject: "fixture", codexHome: root)
+    let client = FakeCodexExecClientAdapter(handles: [])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: root, client: client, threadOwnerIndex: index)
+    await runtime.shutdown()
+    _ = try? await runtime.resume(upstreamSessionID: "unclaimed", prompt: "fixture")
+    #expect(try !index.owns(threadID: "unclaimed"))
+    #expect(await client.resumeRequests.isEmpty)
+  }
+
+  @Test
+  func cancellingStartupCleansLateHandleBeforeReturning() async throws {
+    let events = AsyncStream<String>.makeStream()
+    let client = PendingExecClient(events: events.continuation)
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"), client: client)
+    var observations = events.stream.makeAsyncIterator()
+    let launch = Task { try await runtime.start(prompt: "fixture") }
+    #expect(await observations.next() == "launch-entered")
+    launch.cancel()
+    #expect(await observations.next() == "launch-cancelled")
+    await client.release()
+    let result = try await launch.value
+    #expect(result.objectValue?["state"] == .string("cancelled"))
+    #expect(result.objectValue?["cleanup_confirmed"] == .bool(true))
+    await runtime.shutdown()
+  }
+
+  @Test
+  func failedLaunchReleasesItsReservedCapacity() async throws {
+    let events = AsyncStream<String>.makeStream()
+    let client = PendingExecClient(
+      events: events.continuation,
+      failure: CodexExecRuntimeError(code: "test.launch_failed", message: "No process started"))
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(maxSessions: 1), workspaceURL: URL(fileURLWithPath: "/tmp"),
+      client: client)
+    var observations = events.stream.makeAsyncIterator()
+    for _ in 0..<2 {
+      let launch = Task { try await runtime.start(prompt: "fixture") }
+      #expect(await observations.next() == "launch-entered")
+      await assertThrowsErrorAsync(try await runtime.start(prompt: "blocked")) { error in
+        #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.session_limit")
+      }
+      await client.release()
+      await assertThrowsErrorAsync(try await launch.value) { error in
+        #expect((error as? CodexExecRuntimeError)?.code == "test.launch_failed")
+      }
+    }
+    #expect(await runtime.list().objectValue?["sessions"] == .array([]))
+    await runtime.shutdown()
+  }
+
+  @Test
+  func retainedWorkKeepsItsCreatorUntilExplicitRelease() async throws {
+    let origin = UUID()
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"),
+      client: FakeCodexExecClientAdapter(handles: [ControllableCodexExecHandle()]))
+    let started = try await CodexWorkInvocation.$current.withValue(origin) {
+      try await runtime.start(prompt: "fixture")
+    }
+    let id = try requiredString("session_id", in: started)
+    let expected = try CodexWorkResource(kind: "codex.exec.session", id: id, acquiredBy: origin)
+    #expect(try await runtime.workResources() == [expected])
+    await assertThrowsErrorAsync(try await runtime.release(sessionID: id)) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.not_finished")
+    }
+    _ = try await CodexWorkInvocation.$current.withValue(UUID()) {
+      _ = try await runtime.events(sessionID: id, afterCursor: 0, maxResults: 100)
+      return try await runtime.cancel(sessionID: id)
+    }
+    await runtime.shutdown()
+    #expect(
+      try await runtime.result(sessionID: id).objectValue?["cleanup_confirmed"] == .bool(true))
+    #expect(try await runtime.workResources() == [expected])
+    let released = try await runtime.release(sessionID: id)
+    #expect(released.objectValue?["released"] == .bool(true))
+    #expect(try await runtime.workResources().isEmpty)
+    await assertThrowsErrorAsync(try await runtime.result(sessionID: id)) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.session_unknown")
+    }
+    await assertThrowsErrorAsync(try await runtime.release(sessionID: id)) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.session_unknown")
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func workCoversPendingLaunchAndLateHandle(resume: Bool) async throws {
+    let events = AsyncStream<String>.makeStream()
+    let client = PendingExecClient(events: events.continuation)
+    let origin = UUID()
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"), client: client)
+    var observations = events.stream.makeAsyncIterator()
+    let launch = Task {
+      try await CodexWorkInvocation.$current.withValue(origin) {
+        if resume { return try await runtime.resume(upstreamSessionID: "fixture", prompt: nil) }
+        return try await runtime.start(prompt: "fixture")
+      }
+    }
+    #expect(await observations.next() == "launch-entered")
+    let pending = try #require(try await runtime.workResources().first)
+    #expect(pending.acquiredBy == origin)
+    #expect(pending.state == .active)
+    launch.cancel()
+    #expect(await observations.next() == "launch-cancelled")
+    #expect(try await runtime.workResources() == [pending])
+    await client.release()
+    let result = try await launch.value
+    #expect(result.objectValue?["session_id"] == .string(pending.id))
+    #expect(result.objectValue?["cleanup_confirmed"] == .bool(true))
+    #expect(try await runtime.workResources() == [pending])
+    _ = try await runtime.release(sessionID: pending.id)
+    #expect(try await runtime.workResources().isEmpty)
+    await runtime.shutdown()
+  }
+
+  @Test
+  func concurrentCreatorsRemainDistinct() async throws {
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"),
+      client: FakeCodexExecClientAdapter(handles: [
+        ControllableCodexExecHandle(), ControllableCodexExecHandle(),
+      ]))
+    let firstOrigin = UUID()
+    let secondOrigin = UUID()
+    async let first = CodexWorkInvocation.$current.withValue(firstOrigin) {
+      try await runtime.start(prompt: "first")
+    }
+    async let second = CodexWorkInvocation.$current.withValue(secondOrigin) {
+      try await runtime.resume(upstreamSessionID: "fixture", prompt: "second")
+    }
+    let firstID = try requiredString("session_id", in: await first)
+    let secondID = try requiredString("session_id", in: await second)
+    let owners = Dictionary(
+      uniqueKeysWithValues: try await runtime.workResources().map {
+        ($0.id, $0.acquiredBy)
+      })
+    #expect(owners == [firstID: firstOrigin, secondID: secondOrigin])
+    await runtime.shutdown()
+    _ = try await runtime.release(sessionID: firstID)
+    #expect(try await runtime.workResources().map(\.id) == [secondID])
+    _ = try await runtime.release(sessionID: secondID)
+  }
+
+  @Test
+  func uncertainCleanupCannotBeReleasedOrEvicted() async throws {
+    let origin = UUID()
+    let client = FakeCodexExecClientAdapter(handles: [
+      FakeCodexExecHandle(
+        lines: [], error: CodexExecError.launchFailure(description: "unknown cleanup"))
+    ])
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(maxSessions: 1), workspaceURL: URL(fileURLWithPath: "/tmp"),
+      client: client)
+    let started = try await CodexWorkInvocation.$current.withValue(origin) {
+      try await runtime.start(prompt: "fixture")
+    }
+    let id = try requiredString("session_id", in: started)
+    _ = try await waitForResult(runtime: runtime, sessionID: id)
+    await assertThrowsErrorAsync(try await runtime.start(prompt: "blocked")) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.session_limit")
+    }
+    await runtime.shutdown()
+    await assertThrowsErrorAsync(try await runtime.release(sessionID: id)) { error in
+      #expect((error as? CodexExecRuntimeError)?.code == "codex.exec.cleanup_unconfirmed")
+    }
+    #expect(
+      try await runtime.workResources() == [
+        try CodexWorkResource(
+          kind: "codex.exec.session", id: id, acquiredBy: origin, state: .uncertain)
+      ])
+    #expect(await client.runRequests.count == 1)
+  }
+
+  @Test
+  func releasingCompletedResultPreservesNativeThreadOwnership() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let index = try CodexThreadOwnerIndex(
+      path: root.appendingPathComponent("owners.sqlite").path, subject: "fixture", codexHome: root)
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: root,
+      client: FakeCodexExecClientAdapter(handles: [
+        FakeCodexExecHandle(
+          lines: [#"{"type":"thread.started","thread_id":"native-history"}"#],
+          termination: successfulTermination(workspace: root, operation: .run))
+      ]), threadOwnerIndex: index)
+    let started = try await CodexWorkInvocation.$current.withValue(UUID()) {
+      try await runtime.start(prompt: "fixture")
+    }
+    let id = try requiredString("session_id", in: started)
+    _ = try await waitForResult(runtime: runtime, sessionID: id)
+    await runtime.shutdown()
+    #expect(try index.owns(threadID: "native-history"))
+    #expect(try await runtime.workResources().count == 1)
+    _ = try await runtime.release(sessionID: id)
+    #expect(try await runtime.workResources().isEmpty)
+    #expect(try index.owns(threadID: "native-history"))
+  }
+
+  @Test
+  func standaloneWorkCannotBeReportedAsAnEmptySnapshot() async throws {
+    let runtime = LiveCodexExecRuntime(
+      configuration: configuration(), workspaceURL: URL(fileURLWithPath: "/tmp"),
+      client: FakeCodexExecClientAdapter(handles: [ControllableCodexExecHandle()]))
+    #expect(try await runtime.workResources().isEmpty)
+    let started = try await runtime.start(prompt: "fixture")
+    let id = try requiredString("session_id", in: started)
+    await #expect(throws: (any Error).self) { try await runtime.workResources() }
+    await runtime.shutdown()
+    await #expect(throws: (any Error).self) { try await runtime.workResources() }
+    _ = try await runtime.release(sessionID: id)
+    #expect(try await runtime.workResources().isEmpty)
+  }
+
+  private func configuration(
+    sandbox: CodexSandboxMode? = nil,
+    approval: CodexApprovalPolicy? = nil,
+    maxSessions: Int = 8,
+    maxEvents: Int = 1_024
+  ) -> CodexConfig {
+    CodexConfig(
+      enabled: true,
+      sandbox: sandbox,
+      approvalPolicy: approval,
+      maxSessions: maxSessions,
+      maxEventsPerSession: maxEvents
+    )
+  }
+
+  private func successfulTermination(
+    workspace: URL,
+    operation: CodexExecOperation,
+    stderr: String = ""
+  ) -> CodexExecTermination {
+    CodexExecTermination(
+      operation: operation,
+      effectiveWorkingDirectory: workspace.standardizedFileURL,
+      exitInterpretation: .exited(code: 0),
+      capturedStderrText: stderr
+    )
+  }
+
+  private func requiredString(_ key: String, in value: JSONValue) throws -> String {
+    try #require(value.objectValue?[key]?.stringValue)
+  }
+
+  private func waitForResult(
+    runtime: LiveCodexExecRuntime,
+    sessionID: String
+  ) async throws -> JSONValue {
+    for _ in 0..<100 {
+      do {
+        return try await runtime.result(sessionID: sessionID)
+      } catch let error as CodexExecRuntimeError
+        where error.code == "codex.exec.not_finished"
+      {
+        try await Task.sleep(for: .milliseconds(5))
+      }
+    }
+    Issue.record("Exec session did not reach a terminal state.")
+    return try await runtime.result(sessionID: sessionID)
+  }
+}
+
+private actor PendingExecClient: CodexExecClientAdapter {
+  private let events: AsyncStream<String>.Continuation
+  private let failure: CodexExecRuntimeError?
+  private var waiting: CheckedContinuation<Void, Never>?
+
+  init(events: AsyncStream<String>.Continuation, failure: CodexExecRuntimeError? = nil) {
+    self.events = events
+    self.failure = failure
+  }
+
+  func run(_ request: CodexExecRunRequest) async throws -> any CodexExecProcessHandleAdapter {
+    try await launch()
+  }
+
+  func resume(_ request: CodexExecResumeRequest) async throws -> any CodexExecProcessHandleAdapter {
+    try await launch()
+  }
+
+  private func launch() async throws -> any CodexExecProcessHandleAdapter {
+    await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        waiting = continuation
+        events.yield("launch-entered")
+      }
+    } onCancel: {
+      events.yield("launch-cancelled")
+    }
+    if let failure { throw failure }
+    return ControllableCodexExecHandle()
+  }
+
+  func release() {
+    waiting?.resume()
+    waiting = nil
+  }
+}
+
+private actor FakeCodexExecClientAdapter: CodexExecClientAdapter {
+  private var handles: [any CodexExecProcessHandleAdapter]
+  private(set) var runRequests: [CodexExecRunRequest] = []
+  private(set) var resumeRequests: [CodexExecResumeRequest] = []
+
+  init(handles: [any CodexExecProcessHandleAdapter]) {
+    self.handles = handles
+  }
+
+  func run(_ request: CodexExecRunRequest) throws -> any CodexExecProcessHandleAdapter {
+    runRequests.append(request)
+    return try nextHandle()
+  }
+
+  func resume(
+    _ request: CodexExecResumeRequest
+  ) throws -> any CodexExecProcessHandleAdapter {
+    resumeRequests.append(request)
+    return try nextHandle()
+  }
+
+  private func nextHandle() throws -> any CodexExecProcessHandleAdapter {
+    guard !handles.isEmpty else {
+      throw CodexExecRuntimeError(
+        code: "test.no_handle",
+        message: "No fake handle was queued."
+      )
+    }
+    return handles.removeFirst()
+  }
+}
+
+private struct FakeCodexExecHandle: CodexExecProcessHandleAdapter {
+  let stdoutLines: AsyncThrowingStream<String, Error>
+  private let termination: CodexExecTermination?
+  private let error: Error?
+
+  init(
+    lines: [String],
+    termination: CodexExecTermination? = nil,
+    error: Error? = nil
+  ) {
+    self.termination = termination
+    self.error = error
+    self.stdoutLines = AsyncThrowingStream { continuation in
+      for line in lines {
+        continuation.yield(line)
+      }
+      continuation.finish()
+    }
+  }
+
+  func waitForTermination() async throws -> CodexExecTermination {
+    if let error {
+      throw error
+    }
+    return try #require(termination)
+  }
+}
+
+private final class ControllableCodexExecHandle:
+  CodexExecProcessHandleAdapter,
+  @unchecked Sendable
+{
+  let stdoutLines: AsyncThrowingStream<String, Error>
+
+  init() {
+    self.stdoutLines = AsyncThrowingStream { _ in }
+  }
+
+  func waitForTermination() async throws -> CodexExecTermination {
+    do { try await Task.sleep(for: .seconds(60)) } catch is CancellationError {
+      throw CodexExecError.cancelled(partialObservation: nil)
+    }
+    throw CodexExecRuntimeError(
+      code: "test.unexpected_completion",
+      message: "The controllable handle should have been cancelled."
+    )
+  }
+}
+
+private func assertThrowsErrorAsync<T>(
+  _ expression: @autoclosure () async throws -> T,
+  _ errorHandler: (Error) -> Void,
+  file: StaticString = #filePath,
+  line: UInt = #line
+) async {
+  do {
+    _ = try await expression()
+    Issue.record("Expected expression to throw.")
+  } catch {
+    errorHandler(error)
+  }
+}

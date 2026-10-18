@@ -1,0 +1,15 @@
+// swift-tools-version: 6.2
+import PackageDescription
+
+let package = Package(
+  name: "WindowsManagedProcessTests",
+  dependencies: [.package(name: "swift-codex", path: "__SDK_PATH__")],
+  targets: [
+    .target(
+      name: "ManagedProcess",
+      dependencies: [
+        .product(name: "CodexAppServerStdio", package: "swift-codex"),
+        .product(name: "CodexAppServerRuntime", package: "swift-codex"),
+      ]),
+    .testTarget(name: "ManagedProcessTests", dependencies: ["ManagedProcess"]),
+  ])
