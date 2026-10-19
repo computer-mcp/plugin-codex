@@ -16,14 +16,15 @@ final class CodexDatabase: @unchecked Sendable {
     sharesWorktreeLeases = worktreeLeasePath != nil
     if let worktreeLeasePath {
       worktreeLeaseWriter = try DatabaseQueue(path: worktreeLeasePath, configuration: configuration)
-      var migrator = DatabaseMigrator()
-      migrator.registerMigration("codex-worktree-leases", migrate: Self.createWorktreeLeaseTable)
-      try migrator.migrate(worktreeLeaseWriter)
     } else {
       worktreeLeaseWriter = writer
     }
+    try Self.validateMigrations(Self.migrator, in: writer)
+    if sharesWorktreeLeases {
+      try Self.validateMigrations(Self.worktreeLeaseMigrator, in: worktreeLeaseWriter)
+      try Self.worktreeLeaseMigrator.migrate(worktreeLeaseWriter)
+    }
     try Self.migrator.migrate(writer)
-    try reconcileCodexRuntimeLeaseSemantics()
   }
 
   init(inMemory: Void) throws {
@@ -32,7 +33,6 @@ final class CodexDatabase: @unchecked Sendable {
     worktreeLeaseWriter = writer
     sharesWorktreeLeases = false
     try Self.migrator.migrate(writer)
-    try reconcileCodexRuntimeLeaseSemantics()
   }
 
   func saveCodexApproval(_ approval: CodexApprovalRecord) throws {
@@ -76,19 +76,7 @@ final class CodexDatabase: @unchecked Sendable {
         .order(Column("updatedAt").desc, Column("id").desc)
         .limit(max(1, min(limit, 5_000)))
         .fetchAll(database)
-        .map { try $0.value().reconciledStateSemantics() }
-    }
-  }
-
-  private func reconcileCodexRuntimeLeaseSemantics() throws {
-    try writer.write { database in
-      for row in try CodexRuntimeLeaseRow.fetchAll(database) {
-        let current = try row.value()
-        let reconciled = current.reconciledStateSemantics()
-        if reconciled != current {
-          try CodexRuntimeLeaseRow(reconciled).save(database)
-        }
-      }
+        .map { try $0.value() }
     }
   }
 
@@ -391,7 +379,7 @@ final class CodexDatabase: @unchecked Sendable {
 
   static var migrator: DatabaseMigrator {
     var migrator = DatabaseMigrator()
-    migrator.registerMigration("codex-approval-broker") { database in
+    migrator.registerMigration("codex-initial") { database in
       try database.create(table: "codexApprovals") { table in
         table.column("id", .text).primaryKey()
         table.column("upstreamRequestID", .text).notNull()
@@ -415,6 +403,8 @@ final class CodexDatabase: @unchecked Sendable {
         table.column("decision", .text)
         table.column("scope", .text)
         table.column("resolutionReason", .text)
+        table.column("ownerJSON", .text)
+        table.column("responseJSON", .text)
       }
       try database.create(
         index: "codexApprovals_on_workspace_state_createdAt",
@@ -431,8 +421,6 @@ final class CodexDatabase: @unchecked Sendable {
         on: "codexApprovals",
         columns: ["correlationID"]
       )
-    }
-    migrator.registerMigration("codex-runtime-leases") { database in
       try database.create(table: "codexRuntimeLeases") { table in
         table.column("id", .text).primaryKey()
         table.column("workspaceID", .text)
@@ -445,8 +433,6 @@ final class CodexDatabase: @unchecked Sendable {
         on: "codexRuntimeLeases",
         columns: ["workspaceID", "state", "updatedAt"]
       )
-    }
-    migrator.registerMigration("codex-thread-ownership") { database in
       try database.create(table: "codexThreadOwnership") { table in
         table.column("threadID", .text).primaryKey()
         table.column("workspaceID", .text)
@@ -455,23 +441,19 @@ final class CodexDatabase: @unchecked Sendable {
         table.column("state", .text).notNull()
         table.column("createdAt", .datetime).notNull()
         table.column("updatedAt", .datetime).notNull()
+        table.column("ownerJSON", .text)
       }
       try database.create(
         index: "codexThreadOwnership_on_workspace_state_updatedAt",
         on: "codexThreadOwnership",
         columns: ["workspaceID", "state", "updatedAt"]
       )
-    }
-    migrator.registerMigration("codex-ownership-reconciliation-receipts") { database in
       try database.create(table: "codexOwnershipReconciliationReceipts") { table in
         table.column("id", .text).primaryKey()
         table.column("planDigest", .text).notNull()
         table.column("appliedAt", .datetime).notNull()
         table.column("payloadJSON", .text).notNull()
       }
-    }
-
-    migrator.registerMigration("codex-orchestration-runs") { database in
       try database.create(table: "codexOrchestrationRuns") { table in
         table.column("id", .text).primaryKey()
         table.column("workspaceID", .text).notNull()
@@ -484,9 +466,7 @@ final class CodexDatabase: @unchecked Sendable {
         on: "codexOrchestrationRuns",
         columns: ["workspaceID", "state", "updatedAt"]
       )
-    }
-    migrator.registerMigration("codex-worktree-leases", migrate: Self.createWorktreeLeaseTable)
-    migrator.registerMigration("codex-managed-worktrees") { database in
+      try createWorktreeLeaseTable(database)
       try database.create(table: "codexManagedWorktrees") { table in
         table.column("id", .text).primaryKey()
         table.column("sourceWorkspaceID", .text).notNull()
@@ -501,16 +481,30 @@ final class CodexDatabase: @unchecked Sendable {
         columns: ["sourceWorkspaceID", "state", "updatedAt"]
       )
     }
-    migrator.registerMigration("codex-native-approval-responses") { database in
-      try database.alter(table: "codexApprovals") { table in
-        table.add(column: "ownerJSON", .text)
-        table.add(column: "responseJSON", .text)
-      }
-      try database.alter(table: "codexThreadOwnership") { table in
-        table.add(column: "ownerJSON", .text)
-      }
-    }
     return migrator
+  }
+
+  private static var worktreeLeaseMigrator: DatabaseMigrator {
+    var migrator = DatabaseMigrator()
+    migrator.registerMigration("codex-worktree-leases-initial", migrate: createWorktreeLeaseTable)
+    return migrator
+  }
+
+  private static func validateMigrations(
+    _ migrator: DatabaseMigrator, in writer: any DatabaseWriter
+  ) throws {
+    let unknown = try writer.read { database in
+      try migrator.appliedIdentifiers(database).subtracting(migrator.migrations).sorted()
+    }
+    guard unknown.isEmpty else { throw IncompatibleMigrations(identifiers: unknown) }
+  }
+
+  struct IncompatibleMigrations: Error, LocalizedError {
+    let identifiers: [String]
+
+    var errorDescription: String? {
+      "Unsupported adapter database migrations: \(identifiers.joined(separator: ", ")). Use a new adapter state directory."
+    }
   }
 
   private static func createWorktreeLeaseTable(_ database: Database) throws {
@@ -817,57 +811,5 @@ private struct CodexWorktreeLeaseRow: Codable, FetchableRecord, PersistableRecor
       throw CodexDatabaseError.invalidStoredValue("Codex worktree lease is not UTF-8.")
     }
     return try JSONDecoder().decode(CodexWorktreeLease.self, from: data)
-  }
-}
-
-extension CodexDatabase {
-  /// Decode using the existing row contract without rewriting payload JSON.
-  /// Indexed identity and scope must agree with the payload consumed at runtime.
-  static func validateMigrationRow(_ row: Row, table: String) throws {
-    let valid: Bool
-    switch table {
-    case "codexApprovals":
-      _ = try CodexApprovalRecordRow(row: row).value()
-      valid = true
-    case "codexThreadOwnership":
-      _ = try CodexThreadOwnershipRow(row: row).value()
-      valid = true
-    case "codexRuntimeLeases":
-      let record = try CodexRuntimeLeaseRow(row: row)
-      let value = try record.value()
-      valid =
-        record.id == value.id && record.workspaceID == value.owner?.workspaceID
-        && record.state == value.state
-    case "codexOrchestrationRuns":
-      let record = try CodexOrchestrationRunRow(row: row)
-      let value = try record.value()
-      valid =
-        record.id == value.id && record.workspaceID == value.workspaceID
-        && record.state == value.state.rawValue
-    case "codexWorktreeLeases":
-      let record = try CodexWorktreeLeaseRow(row: row)
-      let value = try record.value()
-      valid =
-        record.id == value.id && record.workspaceID == value.workspaceID
-        && record.state == value.state.rawValue
-    case "codexManagedWorktrees":
-      let record = try CodexManagedWorktreeRow(row: row)
-      let value = try record.value()
-      valid =
-        record.id == value.id && record.workspaceID == value.workspaceID
-        && record.sourceWorkspaceID == value.sourceWorkspaceID
-        && record.state == value.state.rawValue
-    case "codexOwnershipReconciliationReceipts":
-      let record = try CodexThreadOwnershipReconciliationReceiptRow(row: row)
-      let value = try JSONDecoder().decode(
-        CodexThreadOwnershipReconciliationResult.self, from: Data(record.payloadJSON.utf8))
-      valid = record.id == value.receiptID && record.planDigest == value.planDigest
-    default:
-      valid = false
-    }
-    guard valid else {
-      throw CodexDatabaseError.invalidStoredValue(
-        "Domain record identity or scope differs from its payload.")
-    }
   }
 }

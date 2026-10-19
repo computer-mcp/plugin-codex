@@ -211,8 +211,49 @@ This is adapter domain ownership, not a replacement for Codex's native sandbox.
 
 An existing root `codex.sqlite` is unbound history. Diagnostics report
 `state_storage.unbound_history_available` without assigning it to the current
-subject. Keep the source intact. A local operator must review the source and
-destination subject before using the offline migration workflow against the
-chosen destination database; do not import live records or treat unknown
-ownership as permission to resume execution. Native read-only history continues
+subject. Keep the source intact. Unknown ownership is not permission to resume execution. Native read-only history continues
 to use Codex's configured home and does not create execution ownership.
+
+## Acceptance runs and writer leases
+
+Official Goals use native get/set/clear methods and status values. `codex.run.*`
+provides a separate durable acceptance layer: criteria, evidence, evaluation,
+explicit acceptance, budgets, pause/cancel transitions, contradictions and
+selected child reconciliation. It may reference a native Goal without treating
+its own state as native Goal state. Turn completion can leave both active.
+
+`codex.worktree.leases.*` records mutation ownership, heartbeat, release and
+conflicts. Receipt cleanup does not delete a worktree. Managed provisioning is
+two steps: `provision.plan` validates the source repository, active parent lease,
+branch, start commit, derived path, profile and lineage; `provision.perform`
+consumes the reviewed revision before the five-minute plan expires. It creates
+the child, requests host registration and the profile grant, and acquires the
+isolated lease. Reconnect to select the newly registered child before starting
+a leased turn there.
+
+Removal planning binds the receipt, Git common directory and HEAD. Perform
+requires the current revision, explicit confirmation and the host's executing
+operation ticket. The child lease must be inactive and the worktree clean with
+no live child runtime. Paths must be real current-user-owned directories under
+the canonical managed root. A replacement symlink or independently created
+worktree is not a cleanup target. Ordinary removal preserves the branch.
+
+## Runtime inspection and handoff
+
+`codex.app.runtimes.list`, `inspect` and `history` expose owned runtime evidence;
+`codex.app.runtimes.cleanup.preview` and `perform` review stale runtime receipts.
+Use the discovered schema to select an exact runtime for stopping.
+`codex.app.ownership.reconcile.preview` and local-only `perform` repair a
+digest-bound set of loaded receipts only after the referenced runtime and its
+exact process/supervisor are proven gone. This changes adapter receipts and
+sends no signals.
+
+Release serializes against new thread/turn starts and checks every matching
+owned runtime. It requires `final_classification: "released_persisted"`,
+`externally_claimable: true` and `computer_mcp_writer_ownership_remaining: false`.
+Repeated release is idempotent. Reclaim deliberately resumes a persisted
+thread after validating its workspace ownership receipt or the official
+persisted thread index; a competing writer remains an error. Live evidence
+outranks durable receipts. `codex.app.handoff.diagnose` correlates the runtime,
+process, connection, thread, turn, approvals, user input and durable receipts
+without claiming control over an external client.

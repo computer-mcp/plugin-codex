@@ -632,11 +632,11 @@ actor LiveCodexExecRuntime: CodexExecRuntimeProtocol {
   }
 
   private static func validatedUpstreamSessionID(_ sessionID: String) throws -> String {
-    let allowed = CharacterSet(
-      charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
-    )
     guard !sessionID.isEmpty, sessionID.utf8.count <= 256,
-      sessionID.unicodeScalars.allSatisfy(allowed.contains)
+      sessionID.utf8.allSatisfy({ byte in
+        (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
+          || byte == 95 || byte == 45
+      })
     else {
       throw CodexExecRuntimeError(
         code: "codex.exec.invalid_upstream_session_id",

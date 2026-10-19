@@ -55,8 +55,12 @@ final class CodexExecRuntimeTests {
         == (.string(workspace.standardizedFileURL.path)))
   }
 
-  @Test
-  func testResumeUsesOpaqueSessionSelectorAndExplicitNativeDefaults() async throws {
+  @Test(arguments: [
+    "thread_original-1", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-",
+    "01234567-89ab-7cde-8fab-0123456789ab", String(repeating: "a", count: 256),
+  ])
+  func testResumeUsesOpaqueSessionSelectorAndExplicitNativeDefaults(sessionID: String) async throws
+  {
     let workspace = URL(fileURLWithPath: "/tmp/resume-workspace")
     let adapter = FakeCodexExecClientAdapter(handles: [
       FakeCodexExecHandle(
@@ -74,13 +78,13 @@ final class CodexExecRuntimeTests {
     )
 
     _ = try await runtime.resume(
-      upstreamSessionID: "thread_original-1",
+      upstreamSessionID: sessionID,
       prompt: "Continue."
     )
     let resumeRequests = await adapter.resumeRequests
     let request = try #require(resumeRequests.first)
 
-    #expect((request.selector) == (.sessionID("thread_original-1")))
+    #expect((request.selector) == (.sessionID(sessionID)))
     #expect((request.promptInput) == (.text("Continue.")))
     #expect((request.outputMode) == (.jsonl))
     #expect((request.options.workingDirectory) == (workspace.standardizedFileURL))
@@ -271,8 +275,11 @@ final class CodexExecRuntimeTests {
         > (termination["stderr"]?.stringValue?.utf8.count ?? .max))
   }
 
-  @Test
-  func testInputValidationOccursBeforeLaunchingClient() async throws {
+  @Test(arguments: [
+    "", String(repeating: "a", count: 257), "../escape", "a/b", "a.b", "a b",
+    "a\n", "a\0", "é", "线程", "a😀",
+  ])
+  func testInputValidationOccursBeforeLaunchingClient(sessionID: String) async throws {
     let adapter = FakeCodexExecClientAdapter(handles: [])
     let runtime = LiveCodexExecRuntime(
       configuration: configuration(),
@@ -285,7 +292,7 @@ final class CodexExecRuntimeTests {
       #expect(((error as? CodexExecRuntimeError)?.code) == ("codex.exec.invalid_prompt"))
     }
     await assertThrowsErrorAsync(
-      try await runtime.resume(upstreamSessionID: "../escape", prompt: nil)
+      try await runtime.resume(upstreamSessionID: sessionID, prompt: nil)
     ) { error in
       #expect(
         ((error as? CodexExecRuntimeError)?.code) == ("codex.exec.invalid_upstream_session_id"))

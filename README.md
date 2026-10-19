@@ -46,6 +46,15 @@ Explicit full-history reads remain available through `include_turns: true`;
 large histories can exceed transport, output or timeout limits. See the
 [long-thread workflow](Documentation/Reference/Workflows.md#reading-long-threads).
 
+App Server, Exec, native Goals, acceptance runs, thread handoff and managed
+worktrees are experimental and opt-in. Execution depends on a separately
+installed, authenticated Codex version that supports the requested methods.
+A completed turn does not imply Goal completion or acceptance. The adapter
+cannot inspect or terminate another client's connection or processes.
+Native Full Access uses the executing user's OS authority; host callbacks
+still require their own grants. See [diagnosis and recovery](Documentation/Reference/HostIntegration.md#diagnostics)
+and [release acceptance](Documentation/Reference/Release.md#runtime-acceptance).
+
 ## Build and run
 
 Building requires macOS 14 or newer and Swift 6.2 or newer.
@@ -123,11 +132,3 @@ JSON Pointers, and required-parameter differences. It does not run Codex.
 The adapter and swift-codex use the same vendor schema baseline. The installed
 Codex executable can differ; declaration coverage does not establish runtime
 support. Unsupported vendor methods fail explicitly.
-
-### Offline domain-state migration
-
-`codex-mcp-adapter migrate-state` previews a bounded, read-only source snapshot
-and applies only its reviewed Codex domain records to adapter-owned persistence.
-It preserves host authorization ownership and never launches a model. See
-[State migration](Documentation/Reference/StateMigration.md) for snapshot,
-conflict, atomicity and cutover boundaries.

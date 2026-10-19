@@ -35,24 +35,4 @@ struct CommandTests {
     #expect(CodexMCPAdapter.CompareSchema.helpMessage().contains("<baseline> <current>"))
   }
 
-  @Test func parsesOfflineMigrationWithoutStartingServer() throws {
-    let command = try #require(
-      CodexMCPAdapter.parseAsRoot([
-        "migrate-state", "--source-snapshot", "/tmp/source snapshot.sqlite", "--destination",
-        "/tmp/target.sqlite",
-      ]) as? CodexMCPAdapter.MigrateState)
-    #expect(!command.apply)
-    #expect(command.expectedPlanDigest == nil)
-    #expect(command.sourceSnapshot == "/tmp/source snapshot.sqlite")
-    #expect(CodexMCPAdapter.helpMessage().contains("migrate-state"))
-    for extra in [["--apply"], ["--expected-plan-digest", "digest"]] {
-      #expect(throws: (any Error).self) {
-        try CodexMCPAdapter.parseAsRoot(
-          [
-            "migrate-state", "--source-snapshot", "/tmp/source", "--destination", "/tmp/target",
-          ] + extra)
-      }
-    }
-  }
-
 }

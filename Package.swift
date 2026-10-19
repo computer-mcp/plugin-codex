@@ -31,6 +31,8 @@ let package = Package(
       dependencies: [
         "CodexAdapter", .product(name: "ArgumentParser", package: "swift-argument-parser"),
       ]),
-    .testTarget(name: "CodexAdapterTests", dependencies: ["CodexAdapter"]),
+    .testTarget(
+      name: "CodexAdapterTests", dependencies: ["CodexAdapter"],
+      resources: [.copy("Fixtures")]),
     .testTarget(name: "CodexMCPAdapterTests", dependencies: ["CodexMCPAdapter"]),
   ])

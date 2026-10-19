@@ -190,8 +190,12 @@ processes before declaring an uncoordinated owner gone.
 `CodexDatabase` stores approvals, runtime leases, thread ownership,
 reconciliation receipts, acceptance runs, worktree leases and managed-worktree receipts using their
 existing row and JSON representations.
-It reuses GRDB transactions and lease-state compatibility handling; it does
+It uses one initial domain schema and GRDB transactions; it does
 not store host profiles, credentials, workspace registrations or audit.
+Unknown migration identifiers fail before either the domain or shared-lease
+store is initialized. Use a fresh adapter state directory for an incompatible
+schema. The separate shared-lease database initializes only its lease table and
+index.
 Host-launched storage is partitioned by verified subject, profile and registered
 workspace, not a transient connection or channel. Reconnection retains this
 identity. Worktree lease facts use one transactional store per subject and
@@ -232,6 +236,45 @@ not. A new reviewed operation validates path absence and Git state before
 retrying metadata only. Provision rollback preserves Git content when host
 cleanup is unconfirmed; it never represents that case as a complete rollback.
 See [Host integration](../Reference/HostIntegration.md) for the operator contract.
+
+## Runtime generations and teardown
+
+Each workspace connection owns a lazy App Server runtime with a stable
+`runtime_id`. Its current connection has a separate generation, process group,
+App Server PID, supervisor PID, parent PID, timestamps, exit status, signal and
+termination escalation. Concurrent first calls share startup. Notifications
+and server requests belong to their exact generation; reconnecting does not
+transfer ownership of earlier work.
+
+Shutdown joins notification/request consumers, performs bounded unsubscription,
+marks pending approval records interrupted, and closes the transport. Teardown
+closes stdin, waits for graceful exit, sends TERM to the exact owned process
+group if necessary, then KILL after another bounded interval and records reaping.
+A private supervisor watches the owner's death and applies the same cleanup.
+No process is selected by executable name or a machine-wide search.
+
+The normal request timeout covers startup, workspace validation, the native
+RPC and at most one fresh-generation read-only retry. `app/list` has a dedicated
+budget for its potentially large directory snapshot and never restarts to retry
+that snapshot. A timed-out generation must be retired and reaped before retry.
+Concurrent closes share retirement, including back-pressured stdin. Runtime
+lifecycle, connection state, process state, active-request count, last request
+failure and terminal shutdown reason are independent; a request timeout does
+not itself mean the runtime stopped.
+
+Recent-thread supervision reads native state read-only, validates the canonical
+workspace and rollout root, and scans a bounded tail. Snapshot-bound cursors,
+page and Goal-scan bytes, record count, output bytes and elapsed scan budget are
+reported. Native thread/Goal persistence remains separate from adapter ownership.
+
+A native Goal, an adapter acceptance run and a completed turn have distinct
+lifetimes. Official Desktop, IDE, CLI and Remote connections own their own
+processes and authority. The adapter cannot unsubscribe or stop those clients.
+Native approvals preserve correlation, deadlines and terminal states; a lost
+connection never becomes consent or permission to replay. Account/configuration,
+marketplace and remote-pairing operations require the appropriate local control
+scope. Retained diagnostic data is bounded and credential-redacted; native
+payload preservation does not make raw output safe to publish.
 
 ## API and verification scope
 

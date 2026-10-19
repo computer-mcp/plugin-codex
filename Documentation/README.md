@@ -11,9 +11,7 @@
 - [Host integration](Reference/HostIntegration.md): scoped callbacks, host authorization, managed registrations and failure recovery.
 - [Installation](Reference/Installation.md): relocatable artifacts, host settings,
   update/rollback/removal, and distribution boundaries.
-- [State migration](Reference/StateMigration.md): offline transfer of
-  adapter-owned records from a Computer MCP snapshot.
-- [Release](Reference/Release.md): publishing a release and notifying the
+- [Release](Reference/Release.md): runtime acceptance, publishing a release and notifying the
   plugin catalog.
 
 The [root README](../README.md) is the public setup and command manual.

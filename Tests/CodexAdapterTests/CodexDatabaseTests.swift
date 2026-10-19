@@ -182,31 +182,6 @@ struct CodexDatabaseTests {
   }
 
   @Test
-  func testPreSplitRequestTimeoutIsReconciledWithoutTerminalRuntimeReason() throws {
-    let database = try CodexDatabase(inMemory: ())
-    let now = Date(timeIntervalSince1970: 6_000)
-    try database.saveCodexRuntimeLease(
-      CodexRuntimeLeaseRecord(
-        id: "pre-split-runtime",
-        owner: nil,
-        workspacePath: "/tmp/workspace-1",
-        state: "running",
-        process: nil,
-        createdAt: now,
-        updatedAt: now,
-        shutdownReason: "request_timeout",
-        cleanedAt: nil
-      )
-    )
-
-    let reconciled = try #require(try database.codexRuntimeLeases().first)
-    #expect(reconciled.runtimeState == "running")
-    #expect(reconciled.shutdownReason == nil)
-    #expect(reconciled.lastRequestFailure?.kind == "request_timeout")
-    #expect(reconciled.lastRequestFailure?.recoverable == true)
-  }
-
-  @Test
   func testReviewedRuntimeCleanupOnlyTransitionsDeadStaleReceipts() async throws {
     let database = try CodexDatabase(inMemory: ())
     let now = Date()
