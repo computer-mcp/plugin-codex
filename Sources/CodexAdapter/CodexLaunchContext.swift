@@ -1,10 +1,5 @@
+import CryptoKit
 import Foundation
-
-#if canImport(CryptoKit)
-  import CryptoKit
-#else
-  import Crypto
-#endif
 
 /// Host launch metadata binds task ownership; it never grants gateway administration.
 struct CodexLaunchContext: Sendable {
@@ -94,11 +89,9 @@ struct CodexLaunchContext: Sendable {
       let leaseScope = SHA256.hash(data: leaseIdentity).map { String(format: "%02x", $0) }.joined()
       let leaseDirectory = stateDirectory.appendingPathComponent(
         "worktree-leases", isDirectory: true)
-      #if !os(Windows)
-        try FileManager.default.createDirectory(
-          at: leaseDirectory, withIntermediateDirectories: true,
-          attributes: [.posixPermissions: 0o700])
-      #endif
+      try FileManager.default.createDirectory(
+        at: leaseDirectory, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
       worktreeLeasePath = leaseDirectory.appendingPathComponent(leaseScope + ".sqlite").path
       threadOwnerIndex = try makeThreadOwnerIndex(stateDirectory: stateDirectory)
     } else {
@@ -106,11 +99,9 @@ struct CodexLaunchContext: Sendable {
       worktreeLeasePath = nil
       threadOwnerIndex = nil
     }
-    #if !os(Windows)
-      try FileManager.default.createDirectory(
-        at: storageDirectory, withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700])
-    #endif
+    try FileManager.default.createDirectory(
+      at: storageDirectory, withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
     let database = try CodexDatabase(
       path: storageDirectory.appendingPathComponent("codex.sqlite").path,
       worktreeLeasePath: worktreeLeasePath)
@@ -136,11 +127,9 @@ struct CodexLaunchContext: Sendable {
       principalID, owner.profileID ?? "", owner.workspaceID ?? "",
     ])
     let scope = SHA256.hash(data: identity).map { String(format: "%02x", $0) }.joined()
-    #if !os(Windows)
-      try FileManager.default.createDirectory(
-        at: stateDirectory, withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700])
-    #endif
+    try FileManager.default.createDirectory(
+      at: stateDirectory, withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
     let codexHome =
       ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
       ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
@@ -150,11 +139,7 @@ struct CodexLaunchContext: Sendable {
   }
 
   private static func isAbsolutePath(_ path: String) -> Bool {
-    #if os(Windows)
-      WindowsFilePath.isValid(path) && WindowsFilePath.isAbsolute(path)
-    #else
-      path.hasPrefix("/")
-    #endif
+    path.hasPrefix("/")
   }
 
   private struct Host: Decodable {

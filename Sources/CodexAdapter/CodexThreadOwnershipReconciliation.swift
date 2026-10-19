@@ -1,10 +1,5 @@
+import CryptoKit
 import Foundation
-
-#if canImport(CryptoKit)
-  import CryptoKit
-#else
-  import Crypto
-#endif
 
 struct CodexThreadOwnershipReconciliationCandidate: Codable, Equatable, Sendable {
   let threadID: String

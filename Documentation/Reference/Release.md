@@ -8,8 +8,7 @@ owns the version, acceptance and immutability rules.
 
 1. Confirm that `version` in `computer-mcp-plugin.toml` has not been released
    and that the reviewed `master` commit has a successful CI run.
-2. Accept that run's `codex-plugin-macos-arm64-<commit>` and
-   `codex-plugin-windows-x86_64-<commit>` artifacts as described in
+2. Accept that run's `codex-plugin-macos-arm64-<commit>` artifact as described in
    [Versioning and Release](../Architecture/VersioningAndRelease.md), including
    the host checks against the exact archive bytes.
 3. Create a signed annotated tag `vX.Y.Z` on the accepted commit and push it.
@@ -27,8 +26,7 @@ owns the version, acceptance and immutability rules.
    rebuilds and never publishes the draft.
 6. Review the draft's assets and notes, then publish it.
 
-Each receipt records the archive digest, file inventory and build architecture;
-the Windows receipt also records the required Microsoft runtime versions.
+The receipt records the archive digest, file inventory and build architecture.
 
 ## Catalog notification
 

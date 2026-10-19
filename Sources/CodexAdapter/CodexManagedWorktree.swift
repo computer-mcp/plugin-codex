@@ -1,10 +1,5 @@
+import CryptoKit
 import Foundation
-
-#if canImport(CryptoKit)
-  import CryptoKit
-#else
-  import Crypto
-#endif
 
 enum CodexManagedWorktreeState: String, Codable, Equatable, Sendable {
   case planned
@@ -335,12 +330,9 @@ enum CodexManagedWorktreeManager {
     }
     var createdLease: CodexWorktreeLease?
     var createdGitWorktree = false
-    var protections: [FileSystem.Protection] = []
-    defer { withExtendedLifetime(protections) {} }
     do {
-      protections.append(try FileSystem.prepareRoot(expectedRoot))
-      protections.append(
-        try FileSystem.prepareParent(target.deletingLastPathComponent(), containedIn: expectedRoot))
+      try FileSystem.prepareRoot(expectedRoot)
+      try FileSystem.prepareParent(target.deletingLastPathComponent(), containedIn: expectedRoot)
       _ = try git(
         ["worktree", "add", "-b", record.branch, target.path, record.headOID],
         workingDirectory: sourceRoot,
@@ -474,12 +466,6 @@ enum CodexManagedWorktreeManager {
     else {
       throw CodexManagedWorktreeError.unknown(managedWorktreeID)
     }
-    #if os(Windows)
-      let protection = try FileSystem.protectDirectory(
-        URL(fileURLWithPath: record.path).deletingLastPathComponent(),
-        containedIn: managedRootURL(database: database, override: managedRoot))
-      defer { withExtendedLifetime(protection) {} }
-    #endif
     if record.state == .removing {
       try validateRemovedWorktree(
         record, database: database, liveRuntimeStatus: liveRuntimeStatus,
@@ -554,12 +540,6 @@ enum CodexManagedWorktreeManager {
       cleanupOnly
         || (record.state == .removalPlanned && record.planExpiresAt.map({ $0 > now }) == true)
     else { throw CodexManagedWorktreeError.state("the removal plan is not current") }
-    #if os(Windows)
-      let protection = try FileSystem.protectDirectory(
-        URL(fileURLWithPath: record.path).deletingLastPathComponent(),
-        containedIn: managedRootURL(database: database, override: managedRoot))
-      defer { withExtendedLifetime(protection) {} }
-    #endif
     if cleanupOnly {
       try validateRemovedWorktree(
         record, database: database, liveRuntimeStatus: liveRuntimeStatus,

@@ -7,9 +7,9 @@ import unittest
 
 
 class ProtocolCheckoutTests(unittest.TestCase):
-    def test_windows_checkout_preserves_hash_bound_resource_bytes(self):
+    def test_checkout_preserves_hash_bound_resource_bytes(self):
         repository = Path(__file__).resolve().parents[1]
-        relatives = [Path('Sources/CodexAdapter/Resources/Protocol'), Path('Vendor/SwiftWindowsRuntime')]
+        relatives = [Path('Sources/CodexAdapter/Resources/Protocol')]
         originals = {path.relative_to(repository): path.read_bytes()
                      for relative in relatives for path in (repository / relative).rglob('*') if path.is_file()}
         manifest = Path('computer-mcp-plugin.toml')

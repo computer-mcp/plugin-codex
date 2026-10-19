@@ -109,33 +109,11 @@ class PackageOwnershipTests(unittest.TestCase):
         original = manifest.read_bytes()
         self.assertEqual(package.validate_architectures(manifest, ["arm64"], "macos"),
                          "codex-plugin-macos-arm64.zip")
-        self.assertEqual(package.validate_architectures(manifest, ["x86_64"], "windows"),
-                         "codex-plugin-windows-x86_64.zip")
-        for platform, slices in [("windows", ["arm64"]), ("macos", ["x86_64"]),
+        for platform, slices in [("macos", ["x86_64"]),
                                  ("macos", ["arm64", "x86_64"]), ("linux", ["x86_64"])]:
             with self.subTest(platform=platform, slices=slices), self.assertRaises(ValueError):
                 package.validate_architectures(manifest, slices, platform)
         self.assertEqual(manifest.read_bytes(), original)
-
-    @unittest.skipUnless(os.name == "nt", "Native Windows directory reparse boundary")
-    def test_windows_junction_is_rejected_before_copying_external_content(self):
-        import subprocess
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            outside, source = root / "outside", root / "source"
-            outside.mkdir()
-            source.mkdir()
-            (outside / "sentinel").write_bytes(b"user owned")
-            junction = source / "junction"
-            subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
-                           check=True, capture_output=True)
-            try:
-                with self.assertRaisesRegex(ValueError, "reparse"):
-                    package.copy_tree(source, root / "payload")
-                self.assertFalse((root / "payload").exists())
-                self.assertEqual((outside / "sentinel").read_bytes(), b"user owned")
-            finally:
-                junction.rmdir()
 
     def test_package_rejects_slice_mismatch_and_manifest_mutation_before_publication(self):
         for failure in ("slice_mismatch", "manifest_mutation", "version_mismatch"):
@@ -222,8 +200,7 @@ class PackageOwnershipTests(unittest.TestCase):
             target = root / "target"
             package.copy_file(source, target)
             self.assertEqual(target.read_bytes(), source.read_bytes())
-            if os.name != "nt":
-                self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o755)
             package.validate_payload(root)
 
     def test_file_links_and_special_files_are_rejected_without_reading_their_targets(self):

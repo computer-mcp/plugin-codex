@@ -1,17 +1,8 @@
 # Installation and recovery
 
-On macOS the package owns `bin/codex-mcp-adapter` and its adjacent
-`codex-plugin_CodexAdapter.bundle`. On Windows it owns
-`bin/codex-mcp-adapter.exe`, `codex-plugin_CodexAdapter.resources` and the required
-Swift/open-source runtime DLLs in `bin/`. Codex itself remains an external dependency.
+The macOS package owns `bin/codex-mcp-adapter` and its adjacent
+`codex-plugin_CodexAdapter.bundle`. Codex itself remains an external dependency.
 
-Before launching on Windows x86_64, install the latest supported
-[Microsoft Visual C++ v14 x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)
-from Microsoft. The plugin does not include Microsoft runtime DLLs or install
-the redistributable. Its release receipt records the minimum tested version for
-each imported Microsoft DLL under `windows_runtime.external_prerequisites`.
-If Windows reports a missing `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` or
-`MSVCP140.dll`, install or update that official x64 package before retrying.
 Installing this package never installs, updates or removes Codex, changes global
 PATH, or grants a profile access to tools.
 
@@ -27,46 +18,30 @@ python3 Scripts/package.py --output /absolute/new/artifact-directory
 The default build is release; `--configuration debug` is available for development.
 The destination must not exist. The script builds using the pinned dependency
 resolution, copies the executable and resources, collects upstream license and
-notice files, and emits the native archive and `receipt.json`. macOS binaries
-receive an ad-hoc signature; Windows binaries are unsigned. The receipt records
+notice files, and emits the native archive and `receipt.json`. The executable
+receives an ad-hoc signature. The receipt records
 each file and archive SHA-256, platform, architecture and build configuration.
 It is not an official-source or publisher signature.
 No artifact is uploaded or installed automatically.
 
-The repository manifest declares `codex-plugin-macos-arm64.zip` and
-`codex-plugin-windows-x86_64.zip`. Packaging requires the built adapter to match
-exactly one declared platform and architecture combination. Both archives carry
-the same manifest bytes; its `platform_paths` selects the native executable.
-The manifest's `minimum_host` declares the required Computer MCP version.
-Official GitHub installation verifies the archive manifest against its release tag.
-
-On Windows, run the packaging command with Python 3.11 or newer, PowerShell,
-Swift 6.2.3, `clang-cl`, `llvm-lib` and `llvm-readobj` available. The packager
-builds SQLite from the checksummed source in `Scripts/windows-sqlite.json`,
-verifies its required features, and passes the resulting headers and static
-library to SwiftPM. It copies the recursively inspected Swift runtime DLLs
-beside the adapter and verifies their architecture and notice coverage. The
-Windows receipt records each bundled DLL's source digest, the imported Microsoft
-runtime version floors and the SQLite build identity.
+The repository manifest declares `codex-plugin-macos-arm64.zip`. Packaging
+requires the built adapter to match the declared platform and architecture.
+The archive carries the repository's exact manifest bytes; its `platform_paths`
+selects the executable. The manifest's `minimum_host` declares the required
+Computer MCP version. Official GitHub installation verifies the archive
+manifest against its release tag.
 See [third-party components](../../THIRD_PARTY_NOTICES.md) for distribution terms.
 
 Package inputs must be regular files and directories. Symbolic links and special
-files, including Windows reparse points, are rejected before signing or running
-the staged adapter. The output is
+files are rejected before signing or running the staged adapter. The output is
 published atomically without replacing any existing destination, including an
 empty directory created while the build is running. Failure removes only the
 packager's temporary staging directory; existing outputs remain unchanged.
 
 The repository's CI workflow (`ci.yml`) runs on pull requests, `master` pushes
 and manual dispatch. It checks formatting, tests and the dependency lock, then
-retains both native ZIPs and receipts as downloadable workflow artifacts. A
-separate Windows job installs no Swift toolchain, relocates the exact ZIP and
-runs the adapter with system-only child PATH. It records actual loaded module
-paths and digests, verifies the system-installed Microsoft runtime architecture
-and versions against the receipt, and checks MCP discovery, reconnect and joined
-native process cleanup.
-Hosted runners can contain preinstalled software; this gate does not claim a
-pristine Windows installation or authenticated model execution. These outputs
+retains the macOS ZIP and receipt as a downloadable workflow artifact. CI verifies
+and relocates the exact archive with `Scripts/check-package.py`. These outputs
 are validation builds, not published or verified official releases.
 Check the receipt's architecture before installation. Public distribution needs
 separate publisher authorization and its signing/provenance review.

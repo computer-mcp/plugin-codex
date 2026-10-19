@@ -1,10 +1,8 @@
 # Package
 
-The package uses Swift tools 6.2 and supports macOS 14 and Windows x86_64.
-Windows archives use the reviewed Swift 6.2.3 runtime and pinned SQLite static
-build. `CodexMCPAdapter` owns argument
-handling; `CodexAdapter` owns configuration, MCP projection and Codex domain
-implementation. Runtime tests live in `CodexAdapterTests`; command parsing tests
+The package uses Swift tools 6.2 and supports macOS 14 or newer.
+`CodexMCPAdapter` owns argument handling; `CodexAdapter` owns configuration,
+MCP projection and Codex domain implementation. Runtime tests live in `CodexAdapterTests`; command parsing tests
 live in `CodexMCPAdapterTests`. Computer MCP Core is not a
 dependency.
 
@@ -12,12 +10,10 @@ dependency.
 
 | Package | Responsibility |
 | --- | --- |
-| `computer-mcp/swift-sdk` transport fork | Standard northbound MCP transport, tools and results; native Windows stdio and complete POSIX frame writes |
+| `computer-mcp/swift-sdk` transport fork | Standard northbound MCP transport, tools and results; stdio and complete POSIX frame writes |
 | swift-codex | App Server client and Exec client, each with its own lifecycle |
-| swift-subprocess 0.4.0 | Child process launch and line I/O on Apple platforms |
+| swift-subprocess 0.4.0 | Child process launch and line I/O |
 | swift-argument-parser 1.8.2 | Named options, schema-comparison subcommand, validation and generated CLI help |
-| Apple Swift System 1.8.1 | Typed CRT descriptors for inherited Windows MCP pipe handles; already shared by the MCP dependency |
-| Apple Swift Crypto 4.5.2 | SHA-256 on Windows; Apple platforms retain CryptoKit |
 | GRDB 7.11.1 | Codex approval, runtime/thread ownership, acceptance run, worktree lease and managed-worktree storage and transactions |
 
 `Scripts/verify-swift-codex-release-gate.sh` verifies that the manifest's exact
@@ -171,10 +167,8 @@ through unchanged. An initial directory or Git worktree is not OS isolation.
 `CodexProcessEnvironment` preserves vendor state configuration and proxy
 behavior while removing parent Codex session and Computer MCP launch metadata.
 External Codex installation and user credentials remain user-owned.
-Environment filtering uses native case-insensitive name comparison on Windows.
-Proxy settings preserve the existing spelling and do not create case aliases;
-ambiguous caller-supplied names remain subject to native launch validation.
-Apple platforms retain distinct uppercase/lowercase proxy variables.
+Environment names are case-sensitive. Proxy settings mirror a single inherited
+uppercase or lowercase value while preserving explicitly configured distinct values.
 
 App Server and Exec resolve the configured executable using the same
 launch environment and workspace: absolute paths are direct, relative paths
@@ -276,17 +270,10 @@ acceptance before promoting an artifact to a public release.
 
 ## Inherited host channel
 
-The host binds callbacks to its own immutable caller/workspace scope. macOS uses
-an inherited connected Unix socket. The Windows transport accepts a paired read
-and write byte-pipe handle through `COMPUTER_MCP_HOST_READ_HANDLE` and
-`COMPUTER_MCP_HOST_WRITE_HANDLE`, alongside the host context. Handles must be
-canonical decimal values, distinct, inherited, and separate from standard I/O.
-Ambiguous environment keys, partial pairs, files and message pipes are rejected.
-
-Admission clears inheritance and bridges owned duplicates through Swift System's
-CRT descriptor type. Once the MCP transport has duplicated the handles for native
-I/O, the adapter closes the inherited originals and CRT intermediates. The owning
-MCP transport supplies framing, bounded queues, cancellation and native I/O joins;
-the adapter retains one connection/close task. Callback metadata is removed from
-vendor environments. Windows native transport evidence is separate from a complete
-host launch, adapter artifact or authenticated model acceptance.
+The host binds callbacks to its own immutable caller/workspace scope over an
+inherited connected Unix socket. `COMPUTER_MCP_HOST_FD` selects a canonical
+descriptor from 3 through 9 alongside the host context. The transport requires
+a connected stream socket, sets close-on-exec and nonblocking mode, and bounds
+message sizes, queued data and write deadlines. Disconnect closes the owned
+descriptor and joins active I/O. Callback metadata is removed from vendor
+environments.
