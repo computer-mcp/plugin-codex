@@ -1,0 +1,152 @@
+[
+  {
+    "name": "codexApprovals_on_correlationID",
+    "sql": "CREATE INDEX \"codexApprovals_on_correlationID\" ON \"codexApprovals\"(\"correlationID\")",
+    "table": "codexApprovals",
+    "type": "index"
+  },
+  {
+    "name": "codexApprovals_on_runtimeID",
+    "sql": "CREATE INDEX \"codexApprovals_on_runtimeID\" ON \"codexApprovals\"(\"runtimeID\")",
+    "table": "codexApprovals",
+    "type": "index"
+  },
+  {
+    "name": "codexApprovals_on_workspace_state_createdAt",
+    "sql": "CREATE INDEX \"codexApprovals_on_workspace_state_createdAt\" ON \"codexApprovals\"(\"workspaceID\", \"state\", \"createdAt\")",
+    "table": "codexApprovals",
+    "type": "index"
+  },
+  {
+    "name": "codexManagedWorktrees_on_source_state_updatedAt",
+    "sql": "CREATE INDEX \"codexManagedWorktrees_on_source_state_updatedAt\" ON \"codexManagedWorktrees\"(\"sourceWorkspaceID\", \"state\", \"updatedAt\")",
+    "table": "codexManagedWorktrees",
+    "type": "index"
+  },
+  {
+    "name": "codexOrchestrationRuns_on_workspace_state_updatedAt",
+    "sql": "CREATE INDEX \"codexOrchestrationRuns_on_workspace_state_updatedAt\" ON \"codexOrchestrationRuns\"(\"workspaceID\", \"state\", \"updatedAt\")",
+    "table": "codexOrchestrationRuns",
+    "type": "index"
+  },
+  {
+    "name": "codexRuntimeLeases_on_workspace_state_updatedAt",
+    "sql": "CREATE INDEX \"codexRuntimeLeases_on_workspace_state_updatedAt\" ON \"codexRuntimeLeases\"(\"workspaceID\", \"state\", \"updatedAt\")",
+    "table": "codexRuntimeLeases",
+    "type": "index"
+  },
+  {
+    "name": "codexThreadOwnership_on_workspace_state_updatedAt",
+    "sql": "CREATE INDEX \"codexThreadOwnership_on_workspace_state_updatedAt\" ON \"codexThreadOwnership\"(\"workspaceID\", \"state\", \"updatedAt\")",
+    "table": "codexThreadOwnership",
+    "type": "index"
+  },
+  {
+    "name": "codexWorktreeLeases_on_workspace_state_heartbeatAt",
+    "sql": "CREATE INDEX \"codexWorktreeLeases_on_workspace_state_heartbeatAt\" ON \"codexWorktreeLeases\"(\"workspaceID\", \"state\", \"heartbeatAt\")",
+    "table": "codexWorktreeLeases",
+    "type": "index"
+  },
+  {
+    "name": "sqlite_autoindex_codexApprovals_1",
+    "sql": null,
+    "table": "codexApprovals",
+    "type": "index"
+  },
+  {
+    "name": "sqlite_autoindex_codexManagedWorktrees_1",
+    "sql": null,
+    "table": "codexManagedWorktrees",
+    "type": "index"
+  },
+  {
+    "name": "sqlite_autoindex_codexManagedWorktrees_2",
+    "sql": null,
+    "table": "codexManagedWorktrees",
+    "type": "index"
+  },
+  {
+    "name": "sqlite_autoindex_codexOrchestrationRuns_1",
+    "sql": null,
+    "table": "codexOrchestrationRuns",
+    "type": "index"
+  },
+  {
+    "name": "sqlite_autoindex_codexOwnershipReconciliationReceipts_1",
+    "sql": null,
+    "table": "codexOwnershipReconciliationReceipts",
+    "type": "index"
+  },
+  {
+    "name": "sqlite_autoindex_codexRuntimeLeases_1",
+    "sql": null,
+    "table": "codexRuntimeLeases",
+    "type": "index"
+  },
+  {
+    "name": "sqlite_autoindex_codexThreadOwnership_1",
+    "sql": null,
+    "table": "codexThreadOwnership",
+    "type": "index"
+  },
+  {
+    "name": "sqlite_autoindex_codexWorktreeLeases_1",
+    "sql": null,
+    "table": "codexWorktreeLeases",
+    "type": "index"
+  },
+  {
+    "name": "sqlite_autoindex_grdb_migrations_1",
+    "sql": null,
+    "table": "grdb_migrations",
+    "type": "index"
+  },
+  {
+    "name": "codexApprovals",
+    "sql": "CREATE TABLE \"codexApprovals\" (\"id\" TEXT PRIMARY KEY, \"upstreamRequestID\" TEXT NOT NULL, \"kind\" TEXT NOT NULL, \"risk\" TEXT NOT NULL, \"state\" TEXT NOT NULL, \"workspaceID\" TEXT, \"workspacePath\" TEXT NOT NULL, \"runtimeID\" TEXT NOT NULL, \"threadID\" TEXT, \"turnID\" TEXT, \"itemID\" TEXT, \"correlationID\" TEXT NOT NULL, \"socketConnectionID\" TEXT, \"tunnelInstanceID\" TEXT, \"detailsJSON\" TEXT NOT NULL, \"proposedActionJSON\" TEXT NOT NULL, \"createdAt\" DATETIME NOT NULL, \"expiresAt\" DATETIME NOT NULL, \"resolvedAt\" DATETIME, \"decision\" TEXT, \"scope\" TEXT, \"resolutionReason\" TEXT, \"ownerJSON\" TEXT, \"responseJSON\" TEXT)",
+    "table": "codexApprovals",
+    "type": "table"
+  },
+  {
+    "name": "codexManagedWorktrees",
+    "sql": "CREATE TABLE \"codexManagedWorktrees\" (\"id\" TEXT PRIMARY KEY, \"sourceWorkspaceID\" TEXT NOT NULL, \"workspaceID\" TEXT NOT NULL UNIQUE, \"state\" TEXT NOT NULL, \"updatedAt\" DATETIME NOT NULL, \"payloadJSON\" TEXT NOT NULL)",
+    "table": "codexManagedWorktrees",
+    "type": "table"
+  },
+  {
+    "name": "codexOrchestrationRuns",
+    "sql": "CREATE TABLE \"codexOrchestrationRuns\" (\"id\" TEXT PRIMARY KEY, \"workspaceID\" TEXT NOT NULL, \"state\" TEXT NOT NULL, \"updatedAt\" DATETIME NOT NULL, \"payloadJSON\" TEXT NOT NULL)",
+    "table": "codexOrchestrationRuns",
+    "type": "table"
+  },
+  {
+    "name": "codexOwnershipReconciliationReceipts",
+    "sql": "CREATE TABLE \"codexOwnershipReconciliationReceipts\" (\"id\" TEXT PRIMARY KEY, \"planDigest\" TEXT NOT NULL, \"appliedAt\" DATETIME NOT NULL, \"payloadJSON\" TEXT NOT NULL)",
+    "table": "codexOwnershipReconciliationReceipts",
+    "type": "table"
+  },
+  {
+    "name": "codexRuntimeLeases",
+    "sql": "CREATE TABLE \"codexRuntimeLeases\" (\"id\" TEXT PRIMARY KEY, \"workspaceID\" TEXT, \"state\" TEXT NOT NULL, \"updatedAt\" DATETIME NOT NULL, \"payloadJSON\" TEXT NOT NULL)",
+    "table": "codexRuntimeLeases",
+    "type": "table"
+  },
+  {
+    "name": "codexThreadOwnership",
+    "sql": "CREATE TABLE \"codexThreadOwnership\" (\"threadID\" TEXT PRIMARY KEY, \"workspaceID\" TEXT, \"workspacePath\" TEXT NOT NULL, \"runtimeID\" TEXT NOT NULL, \"state\" TEXT NOT NULL, \"createdAt\" DATETIME NOT NULL, \"updatedAt\" DATETIME NOT NULL, \"ownerJSON\" TEXT)",
+    "table": "codexThreadOwnership",
+    "type": "table"
+  },
+  {
+    "name": "codexWorktreeLeases",
+    "sql": "CREATE TABLE \"codexWorktreeLeases\" (\"id\" TEXT PRIMARY KEY, \"workspaceID\" TEXT NOT NULL, \"state\" TEXT NOT NULL, \"heartbeatAt\" DATETIME NOT NULL, \"payloadJSON\" TEXT NOT NULL)",
+    "table": "codexWorktreeLeases",
+    "type": "table"
+  },
+  {
+    "name": "grdb_migrations",
+    "sql": "CREATE TABLE grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY)",
+    "table": "grdb_migrations",
+    "type": "table"
+  }
+]

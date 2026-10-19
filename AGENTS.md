@@ -160,7 +160,9 @@ version-specific CLI exports and distinguish them from the client SDK snapshot.
 Do not install or bundle vendor Codex binaries. Keep generated schema provenance.
 
 Use Swift Testing. Run strict swift-format lint, swift build, swift test, schema
-drift checks, and an isolated standard MCP client before handoff. Logs must never
+drift checks, and an isolated standard MCP client before handoff. Use `Documentation/Reference/Release.md` for packaged runtime acceptance through
+the installed host; run `Scripts/check-host.py --help` and its Python unit tests
+when changing that driver. Logs must never
 write to the protocol stdout. Do not publish repositories or releases implicitly.
 
 ## Brand delivery

@@ -121,11 +121,3 @@ when operating a disposable test host. Without it these commands target the
 normal App. Preserve the configured adapter state directory during an update
 or rollback; uninstalling a package artifact does not authorize deleting
 independently configured execution records or vendor state.
-
-## Domain-state migration
-
-Use the explicit [offline state migration](StateMigration.md) command to preview
-and import prior Codex domain records. Installation and ordinary adapter startup
-do not read or migrate the host database. The migration command has its own
-snapshot, conflict, transaction and recovery requirements; it does not perform
-the host-service cutover.

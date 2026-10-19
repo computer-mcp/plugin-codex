@@ -32,8 +32,11 @@ immutable CI candidate artifact. Check the relocated candidate with a standard
 MCP client and `Scripts/check-workflow.py --adapter … --codex …`. The latter
 uses an isolated home and fixed loopback model for native approvals, turns,
 cancellation, reconnection and owned-process cleanup. It does not prove real
-model authentication. Host integration uses the Computer MCP repository's fixed
-installed-gateway checks against the exact adapter bytes.
+model authentication. Host integration uses this repository's `Scripts/check-host.py` against the
+installed Computer MCP CLI, relocated adapter bytes and installed vendor. Full
+acceptance includes authenticated model execution; fixture-only evidence cannot
+replace it. [Release](../Reference/Release.md#runtime-acceptance) owns the commands
+and prerequisites.
 
 Accept the complete host/plugin/SDK combination before delivery. Create a formal
 signed tag only for the accepted commit; `release.yml` promotes the

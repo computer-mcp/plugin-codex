@@ -113,3 +113,83 @@ The host permits 1–1000 requested records and bounds the complete service resu
 Reduce `limit` when the response would exceed the byte limit. Inspection does not
 start Codex or a model. Real vendor/model authentication and GUI permissions are
 separate checks from the host callback protocol.
+
+Use the host's generic tool command with the exported name. The examples assume
+an empty MCP registration prefix; prepend the configured prefix when present.
+IDs come from the registered workspace and returned native thread:
+
+```sh
+computer-mcp tools call codex.app.handoff.diagnose --arguments-json \
+  '{"workspace_id":"<workspace-id>","thread_id":"<thread-id>","observed_error":"<message from the other client>"}'
+computer-mcp tools call codex.diagnostics.snapshot --arguments-json \
+  '{"workspace_id":"<workspace-id>","limit":100}'
+computer-mcp tools call codex.app.thread.release --arguments-json \
+  '{"workspace_id":"<workspace-id>","thread_id":"<thread-id>"}'
+computer-mcp tools call codex.app.thread.recent --arguments-json \
+  '{"workspace_id":"<workspace-id>","thread_id":"<thread-id>"}'
+```
+
+When calling indirectly with `mcp.tools.call`, put `workspace_id` beside
+`server`, `tool` and `arguments`; only native plugin arguments go inside
+`arguments`. Native names and exported host names need not be identical.
+
+The handoff diagnosis distinguishes these classifications:
+
+| Classification | Operator action |
+| --- | --- |
+| `computer_mcp_owned` | Inspect the exact reported runtime and resolve pending approval/input. Release the thread; stop the exact runtime only when all its work should end. |
+| `released_persisted` | No live adapter writer is reported. Open the persisted thread in the intended client. |
+| `persisted_or_external` | No live adapter owner is verified. Reclaim only when the adapter should deliberately become the writer. |
+| `external_writer_or_unfinished_watchdog` | Review stale receipts and allow bounded owned-process shutdown to finish. An external owner is inferred, never signalled. |
+
+A successful unsubscribe alone does not prove release. Require the final
+`released_persisted` classification, `externally_claimable: true` and
+`computer_mcp_writer_ownership_remaining: false`. If a loaded receipt remains
+once its exact runtime and process are gone, preview ownership reconciliation
+and apply the reviewed digest through local control. A writer conflict in
+another client must be resolved through that client's controls. Never use
+`killall` or delete session files to bypass ownership.
+
+### Execution or permissions fail
+
+Inspect App Server with `codex.app.status` and Exec with `codex.exec.list`
+independently. The host's provider/package doctor checks availability; it does
+not prove model authentication. Verify the selected executable and native
+configuration, including personal provider, MCP, Skills and hooks settings.
+A slow or broken personal integration can delay startup. Diagnose credentials
+in Codex's own store rather than copying them into host configuration.
+An unavailable custom program fails explicitly; it never falls back to a
+different executable. For a non-Git initial directory, select Exec's native
+`options.skip_git_repo_check` explicitly.
+
+Thread and turn responses report applied native permissions. Omitted settings
+inherit Codex configuration; an explicit override can change the sandbox or
+approval policy. A host profile name is not evidence of effective Full Access.
+A host denial prevents invocation; it never silently chooses a narrower native
+mode. Full Access cannot grant host callbacks extra capabilities, workspace
+access, tickets or macOS privacy permissions.
+
+The installed vendor must support the requested stable or explicitly enabled
+experimental API. Incompatible methods fail explicitly. App Server failure
+does not silently switch execution to Exec.
+
+### Slow history or directory requests
+
+Use the bounded history pages in [Workflows](Workflows.md#reading-long-threads),
+or `thread.recent` for a persisted tail. Its `bounds` report page and Goal-scan
+I/O, output bytes, elapsed scan and cooperative budget exhaustion;
+`full_history_loaded` is false. Follow `next_before_cursor` only for older
+context and restart from the newest page if the rollout identity changed.
+
+`app/list` has its own configured deadline and uses one connection generation;
+other calls use the normal end-to-end request budget. A directory HTTP 403
+reported by `codex.app.request_failed` is an upstream response, not evidence
+that local workspace content or the host was classified as hostile. It remains
+a failed acceptance check. Inspect network and account availability separately.
+
+If Safari or interactive Codex works but the adapter's directory request fails,
+check fixed macOS HTTP/HTTPS/SOCKS proxy settings and restart the owned adapter
+connection. Explicit inherited proxy values are preserved; otherwise the adapter
+maps fixed system proxies to conventional uppercase/lowercase child variables
+with loopback bypass. Derived proxy values are not persisted or logged. PAC
+scripts are not evaluated.

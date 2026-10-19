@@ -41,29 +41,6 @@ struct CodexRuntimeLeaseRecord: Codable, Equatable, Sendable, Identifiable {
     (try? JSONValue.encoded(self)) ?? .object([:])
   }
 
-  func reconciledStateSemantics() -> CodexRuntimeLeaseRecord {
-    var reconciled = self
-    let terminal = state == "stopped" || state == "cleaned"
-    if !terminal, let priorShutdownReason = shutdownReason {
-      reconciled.runtimeState = runtimeState ?? "running"
-      reconciled.connectionState = connectionState ?? state
-      reconciled.processState = processState ?? process?.state.rawValue ?? "absent"
-      reconciled.currentRequestState = currentRequestState ?? "idle"
-      reconciled.lastRequestFailure =
-        lastRequestFailure
-        ?? CodexRuntimeRequestFailure(
-          kind:
-            priorShutdownReason == "request_timeout"
-            ? "request_timeout" : "compatibility_request_failure",
-          message: "Recovered a request failure stored before runtime/request state separation.",
-          occurredAt: updatedAt,
-          connectionGeneration: 0,
-          recoverable: true
-        )
-      reconciled.shutdownReason = nil
-    }
-    return reconciled
-  }
 }
 
 enum CodexRuntimeMaintenance {

@@ -19,6 +19,15 @@ struct CodexAppServerProviderTests {
   }
 
   @Test
+  func managedRemovalDeclaresDestructiveRiskAndAnnotation() throws {
+    let tool = try #require(
+      makeProvider().tools.first { $0.name == "codex.worktree.remove.perform" })
+    #expect(tool._meta?["io.github.computer-mcp/risk"] == .string("destructive"))
+    #expect(tool.annotations.destructiveHint == true)
+    #expect(tool.annotations.readOnlyHint == false)
+  }
+
+  @Test
   func modelAndApprovalEntryPointsDeclareFullShellAcrossTheMCPCatalog() throws {
     let tools = makeProvider().tools
     for tool in tools {
