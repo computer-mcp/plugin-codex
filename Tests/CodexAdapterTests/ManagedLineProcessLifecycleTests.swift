@@ -7,6 +7,64 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1)))
 struct ManagedLineProcessLifecycleTests {
   @Test
+  func overlappingLargeFramesArriveIntactInFIFOOrder() async throws {
+    try await withGatedInputProcess { process, gate in
+      var lines = process.inboundLines.makeAsyncIterator()
+      let capacityLine = try #require(try await lines.next())
+      let pipeCapacity = try #require(Int(capacityLine))
+      let firstLine = "{\"id\":1,\"payload\":\"" + String(repeating: "a", count: 1_048_576) + "\"}"
+      let secondLine = "{\"id\":2,\"payload\":\"" + String(repeating: "b", count: 1_048_576) + "\"}"
+      try #require(firstLine.utf8.count > pipeCapacity && secondLine.utf8.count > pipeCapacity)
+
+      let first = Task { try await process.sendLine(firstLine) }
+      try #require(try await lines.next() == "blocked")
+      try await waitForPendingWrites(1, in: process)
+      let second = Task { try await process.sendLine(secondLine) }
+      try await waitForPendingWrites(2, in: process)
+
+      try gate.write(contentsOf: Data([1]))
+      try await first.value
+      try await second.value
+      #expect(try await lines.next() == firstLine)
+      #expect(try await lines.next() == secondLine)
+      let running = await process.snapshot()
+      #expect(running.state == .running && !running.hasExited)
+      #expect(running.pendingWrites == 0)
+      #expect(kill(try #require(running.processID), 0) == 0)
+    }
+  }
+
+  @Test
+  func queuedWriteFailsClosedWhenProcessClosesDuringBlockedWrite() async throws {
+    try await withGatedInputProcess { process, _ in
+      var lines = process.inboundLines.makeAsyncIterator()
+      _ = try #require(try await lines.next())
+      let first = Task { try await process.sendLine(String(repeating: "x", count: 1_048_576)) }
+      try #require(try await lines.next() == "blocked")
+      try await waitForPendingWrites(1, in: process)
+      let queued = Task { try await process.sendLine("queued frame") }
+      try await waitForPendingWrites(2, in: process)
+
+      let started = ContinuousClock.now
+      await process.close()
+      #expect(started.duration(to: .now) < .seconds(3))
+      if case .success = await first.result {
+        Issue.record("A cancelled, incomplete protocol write must fail.")
+      }
+      do {
+        try await queued.value
+        Issue.record("A queued frame must fail when the transport closes.")
+      } catch ManagedLineProcessError.closed {
+      } catch {
+        Issue.record("Expected the closed transport error, received \(error).")
+      }
+      let stopped = await process.snapshot()
+      #expect(stopped.hasExited && stopped.cleanupConfirmed == true)
+      #expect(stopped.pendingWrites == 0)
+    }
+  }
+
+  @Test
   func inputRemainsOpenAcrossRequestsAndCloseDeliversEOF() async throws {
     let process = try ManagedLineProcess(
       configuration: .init(
@@ -177,5 +235,60 @@ struct ManagedLineProcessLifecycleTests {
     #expect(child.terminationReason == .uncaughtSignal)
     #expect(child.terminationStatus == SIGPIPE)
     #expect(try (output.fileHandleForReading.readToEnd() ?? Data()).isEmpty)
+  }
+
+  private func waitForPendingWrites(_ count: Int, in process: ManagedLineProcess) async throws {
+    let deadline = ContinuousClock.now + .seconds(10)
+    while await process.snapshot().pendingWrites != count {
+      try #require(ContinuousClock.now < deadline, "Expected \(count) pending writes.")
+      try await Task.sleep(for: .milliseconds(10))
+    }
+  }
+
+  private func withGatedInputProcess(
+    _ body: (ManagedLineProcess, FileHandle) async throws -> Void
+  ) async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appendingPathComponent("read-gate").path
+    try #require(mkfifo(path, 0o600) == 0)
+    let descriptor = open(path, O_RDWR | O_NONBLOCK)
+    try #require(descriptor >= 0)
+    let gate = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    defer { try? gate.close() }
+    let process = try ManagedLineProcess(
+      configuration: .init(
+        executable: "/usr/bin/python3",
+        arguments: [
+          "-c",
+          """
+          import array, fcntl, os, select, sys, termios
+          with open(sys.argv[1], "rb", buffering=0) as gate:
+              print(os.fstat(0).st_blksize, flush=True)
+              select.select([0], [], [])
+              while True:
+                  available = array.array("i", [0])
+                  fcntl.ioctl(0, termios.FIONREAD, available, True)
+                  if available[0] >= os.fstat(0).st_blksize:
+                      break
+              print("blocked", flush=True)
+              gate.read(1)
+          for line in sys.stdin.buffer:
+              sys.stdout.buffer.write(line)
+              sys.stdout.buffer.flush()
+          """,
+          path,
+        ],
+        workingDirectory: directory,
+        terminationGraceMilliseconds: 100, maximumMessageBytes: 2_097_152))
+    do {
+      try await body(process, gate)
+      await process.close()
+      #expect(await process.snapshot().cleanupConfirmed == true)
+    } catch {
+      await process.close()
+      throw error
+    }
   }
 }

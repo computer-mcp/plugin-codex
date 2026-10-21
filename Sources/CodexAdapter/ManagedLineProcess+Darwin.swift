@@ -455,6 +455,7 @@ private actor ManagedLineProcessState {
   private var signal: Int32?
   private var terminationEscalated = false
   private var pendingWrites = 0
+  private var writeWaiters: [CheckedContinuation<Void, Never>] = []
   private var lastError: String?
   private var outputBuffer = Data()
   private var shutdownRequested = false
@@ -495,16 +496,28 @@ private actor ManagedLineProcessState {
 
   func send(line: String) async throws {
     try await waitUntilReady()
-    guard state == .running, let inputWriter else {
+    guard state == .running else {
       throw ManagedLineProcessError.closed
     }
     guard line.utf8.count <= maximumMessageBytes else {
       throw ManagedLineProcessError.oversizedMessage(maximumMessageBytes)
     }
     guard !line.contains("\n") else { throw ManagedLineProcessError.invalidConfiguration }
-    let frame = Data((line + "\n").utf8)
     pendingWrites += 1
-    defer { pendingWrites -= 1 }
+    defer {
+      pendingWrites -= 1
+      if !writeWaiters.isEmpty {
+        writeWaiters.removeFirst().resume()
+      }
+    }
+    // Hold the FIFO turn across the write's suspension, leaving shutdown free to interrupt I/O.
+    if pendingWrites > 1 {
+      await withCheckedContinuation { writeWaiters.append($0) }
+    }
+    guard state == .running, let inputWriter else {
+      throw ManagedLineProcessError.closed
+    }
+    let frame = Data((line + "\n").utf8)
     let count = try await inputWriter.write(Array(frame))
     guard count == frame.count else { throw ManagedLineProcessError.closed }
   }

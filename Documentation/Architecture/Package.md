@@ -31,7 +31,9 @@ no-op `SA_RESTART` SIGPIPE handler once only for the default disposition,
 preserving existing handlers and ignored signals. A handler resets on exec,
 whereas ignoring SIGPIPE would survive into children. Broken pipe errors from
 the library propagate unchanged; a returned short write fails with the adapter's
-closed-transport error. Shutdown preserves EOF delivery, bounded process-group
+closed-transport error. Complete outbound frames are written one at a time in
+FIFO order, with queued writers rechecking transport state before writing.
+Shutdown preserves EOF delivery, bounded process-group
 cleanup and frame/output limits.
 
 `Scripts/verify-swift-codex-release-gate.sh` verifies that the manifest's exact
