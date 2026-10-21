@@ -2,7 +2,16 @@
 
 This guide covers publishing an accepted release and notifying the official
 plugin catalog. [Versioning and Release](../Architecture/VersioningAndRelease.md)
-owns the version, acceptance and immutability rules.
+owns the version, acceptance and immutability rules. The organization's
+[VERSIONING.md](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md)
+owns shared plugin API, release content and recovery requirements.
+
+Codex is the documented exception to the reusable organization release workflow:
+its native builds are not byte reproducible. Its own `release.yml` promotes the
+accepted CI artifacts and uses `reproduction: ci-artifact-promotion` under the
+same release content and publication contract. Enable GitHub release immutability
+in the repository settings before running publication or its dry run; the
+workflow refuses when that setting is disabled or cannot be verified.
 
 ## Runtime acceptance
 
@@ -83,27 +92,54 @@ python3 -m unittest discover -s Tests -p 'test_host_acceptance.py' -v
 
 ## Publish
 
-1. Confirm that `version` in `computer-mcp-plugin.toml` has not been released
-   and that the reviewed `master` commit has a successful CI run.
-2. Accept that run's `codex-plugin-macos-arm64-<commit>` artifact as described in
-   [Versioning and Release](../Architecture/VersioningAndRelease.md), including
-   the host checks against the exact archive bytes.
-3. Create a signed annotated tag `vX.Y.Z` on the accepted commit and push it.
-4. Create a draft GitHub Release for the tag whose target is the full commit SHA.
-5. Promote the CI artifacts into the draft:
+1. Confirm the manifest's `version` has not been released and the reviewed
+   `master` commit has successful `push` CI from `.github/workflows/ci.yml`.
+   Each declared archive selects the exact CI artifact
+   `<archive-stem>-<full-commit-sha>` from that run's latest successful attempt.
+2. Assemble and check the candidate without Release writes:
 
    ```sh
    gh workflow run release.yml --repo computer-mcp/plugin-codex --ref master \
-     -f source_run=RUN_ID -f release_tag=vX.Y.Z
+     -f source_run=RUN_ID -F publish=false
    ```
 
-   The workflow accepts only a successful `master` push run of `ci.yml` for the
-   tagged commit. It checks every archive the manifest declares against the tag
-   before uploading each archive and its `<archive>.receipt.json`. It never
-   rebuilds and never publishes the draft.
-6. Review the draft's assets and notes, then publish it.
+   The dry run checks the source manifest, positive integer `plugin_api`,
+   declared archive set, CI attempt and artifact digests, native inventories
+   and byte-identical manifests. It omits tag and signature checks and reads
+   no catalog secret. Inspect the `assets/` directory in the
+   `plugin-release-<run-id>-<attempt>` Actions artifact.
+3. Accept those exact archive bytes through the runtime checks above and record
+   the results and limits in the draft Release notes. Create and push a signed
+   annotated `vX.Y.Z` tag directly on the accepted commit. An operator-created
+   draft must target its full commit SHA; otherwise publication creates a draft.
+4. Publish with:
 
-The receipt records the archive digest, file inventory and build architecture.
+   ```sh
+   gh workflow run release.yml --repo computer-mcp/plugin-codex --ref master \
+     -f source_run=RUN_ID -f release_tag=vX.Y.Z -F publish=true
+   ```
+
+   GitHub must verify the tag signature as valid; the tag's commit and manifest
+   version must match. The verification job has only `contents: read` and
+   `actions: read`, executes the release workflow's revision, and treats the
+   accepted source and CI files as data. Only the publishing job has
+   `contents: write`; it downloads the verified bundle by its exact artifact ID,
+   checks the helper and file digests, and runs no builds.
+
+The Release assets are exactly the manifest's `compatibility.artifacts` ZIPs,
+their `<archive-stem>.receipt.json` native build receipts, `release-receipt.json`
+and `SHA256SUMS`. The native receipts remain inputs to `check-package.py`.
+The unified schema 1 receipt contains the plugin ID, version, `plugin_api`,
+compatibility, tag and commit; sorted archive names, sizes and SHA-256 digests;
+each archive's `native_receipt` name, size and SHA-256; the CI run ID, attempt
+and artifact IDs/digests; the release workflow ref and commit; and reproduction
+`ci-artifact-promotion`. It uses deterministic sorted-key JSON with no timestamps.
+`SHA256SUMS` covers every ZIP and receipt, sorted by filename.
+
+Publication uploads the unified receipt first to freeze provenance, then the
+archives and native receipts, then checksums. Every asset's API size and SHA-256
+must match before the draft becomes public. The publication response must report
+`immutable: true`. Release notes remain operator-owned.
 
 ## Catalog notification
 
@@ -125,20 +161,30 @@ that website commit first, then update the pin here when adopting a change to
 the notification contract.
 
 A release published with a repository `GITHUB_TOKEN` does not trigger
-release-event workflows. Automation that publishes that way calls the workflow
-as a dependent of the job that makes the release public:
-
-```yaml
-notify-catalog:
-  needs: publish
-  uses: ./.github/workflows/notify-catalog.yml
-  secrets:
-    CATALOG_APP_PRIVATE_KEY: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}
-```
+release-event workflows. `release.yml` calls `notify-catalog.yml` as a separate
+dependent job only after confirmed publication. Only that job receives
+`CATALOG_APP_PRIVATE_KEY`; dry runs never notify the catalog.
 
 ## Retry
 
-For an operator-driven publication or a missed or failed notification, dispatch:
+Use **Re-run failed jobs** after a failed publication. A publish-only retry uses
+the original bundle artifact ID and digest outputs, including after a workflow
+run attempt changes. If verification reruns, a complete uploaded draft receipt
+wins over `source_run`: recovery validates its recorded successful historical CI
+attempt, fetches each artifact by its recorded ID and digest, and reproduces the
+same receipt and checksums. It never selects a newer CI attempt or changes the
+recorded workflow identity.
+
+Expected `starter` assets can be deleted and uploaded again only while the
+Release is a draft. Matching completed assets are retained. Unexpected names,
+conflicting digests or sizes, or an invalid historical attempt fail without
+replacement. If a recorded artifact expired or disappeared, delete the
+unpublished draft, obtain fresh successful CI artifacts, and dispatch publication
+again to start a new assembly. Published releases are never modified: a rerun
+checks the exact asset set against the frozen receipt, requires `immutable: true`,
+and reports it already published even after CI artifact retention expires.
+
+For a missed or failed catalog notification, rerun only the notifier or dispatch:
 
 ```sh
 gh workflow run notify-catalog.yml --repo computer-mcp/plugin-codex --ref master

@@ -61,7 +61,9 @@ jobs:
           fi
           wait "$test_pid"
       - name: Validate package ownership and publication
-        run: python3 -m unittest discover -s Tests -p 'test_*.py' -v
+        run: |
+          python3 -m unittest discover -s Tests -p 'test_*.py' -v
+          python3 Scripts/check-workflow.py --check-release-workflow
       - name: Build relocatable adapter and receipt
         run: |
           python3 Scripts/package.py --output dist --configuration release

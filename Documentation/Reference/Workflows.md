@@ -257,3 +257,23 @@ persisted thread index; a competing writer remains an error. Live evidence
 outranks durable receipts. `codex.app.handoff.diagnose` correlates the runtime,
 process, connection, thread, turn, approvals, user input and durable receipts
 without claiming control over an external client.
+
+## Release delivery
+
+`release.yml` uses the documented Codex exception to the organization's
+[VERSIONING.md](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md):
+native archives are promoted from accepted CI artifacts because their builds
+are not byte reproducible. Read-only verification assembles the declared ZIPs,
+native build receipts, unified schema 1 `release-receipt.json` and `SHA256SUMS`.
+Only publication has contents write permission; it uploads the receipt first,
+verifies all asset digests and publishes an immutable Release. Only the dependent
+catalog notifier receives the catalog secret. `publish: false` checks and
+assembles without tag/signature checks, Release writes or catalog credentials.
+
+A complete draft receipt freezes CI and workflow provenance across retries.
+Recovery uses its artifact IDs and digests; only draft `starter` assets may be
+replaced. Completed conflicts fail. If frozen artifacts expire, delete the
+unpublished draft, obtain fresh successful CI artifacts and publish again.
+Published releases are checked without modification, and notification failures
+need only a notifier rerun. [Release](Release.md#publish) owns the commands,
+content details and [recovery steps](Release.md#retry).

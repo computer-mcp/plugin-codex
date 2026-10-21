@@ -1,6 +1,12 @@
 # Versioning and Release
 
-The root `computer-mcp-plugin.toml` owns the adapter's version.
+The organization's
+[VERSIONING.md](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md)
+owns shared SemVer, plugin API, dependency requirements, release contents and
+recovery rules. This repository owns native acceptance and its documented
+CI artifact promotion exception.
+
+The root `computer-mcp-plugin.toml` declares `plugin_api = 1` and owns the adapter's version.
 `Scripts/version.py generate` derives `BuildInfo`; `check` is read-only and
 rejects drift. `update --kind … --reason …` changes the manifest and
 refreshes the constant. `check --base COMMIT` rejects version regression when
@@ -38,19 +44,44 @@ acceptance includes authenticated model execution; fixture-only evidence cannot
 replace it. [Release](../Reference/Release.md#runtime-acceptance) owns the commands
 and prerequisites.
 
-Accept the complete host/plugin/SDK combination before delivery. Create a formal
-signed tag only for the accepted commit; `release.yml` promotes the
-already-built artifact from its verified source run into the matching draft.
-The upload verifies every platform archive's inventory and manifest against the
-formal tag before uploading any asset. It promotes the declared macOS archive
-and its receipt from the successful source run without rebuilding.
-An already uploaded asset must have the same digest; conflicting bytes fail.
-Candidate retries keep the intended product version and use a new run identity.
-A public tag and archive remain immutable. Only changed components are released.
+Accept the complete host/plugin/SDK combination before delivery. Codex's native
+builds cannot be reproduced byte for byte, so `release.yml` is the organization's
+documented exception to its reusable release workflow. It promotes the accepted
+CI archives and native build receipts without rebuilding. A dry run checks source,
+latest successful CI attempt, artifact digests, manifest, `plugin_api`, archive
+names and native inventories, and assembles the same content without tag checks,
+Release writes or catalog secrets. Publication additionally requires a signed
+annotated tag verified by GitHub at the accepted commit and matching the manifest
+version. Repository release immutability must be verified enabled.
+
+The schema 1 `release-receipt.json` follows the organization contract with
+`reproduction: ci-artifact-promotion`, every source CI artifact, and each archive's
+`native_receipt` name, size and SHA-256. Native `<archive-stem>.receipt.json`
+files remain Release assets. Deterministic `SHA256SUMS` covers the archives,
+native receipts and unified receipt. The receipt has no timestamps or local paths.
+
+Verification has read-only contents/actions access and no secrets. Publication
+alone has contents write permission and executes no builds. It checks the exact
+verified bundle artifact ID, helper digest and asset digests, creates or resumes
+a commit-bound draft, uploads the receipt first, then the archives and native
+receipts, then checksums. It publishes only after every expected asset's API
+size and digest matches and requires an immutable public Release. Only a separate
+dependent catalog job receives the catalog secret.
+
+A complete draft receipt freezes the original CI run, historical attempt,
+artifact IDs/digests and release workflow ref/commit. Recovery refetches those
+artifacts and reproduces the same receipt and checksums even after CI reruns.
+Expected incomplete `starter` assets may be replaced only in a draft; completed
+conflicts and unexpected names fail. If frozen artifacts expire, delete the
+unpublished draft, obtain fresh successful CI artifacts and dispatch again.
+A public Release is verified against its complete frozen asset set without
+writes or reliance on CI retention. Notification failures need only the notifier
+rerun. Candidate retries keep the intended version and use a new CI identity
+only before provenance freezes or after deleting the unpublished draft.
 `CHANGELOG.md` records each public release. See
 [Installation](../Reference/Installation.md) for packaging, installation,
 upgrade and rollback commands, and [Release](../Reference/Release.md) for
-publication and catalog notification.
+publication commands and recovery.
 
 Reusable successful evidence must match source, dependency lock, check definition,
 toolchain, target configuration and artifact digest. Missing or changed inputs

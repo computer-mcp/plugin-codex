@@ -1,6 +1,7 @@
 id = 'codex'
 name = 'Codex'
 version = "0.1.0"
+plugin_api = 1
 description = 'Codex execution and protocol inspection through standard MCP.'
 
 [[mcp]]
