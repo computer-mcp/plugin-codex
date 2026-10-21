@@ -31,6 +31,15 @@ of introducing another SDK version declaration. The protocol import provenance
 records the schema baseline. Integration receipts separately record the real
 Codex executable version; these versions need not be equal.
 
+Direct dependency requirements follow the organization kinds: forks and versions
+below 1.0 use `exact:`, process/transport/security boundaries at 1.0 or later use
+`.upToNextMinor(from:)`, and other dependencies at 1.0 or later use `from:`.
+The adopted baselines are MCP Swift SDK fork `0.13.1-computer-mcp.1` and
+swift-codex `0.4.1` (exact), swift-subprocess `1.0.2` (next minor), and
+swift-argument-parser `1.8.2` and GRDB `7.11.1` (next major). The committed lock
+records the selected revisions; CI resolves and rejects lockfile drift.
+[Package](Package.md#dependencies) owns each dependency's responsibility.
+
 `Scripts/package.py --output …` checks the declared/generated versions and lock,
 builds the archive, validates its executable and emits a file/digest receipt.
 The CI workflow (`ci.yml`) runs the same source checks and publishes an

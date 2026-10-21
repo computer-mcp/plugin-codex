@@ -17,6 +17,7 @@ final class ManagedLineProcess: @unchecked Sendable {
 
   init(configuration: Configuration) throws {
     try configuration.validate()
+    installBrokenPipeHandler()
     self.configuration = configuration
     let streamAndContinuation = AsyncThrowingStream<String, Error>.makeStream(
       bufferingPolicy: .bufferingOldest(16))
@@ -153,14 +154,16 @@ final class ManagedLineProcess: @unchecked Sendable {
           environment: .custom(environment),
           workingDirectory: FilePath(configuration.workingDirectory.path),
           platformOptions: platformOptions,
-          output: FileDescriptorOutput.fileDescriptor(
+          input: .inputWriter,
+          output: .fileDescriptor(
             standardOutput.writeEnd,
             closeAfterSpawningProcess: true
-          )
-        ) { execution, inputWriter, stderr in
+          ),
+          error: .sequence
+        ) { execution in
           await state.attach(
             execution: execution,
-            inputWriter: inputWriter
+            inputWriter: execution.standardInputWriter
           )
           guard let processID = await waitForProcessID(at: supervisor.processIDFile)
           else {
@@ -171,7 +174,7 @@ final class ManagedLineProcess: @unchecked Sendable {
           }
           await state.attachChild(processID: processID)
           do {
-            for try await _ in stderr {}
+            for try await _ in execution.standardError {}
           } catch {
             await state.recordStreamError(error)
           }
@@ -433,12 +436,16 @@ private final class ManagedLineProcessOutputReader: @unchecked Sendable {
   }
 }
 
+private typealias ManagedLineExecution = Execution<
+  CustomWriteInput, FileDescriptorOutput, SequenceOutput
+>
+
 private actor ManagedLineProcessState {
   private let continuation: AsyncThrowingStream<String, Error>.Continuation
   private let maximumMessageBytes: Int
   private let ownerProcessID: Int32
   private var state: ManagedLineProcessSnapshot.State = .starting
-  private var execution: Execution?
+  private var execution: ManagedLineExecution?
   private var inputWriter: StandardInputWriter?
   private var processID: Int32?
   private var supervisorProcessID: Int32?
@@ -464,7 +471,7 @@ private actor ManagedLineProcessState {
     self.ownerProcessID = ownerProcessID
   }
 
-  func attach(execution: Execution, inputWriter: StandardInputWriter) {
+  func attach(execution: ManagedLineExecution, inputWriter: StandardInputWriter) {
     self.execution = execution
     self.inputWriter = inputWriter
     supervisorProcessID = Int32(execution.processIdentifier.value)
@@ -498,7 +505,8 @@ private actor ManagedLineProcessState {
     let frame = Data((line + "\n").utf8)
     pendingWrites += 1
     defer { pendingWrites -= 1 }
-    _ = try await inputWriter.write(Array(frame))
+    let count = try await inputWriter.write(Array(frame))
+    guard count == frame.count else { throw ManagedLineProcessError.closed }
   }
 
   func appendStandardOutput(_ data: Data) throws {
@@ -552,7 +560,7 @@ private actor ManagedLineProcessState {
     try await inputWriter?.finish()
   }
 
-  func runningExecution() -> Execution? {
+  func runningExecution() -> ManagedLineExecution? {
     guard !hasFinished() else { return nil }
     return execution
   }

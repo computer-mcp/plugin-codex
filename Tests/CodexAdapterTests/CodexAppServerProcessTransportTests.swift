@@ -278,7 +278,7 @@ struct CodexAppServerProcessTransportTests {
     let running = try await waitForRunning(transport)
     let processID = try #require(running.processID)
     let blockedWrite = Task {
-      try? await transport.sendLine(String(repeating: "x", count: 4 * 1_024 * 1_024))
+      try await transport.sendLine(String(repeating: "x", count: 4 * 1_024 * 1_024))
     }
     try await Task.sleep(for: .milliseconds(100))
     let clock = ContinuousClock()
@@ -288,7 +288,9 @@ struct CodexAppServerProcessTransportTests {
 
     #expect(started.duration(to: clock.now) < .seconds(3))
     #expect(await waitForProcessExit(processID))
-    _ = await blockedWrite.value
+    if case .success = await blockedWrite.result {
+      Issue.record("A cancelled, incomplete protocol write must fail.")
+    }
   }
 
   @Test

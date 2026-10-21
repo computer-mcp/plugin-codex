@@ -8,13 +8,31 @@ dependency.
 
 ## Dependencies
 
-| Package | Responsibility |
-| --- | --- |
-| `computer-mcp/swift-sdk` transport fork | Standard northbound MCP transport, tools and results; stdio and complete POSIX frame writes |
-| swift-codex | App Server client and Exec client, each with its own lifecycle |
-| swift-subprocess 0.4.0 | Child process launch and line I/O |
-| swift-argument-parser 1.8.2 | Named options, schema-comparison subcommand, validation and generated CLI help |
-| GRDB 7.11.1 | Codex approval, runtime/thread ownership, acceptance run, worktree lease and managed-worktree storage and transactions |
+| Package | Baseline and requirement | Responsibility |
+| --- | --- | --- |
+| `computer-mcp/swift-sdk` transport fork | `exact: "0.13.1-computer-mcp.1"` | Standard northbound MCP transport, tools and results; stdio and complete POSIX frame writes |
+| swift-codex | `exact: "0.4.1"` | App Server client and Exec client, each with its own lifecycle |
+| swift-subprocess | `.upToNextMinor(from: "1.0.2")` | Child process launch and line I/O |
+| swift-argument-parser | `from: "1.8.2"` | Named options, schema-comparison subcommand, validation and generated CLI help |
+| GRDB | `from: "7.11.1"` | Codex approval, runtime/thread ownership, acceptance run, worktree lease and managed-worktree storage and transactions |
+
+These kinds follow the organization's
+[VERSIONING.md](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md#swift-dependencies).
+Organization forks and dependencies below 1.0 use exact requirements. Process,
+transport and security dependencies at 1.0 or later use the next minor bound;
+other dependencies at 1.0 or later use the next major bound. Floors are the
+resolved baseline; `Package.resolved` is committed and CI rejects drift.
+swift-crypto and swift-nio are transitive dependencies, owned by their declaring
+packages.
+
+The managed line process uses swift-subprocess's explicit input writer,
+file-descriptor stdout and stderr sequence. Its child-input owner installs a
+no-op `SA_RESTART` SIGPIPE handler once only for the default disposition,
+preserving existing handlers and ignored signals. A handler resets on exec,
+whereas ignoring SIGPIPE would survive into children. Broken pipe errors from
+the library propagate unchanged; a returned short write fails with the adapter's
+closed-transport error. Shutdown preserves EOF delivery, bounded process-group
+cleanup and frame/output limits.
 
 `Scripts/verify-swift-codex-release-gate.sh` verifies that the manifest's exact
 SDK version, resolved revision and public Git tag agree. CI requires this check
