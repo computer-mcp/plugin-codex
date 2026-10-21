@@ -8,59 +8,144 @@ import Testing
 struct ManagedLineProcessLifecycleTests {
   @Test
   func overlappingLargeFramesArriveIntactInFIFOOrder() async throws {
-    try await withGatedInputProcess { process, gate in
+    try await withGatedInputProcess { process, gate, probe in
       var lines = process.inboundLines.makeAsyncIterator()
       let capacityLine = try #require(try await lines.next())
       let pipeCapacity = try #require(Int(capacityLine))
-      let firstLine = "{\"id\":1,\"payload\":\"" + String(repeating: "a", count: 1_048_576) + "\"}"
-      let secondLine = "{\"id\":2,\"payload\":\"" + String(repeating: "b", count: 1_048_576) + "\"}"
-      try #require(firstLine.utf8.count > pipeCapacity && secondLine.utf8.count > pipeCapacity)
+      let frames = [
+        "{\"id\":1,\"payload\":\"" + String(repeating: "a", count: 1_048_576) + "\"}",
+        "{\"id\":2,\"payload\":\"" + String(repeating: "b", count: 1_048_576) + "\"}",
+        String(repeating: "λ", count: 350_000),
+      ]
+      try #require(frames.allSatisfy { $0.utf8.count > pipeCapacity })
 
-      let first = Task { try await process.sendLine(firstLine) }
-      try #require(try await lines.next() == "blocked")
-      try await waitForPendingWrites(1, in: process)
-      let second = Task { try await process.sendLine(secondLine) }
+      let first = Task { try await process.sendLine(frames[0]) }
+      try await requireBackpressure(in: probe, reading: &lines)
+      let second = Task { try await process.sendLine(frames[1]) }
       try await waitForPendingWrites(2, in: process)
+      let third = Task { try await process.sendLine(frames[2]) }
+      try await waitForPendingWrites(3, in: process)
 
-      try gate.write(contentsOf: Data([1]))
+      try gate.write(contentsOf: Data("R".utf8))
       try await first.value
       try await second.value
-      #expect(try await lines.next() == firstLine)
-      #expect(try await lines.next() == secondLine)
+      try await third.value
+      for frame in frames { #expect(try await lines.next() == frame) }
       let running = await process.snapshot()
       #expect(running.state == .running && !running.hasExited)
       #expect(running.pendingWrites == 0)
       #expect(kill(try #require(running.processID), 0) == 0)
+      #expect(probe.events.filter { $0 == .writeStarted }.count == frames.count)
     }
   }
 
   @Test
-  func queuedWriteFailsClosedWhenProcessClosesDuringBlockedWrite() async throws {
-    try await withGatedInputProcess { process, _ in
+  func cancelledQueuedWriterLeavesBeforeTheActiveWriteUnblocks() async throws {
+    try await withGatedInputProcess { process, gate, probe in
       var lines = process.inboundLines.makeAsyncIterator()
       _ = try #require(try await lines.next())
-      let first = Task { try await process.sendLine(String(repeating: "x", count: 1_048_576)) }
-      try #require(try await lines.next() == "blocked")
-      try await waitForPendingWrites(1, in: process)
+      let frame = String(repeating: "a", count: 1_048_576)
+      let first = Task { try await process.sendLine(frame) }
+      try await requireBackpressure(in: probe, reading: &lines)
+      let cancelled = Task {
+        defer { probe.completeCaller(1) }
+        try await process.sendLine("cancelled frame")
+      }
+      try await waitForPendingWrites(2, in: process)
+      let next = Task { try await process.sendLine("next frame") }
+      try await waitForPendingWrites(3, in: process)
+
+      cancelled.cancel()
+      try await waitFor("queued cancellation before opening the read gate") { probe.didComplete(1) }
+      await #expect(throws: CancellationError.self) { try await cancelled.value }
+      try await waitForPendingWrites(2, in: process)
+      #expect(probe.events == [.writeStarted])
+
+      try gate.write(contentsOf: Data("R".utf8))
+      try await first.value
+      try await next.value
+      #expect(try await lines.next() == frame)
+      #expect(try await lines.next() == "next frame")
+      #expect(await process.snapshot().pendingWrites == 0)
+    }
+  }
+
+  @Test
+  func cancellingTheActiveCallerPreservesItsFrameAndTheInput() async throws {
+    try await withGatedInputProcess { process, gate, probe in
+      var lines = process.inboundLines.makeAsyncIterator()
+      _ = try #require(try await lines.next())
+      let frame = String(repeating: "a", count: 1_048_576)
+      let first = Task {
+        defer { probe.completeCaller(1) }
+        try await process.sendLine(frame)
+      }
+      try await requireBackpressure(in: probe, reading: &lines)
+      first.cancel()
+      let next = Task { try await process.sendLine("next frame") }
+      try await waitForPendingWrites(2, in: process)
+      #expect(!probe.didComplete(1))
+      #expect(probe.events == [.writeStarted])
+
+      try gate.write(contentsOf: Data("R".utf8))
+      try await first.value
+      try await next.value
+      #expect(try await lines.next() == frame)
+      #expect(try await lines.next() == "next frame")
+      #expect(probe.events.contains(.writeSettled(bytesWritten: frame.utf8.count + 1)))
+      #expect(await process.snapshot().state == .running)
+      #expect(await process.snapshot().pendingWrites == 0)
+    }
+  }
+
+  @Test
+  func alreadyCancelledCallerNeverWrites() async throws {
+    try await withGatedInputProcess { process, gate, probe in
+      var lines = process.inboundLines.makeAsyncIterator()
+      _ = try #require(try await lines.next())
+      let cancelled = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        try await process.sendLine("cancelled frame")
+      }
+      await #expect(throws: CancellationError.self) { try await cancelled.value }
+      #expect(probe.events.isEmpty)
+      #expect(await process.snapshot().pendingWrites == 0)
+
+      let frame = String(repeating: "a", count: 1_048_576)
+      let next = Task { try await process.sendLine(frame) }
+      try await requireBackpressure(in: probe, reading: &lines)
+      try gate.write(contentsOf: Data("R".utf8))
+      try await next.value
+      #expect(try await lines.next() == frame)
+    }
+  }
+
+  @Test
+  func processExitDuringWriteRetiresInputBeforeTheQueuedWrite() async throws {
+    try await withGatedInputProcess(retainInputAfterExit: true) { process, gate, probe in
+      var lines = process.inboundLines.makeAsyncIterator()
+      _ = try #require(try await lines.next())
+      let frame = String(repeating: "x", count: 1_048_576)
+      let first = Task { try await process.sendLine(frame) }
+      try await requireBackpressure(in: probe, reading: &lines)
       let queued = Task { try await process.sendLine("queued frame") }
       try await waitForPendingWrites(2, in: process)
 
-      let started = ContinuousClock.now
+      try gate.write(contentsOf: Data("X".utf8))
+      await expectClosed(first)
+      await expectClosed(queued)
+      let count = try #require(
+        probe.events.compactMap { event -> Int? in
+          if case .writeSettled(let count) = event { return count }
+          return nil
+        }.first)
+      #expect(count > 0 && count < frame.utf8.count + 1)
+      #expect(probe.events.filter { $0 == .writeStarted }.count == 1)
+      await expectClosed(Task { try await process.sendLine("later frame") })
       await process.close()
-      #expect(started.duration(to: .now) < .seconds(3))
-      if case .success = await first.result {
-        Issue.record("A cancelled, incomplete protocol write must fail.")
-      }
-      do {
-        try await queued.value
-        Issue.record("A queued frame must fail when the transport closes.")
-      } catch ManagedLineProcessError.closed {
-      } catch {
-        Issue.record("Expected the closed transport error, received \(error).")
-      }
-      let stopped = await process.snapshot()
-      #expect(stopped.hasExited && stopped.cleanupConfirmed == true)
-      #expect(stopped.pendingWrites == 0)
+      #expect(await process.snapshot().pendingWrites == 0)
+      #expect(await process.snapshot().cleanupConfirmed == true)
+      try requireFinishAfterWrite(in: probe)
     }
   }
 
@@ -94,43 +179,49 @@ struct ManagedLineProcessLifecycleTests {
   }
 
   @Test
-  func closeCancelsBlockedWriteAndReapsTheEntireGroup() async throws {
-    let process = try ManagedLineProcess(
-      configuration: .init(
-        executable: "/bin/sh",
-        arguments: [
-          "-c",
-          #"trap '' TERM; /bin/sh -c 'trap "" TERM; /bin/sleep 30' & printf '%s\n' "$!"; wait"#,
-        ],
-        workingDirectory: FileManager.default.temporaryDirectory,
-        terminationGraceMilliseconds: 100, maximumMessageBytes: 2_097_152))
-    do {
+  func closeSignalsBeforeDrainingAndFinishesAfterTheWriteSettles() async throws {
+    try await withGatedInputProcess(ignoreTermination: true) { process, _, probe in
       var lines = process.inboundLines.makeAsyncIterator()
-      let ready = try #require(try await lines.next())
-      let child = try #require(Int32(ready))
+      _ = try #require(try await lines.next())
+      let childLine = try #require(try await lines.next())
+      let child = try #require(Int32(childLine))
       let writing = Task { try await process.sendLine(String(repeating: "x", count: 1_048_576)) }
-      let deadline = ContinuousClock.now + .seconds(2)
-      while await process.snapshot().pendingWrites == 0, ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(10))
+      try await requireBackpressure(in: probe, reading: &lines)
+      let queued = Task {
+        defer { probe.completeCaller(1) }
+        try await process.sendLine("queued frame")
       }
-      #expect(await process.snapshot().pendingWrites == 1)
+      try await waitForPendingWrites(2, in: process)
+
       let started = ContinuousClock.now
-      async let first: Void = process.close()
-      async let second: Void = process.close()
-      _ = await (first, second)
-      #expect(started.duration(to: .now) < .seconds(3))
-      if case .success = await writing.result {
-        Issue.record("A cancelled, incomplete protocol write must fail.")
+      let first = Task { await process.close() }
+      let second = Task { await process.close() }
+      try await waitFor("queued write rejected during termination") { probe.didComplete(1) }
+      await expectClosed(queued)
+      try await waitFor("TERM delivered during the blocked write") {
+        probe.events.contains(.terminationSignalled(SIGTERM))
       }
+      #expect(started.duration(to: .now) < .seconds(3))
+      await first.value
+      await second.value
+      #expect(started.duration(to: .now) < .seconds(3))
+      if case .success = await writing.result { Issue.record("An incomplete frame must fail.") }
+      let events = probe.events
+      let term = try #require(events.firstIndex(of: .terminationSignalled(SIGTERM)))
+      let settled = try #require(
+        events.firstIndex {
+          if case .writeSettled = $0 { return true }
+          return false
+        })
+      #expect(term < settled)
+      try requireFinishAfterWrite(in: probe)
+      #expect(events.filter { $0 == .writeStarted }.count == 1)
       let result = await process.snapshot()
       #expect(result.hasExited && result.terminationEscalated)
       #expect(result.pendingWrites == 0 && result.cleanupConfirmed == true)
       #expect(kill(child, 0) == -1 && errno == ESRCH)
       #expect(kill(try #require(result.processID), 0) == -1 && errno == ESRCH)
       #expect(kill(try #require(result.supervisorProcessID), 0) == -1 && errno == ESRCH)
-    } catch {
-      await process.close()
-      throw error
     }
   }
 
@@ -237,35 +328,98 @@ struct ManagedLineProcessLifecycleTests {
     #expect(try (output.fileHandleForReading.readToEnd() ?? Data()).isEmpty)
   }
 
-  private func waitForPendingWrites(_ count: Int, in process: ManagedLineProcess) async throws {
+  private func waitFor(_ reason: String, until condition: () async -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(10)
-    while await process.snapshot().pendingWrites != count {
-      try #require(ContinuousClock.now < deadline, "Expected \(count) pending writes.")
-      try await Task.sleep(for: .milliseconds(10))
+    while !(await condition()) {
+      try #require(ContinuousClock.now < deadline, "Timed out waiting for \(reason).")
+      try Task.checkCancellation()
+      await Task.yield()
+    }
+  }
+
+  private func waitForPendingWrites(_ count: Int, in process: ManagedLineProcess) async throws {
+    try await waitFor("\(count) pending writes") { await process.snapshot().pendingWrites == count }
+  }
+
+  private func requireBackpressure(
+    in probe: InputProbe, reading lines: inout AsyncThrowingStream<String, Error>.Iterator
+  ) async throws {
+    // The child reports a full pipe without reading from it. The owner separately
+    // reports entry into write after validation; queue depth alone proves neither.
+    try #require(try await lines.next() == "blocked")
+    try await waitFor("admitted write") { probe.events.contains(.writeStarted) }
+    try #require(probe.events == [.writeStarted])
+  }
+
+  private func requireFinishAfterWrite(in probe: InputProbe) throws {
+    let events = probe.events
+    let settled = try #require(
+      events.firstIndex {
+        if case .writeSettled = $0 { return true }
+        return false
+      })
+    let finish = try #require(events.firstIndex(of: .finishStarted))
+    #expect(settled < finish)
+  }
+
+  private func expectClosed(_ task: Task<Void, Error>) async {
+    do {
+      try await task.value
+      Issue.record("Expected the closed transport error.")
+    } catch ManagedLineProcessError.closed {
+    } catch {
+      Issue.record("Expected the closed transport error, received \(error).")
     }
   }
 
   private func withGatedInputProcess(
-    _ body: (ManagedLineProcess, FileHandle) async throws -> Void
+    ignoreTermination: Bool = false,
+    retainInputAfterExit: Bool = false,
+    _ body: (ManagedLineProcess, FileHandle, InputProbe) async throws -> Void
   ) async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let path = directory.appendingPathComponent("read-gate").path
+    let holderPath = directory.appendingPathComponent("holder.pid")
     try #require(mkfifo(path, 0o600) == 0)
     let descriptor = open(path, O_RDWR | O_NONBLOCK)
     try #require(descriptor >= 0)
     let gate = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     defer { try? gate.close() }
+    let probe = InputProbe()
     let process = try ManagedLineProcess(
       configuration: .init(
         executable: "/usr/bin/python3",
         arguments: [
           "-c",
           """
-          import array, fcntl, os, select, sys, termios
+          import array, fcntl, os, select, signal, subprocess, sys, termios
+          if sys.argv[2] == "True":
+              signal.signal(signal.SIGTERM, signal.SIG_IGN)
+              child = subprocess.Popen(["/bin/sleep", "30"])
+          if sys.argv[3] == "True":
+              ready_read, ready_write = os.pipe()
+              holder = os.fork()
+              if holder == 0:
+                  os.close(ready_read)
+                  os.setsid()
+                  os.close(1)
+                  os.close(2)
+                  os.write(ready_write, b"ready")
+                  os.close(ready_write)
+                  # Keep stdin open beyond supervisor exit, without consuming it.
+                  select.select([], [], [])
+                  os._exit(0)
+              os.close(ready_write)
+              os.read(ready_read, 5)
+              os.close(ready_read)
+              with open(sys.argv[4], "w") as pid_file:
+                  pid_file.write(str(holder))
           with open(sys.argv[1], "rb", buffering=0) as gate:
               print(os.fstat(0).st_blksize, flush=True)
+              if sys.argv[2] == "True":
+                  print(child.pid, flush=True)
               select.select([0], [], [])
               while True:
                   available = array.array("i", [0])
@@ -273,22 +427,56 @@ struct ManagedLineProcessLifecycleTests {
                   if available[0] >= os.fstat(0).st_blksize:
                       break
               print("blocked", flush=True)
-              gate.read(1)
+              command = gate.read(1)
+              if command == b"X":
+                  os._exit(0)
           for line in sys.stdin.buffer:
               sys.stdout.buffer.write(line)
               sys.stdout.buffer.flush()
           """,
-          path,
+          path, ignoreTermination ? "True" : "False", retainInputAfterExit ? "True" : "False",
+          holderPath.path,
         ],
         workingDirectory: directory,
-        terminationGraceMilliseconds: 100, maximumMessageBytes: 2_097_152))
+        terminationGraceMilliseconds: 100, maximumMessageBytes: 2_097_152),
+      inputObserver: { probe.record($0) })
     do {
-      try await body(process, gate)
+      try await body(process, gate, probe)
       await process.close()
+      try await stopInputHolder(at: holderPath)
       #expect(await process.snapshot().cleanupConfirmed == true)
     } catch {
       await process.close()
+      try await stopInputHolder(at: holderPath)
       throw error
     }
   }
+
+  private func stopInputHolder(at path: URL) async throws {
+    guard let text = try? String(contentsOf: path, encoding: .utf8), let pid = Int32(text) else {
+      return
+    }
+    try FileManager.default.removeItem(at: path)
+    #expect(kill(pid, SIGKILL) == 0)
+    try await waitFor("input holder exit") { kill(pid, 0) == -1 && errno == ESRCH }
+  }
+}
+
+/// The lock protects observations made by the input owner and caller tasks.
+private final class InputProbe: @unchecked Sendable {
+  private let lock = NSLock()
+  private var recordedEvents: [ManagedLineProcess.InputEvent] = []
+  private var completedCallers: Set<Int> = []
+
+  var events: [ManagedLineProcess.InputEvent] { lock.withLock { recordedEvents } }
+
+  func record(_ event: ManagedLineProcess.InputEvent) {
+    lock.withLock { recordedEvents.append(event) }
+  }
+
+  func completeCaller(_ id: Int) {
+    _ = lock.withLock { completedCallers.insert(id) }
+  }
+
+  func didComplete(_ id: Int) -> Bool { lock.withLock { completedCallers.contains(id) } }
 }
