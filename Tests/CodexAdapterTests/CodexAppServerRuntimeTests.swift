@@ -1037,6 +1037,17 @@ final class CodexAppServerRuntimeTests {
       request.payload.objectValue?["params"]?.objectValue?["message"]
         == .string("Use token=[REDACTED] to continue")
     )
+    let params = try #require(request.payload.objectValue?["params"])
+    let native = try JSONDecoder().decode(
+      CodexAppServerProtocol.Stable.McpServerElicitationRequestParams.self,
+      from: JSONEncoder().encode(params))
+    guard case .mcpserverelicitationrequestparamsoption4(let scoped) = native else {
+      Issue.record("Expected a URL elicitation request.")
+      return
+    }
+    #expect(scoped.serverName == "fixture-mcp")
+    #expect(scoped.threadId == "thread_fixture")
+    #expect(scoped.turnId == "turn-fixture")
     _ = try await runtime.respond(
       requestID: request.id,
       response: .object(["action": .string("decline")])
@@ -1774,6 +1785,9 @@ struct AppServerProcessFixture {
         "elicitationId": .string("elicitation-fixture"),
         "message": .string(message),
         "mode": .string("url"),
+        "serverName": .string("fixture-mcp"),
+        "threadId": .string("thread_fixture"),
+        "turnId": .string("turn-fixture"),
         "url": .string("https://example.invalid/authorize"),
       ]),
     ])

@@ -55,6 +55,7 @@
       "plugin/installed",
       "plugin/list",
       "plugin/read",
+      "plugin/reconcile",
       "plugin/share/checkout",
       "plugin/share/delete",
       "plugin/share/list",
@@ -101,6 +102,8 @@
       "windowsSandbox/setupStart"
     ],
     "experimental": [
+      "account/bedrock/discover",
+      "account/bedrock/setup",
       "collaborationMode/list",
       "environment/add",
       "environment/info",
@@ -155,22 +158,66 @@
     ]
   },
   "excluded": [
-    { "method": "FuzzyFileSearch", "reason": "legacy method is not adopted" },
-    { "method": "GetAuthStatus", "reason": "legacy method is not adopted" },
-    { "method": "GetConversationSummary", "reason": "legacy method is not adopted" },
-    { "method": "GitDiffToRemote", "reason": "legacy method is not adopted" },
-    { "method": "account/bedrock/discover", "reason": "Bedrock account onboarding is not adopted" },
-    { "method": "account/bedrock/setup", "reason": "Bedrock account onboarding is not adopted" },
-    { "method": "fuzzyFileSearch", "reason": "deprecated upstream method is not adopted" },
-    { "method": "fuzzyFileSearch/sessionStart", "reason": "experimental fuzzy session is not adopted" },
-    { "method": "fuzzyFileSearch/sessionStop", "reason": "experimental fuzzy session is not adopted" },
-    { "method": "fuzzyFileSearch/sessionUpdate", "reason": "experimental fuzzy session is not adopted" },
-    { "method": "initialize", "reason": "connection lifecycle owns the handshake" },
-    { "method": "initialized", "reason": "connection lifecycle owns the handshake" },
-    { "method": "plugin/reconcile", "reason": "plugin reconciliation is not adopted" },
-    { "method": "userVerification/delete", "reason": "user verification administration is not adopted" },
-    { "method": "userVerification/enroll", "reason": "user verification administration is not adopted" },
-    { "method": "userVerification/status", "reason": "user verification administration is not adopted" },
-    { "method": "userVerification/verify", "reason": "user verification administration is not adopted" }
-  ]
+    {
+      "method": "FuzzyFileSearch",
+      "reason": "legacy method is not adopted"
+    },
+    {
+      "method": "GetAuthStatus",
+      "reason": "legacy method is not adopted"
+    },
+    {
+      "method": "GetConversationSummary",
+      "reason": "legacy method is not adopted"
+    },
+    {
+      "method": "GitDiffToRemote",
+      "reason": "legacy method is not adopted"
+    },
+    {
+      "method": "fuzzyFileSearch",
+      "reason": "deprecated upstream method is not adopted"
+    },
+    {
+      "method": "fuzzyFileSearch/sessionStart",
+      "reason": "experimental fuzzy session is not adopted"
+    },
+    {
+      "method": "fuzzyFileSearch/sessionStop",
+      "reason": "experimental fuzzy session is not adopted"
+    },
+    {
+      "method": "fuzzyFileSearch/sessionUpdate",
+      "reason": "experimental fuzzy session is not adopted"
+    },
+    {
+      "method": "initialize",
+      "reason": "connection lifecycle owns the handshake"
+    },
+    {
+      "method": "initialized",
+      "reason": "connection lifecycle owns the handshake"
+    },
+    {
+      "method": "userVerification/delete",
+      "reason": "user verification administration is not adopted"
+    },
+    {
+      "method": "userVerification/enroll",
+      "reason": "user verification administration is not adopted"
+    },
+    {
+      "method": "userVerification/status",
+      "reason": "user verification administration is not adopted"
+    },
+    {
+      "method": "userVerification/verify",
+      "reason": "user verification administration is not adopted"
+    }
+  ],
+  "adoptedServerRequests": {
+    "experimental": [
+      "currentTime/read"
+    ]
+  }
 }

@@ -29,6 +29,77 @@ struct JSONIntegerTests {
     }
   }
 
+  @Test(
+    .timeLimit(.minutes(1)),
+    arguments: ["9223372036854775808", "-9223372036854775809", "18446744073709551615"])
+  func servedStdioCorrelatesIntegerDecodingErrorsAndRemainsUsable(text: String) async throws {
+    let input = Pipe()
+    let output = Pipe()
+    defer {
+      for pipe in [input, output] {
+        try? pipe.fileHandleForReading.close()
+        try? pipe.fileHandleForWriting.close()
+      }
+    }
+    let server = StdioTransport(
+      input: .init(rawValue: input.fileHandleForReading.fileDescriptor),
+      output: .init(rawValue: output.fileHandleForWriting.fileDescriptor))
+    let peer = StdioTransport(
+      input: .init(rawValue: output.fileHandleForReading.fileDescriptor),
+      output: .init(rawValue: input.fileHandleForWriting.fileDescriptor))
+    let serving = Task { try await CodexAdapterServer.serve(transport: server) }
+    do {
+      try await peer.connect()
+      var messages = await peer.receive().makeAsyncIterator()
+      try await peer.send(
+        Data(
+          """
+          {"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"\(Version.latest)","capabilities":{},"clientInfo":{"name":"integer-tests","version":"1"}}}
+          """.utf8))
+      let initialized = try JSONDecoder().decode(
+        MCP.Value.self, from: #require(try await messages.next()))
+      #expect(initialized.objectValue?["id"] == .int(0))
+      #expect(initialized.objectValue?["result"] != nil)
+      try await peer.send(Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8))
+
+      for id in [MCP.Value.int(9_007_199_254_740_993), .string("9007199254740993")] {
+        let wireID = String(decoding: try JSONEncoder().encode(id), as: UTF8.self)
+        try await peer.send(
+          Data(
+            """
+            {"jsonrpc":"2.0","id":\(wireID),"method":"tools/call","params":{"name":"codex.protocol.methods.list","arguments":{"limit":\(text)}}}
+            """.utf8))
+        let error = try JSONDecoder().decode(
+          MCP.Value.self, from: #require(try await messages.next()))
+        #expect(error.objectValue?["jsonrpc"] == .string("2.0"))
+        #expect(error.objectValue?["id"] == id)
+        #expect(error.objectValue?["error"]?.objectValue?["code"] == .int(-32602))
+        #expect(error.objectValue?["result"] == nil)
+
+        try await peer.send(
+          Data(
+            """
+            {"jsonrpc":"2.0","id":\(wireID),"method":"tools/call","params":{"name":"codex.protocol.methods.list","arguments":{"limit":1}}}
+            """.utf8))
+        let response = try JSONDecoder().decode(
+          MCP.Value.self, from: #require(try await messages.next()))
+        #expect(response.objectValue?["id"] == id)
+        #expect(response.objectValue?["error"] == nil)
+        let result = try #require(response.objectValue?["result"]?.objectValue)
+        #expect(result["isError"] == .bool(false))
+        #expect(result["structuredContent"]?.objectValue?["methods"]?.arrayValue?.count == 1)
+      }
+      await peer.disconnect()
+      await server.disconnect()
+      try await serving.value
+    } catch {
+      await peer.disconnect()
+      await server.disconnect()
+      _ = try? await serving.value
+      throw error
+    }
+  }
+
   @Test(arguments: [Int64.min, 9_007_199_254_740_993, Int64.max])
   func sdkDecimalStoragePreservesIntegralValues(value: Int64) throws {
     let native = AppServerJSON.object(["nested": .array([.number(.decimal(Decimal(value)))])])
