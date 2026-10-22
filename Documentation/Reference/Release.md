@@ -1,19 +1,101 @@
 # Release
 
-This guide covers publishing an accepted release and notifying the official
-plugin catalog. [Versioning and Release](../Architecture/VersioningAndRelease.md)
-owns the version, acceptance and immutability rules. The organization's
-[VERSIONING.md](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md)
-owns shared plugin API, release content and recovery requirements.
+Release status: publication and catalog notification are implemented by
+[release.yml](https://github.com/computer-mcp/plugin-codex/blob/master/.github/workflows/release.yml)
+and [notify-catalog.yml](https://github.com/computer-mcp/plugin-codex/blob/master/.github/workflows/notify-catalog.yml).
+Candidate runtime acceptance and Release notes require an operator.
 
-Codex is the documented exception to the reusable organization release workflow:
-its native builds are not byte reproducible. Its own `release.yml` promotes the
-accepted CI artifacts and uses `reproduction: ci-artifact-promotion` under the
-same release content and publication contract. Enable GitHub release immutability
-in the repository settings before running publication or its dry run; the
-workflow refuses when that setting is disabled or cannot be verified.
+Version rules are in this repository's
+[VERSIONING.md](https://github.com/computer-mcp/plugin-codex/blob/master/VERSIONING.md),
+which adopts the organization's rules and records the native artifact promotion
+exception. This reference records release facts, procedures and checks.
 
-## Runtime acceptance
+## Components and Version Sources
+
+| Shipped component | Version meaning | Version source | Mirrors and derived fields | Update and read-only check |
+| --- | --- | --- | --- | --- |
+| Codex plugin and `codex-mcp-adapter` | Package release identity | Top-level `version` in [computer-mcp-plugin.toml](../../computer-mcp-plugin.toml) | `CodexAdapterBuildInfo.version`, executable `--version`, packaged manifest | [Metadata entry points](#derived-metadata-and-drift-checks) |
+
+The packaged manifest preserves the source manifest's exact bytes. Candidate
+identity comes from that manifest and the extracted executable, rather than an
+installed adapter or a different worktree.
+
+## Compatibility Surface
+
+Consumers depend on the MCP tool names, input schemas, results and errors; stdio
+transport; CLI commands, options, output and exit codes; configuration fields;
+adapter state and protocol resource formats; and the package's platform and
+Swift toolchain floors. The [manual](../../README.md),
+[workflows](Workflows.md), [host integration](HostIntegration.md),
+[installation](Installation.md) and [package architecture](../Architecture/Package.md)
+describe those interfaces. `Package.swift` declares the deployment and Swift
+tools floors.
+
+The manifest declares `plugin_api = 1` and owns host-version bounds, archive
+names, platforms and architectures. The SDK's schema declarations and adoption
+inventory are separate from executable support and host authorization.
+Compatibility review and behavior tests establish what a candidate supports;
+version arithmetic alone does not establish compatibility.
+
+## Dependencies and Verified Combinations
+
+`Package.swift` declares dependency compatibility requirements;
+`Package.resolved` records the selected versions and revisions. Current direct
+requirements are:
+
+| Dependency | Requirement |
+| --- | --- |
+| MCP Swift SDK organization fork (`computer-mcp/swift-sdk`) | `exact: "0.13.1-computer-mcp.1"` |
+| swift-codex | `exact: "0.4.1"` |
+| swift-subprocess | `.upToNextMinor(from: "1.0.2")` |
+| swift-argument-parser | `from: "1.8.2"` |
+| GRDB | `from: "7.11.1"` |
+
+The [package dependency overview](../Architecture/Package.md#dependencies)
+records their architectural responsibilities. CI resolves the committed lock
+and rejects drift. `Scripts/verify-swift-codex-release-gate.sh` checks the
+declared exact swift-codex version and resolved revision against its public Git
+tag, accepting the tag's peeled commit when it is annotated. The SDK's public
+tag owns its release identity.
+
+Protocol import provenance records the vendor schema baseline from the locked
+SDK. Integration receipts separately record the real Codex executable version;
+these versions need not match. Accept the complete host, plugin, SDK and vendor
+combination before delivery. The runtime report identifies the tested binaries
+and results; a source test or schema inventory does not establish that
+combination's runtime acceptance.
+
+## Derived Metadata and Drift Checks
+
+`python3 Scripts/version.py update --kind <fix|feature|breaking> --reason <reason>`
+updates the manifest and generated constant. After an explicit manifest edit,
+`python3 Scripts/version.py generate` regenerates
+`Sources/CodexAdapter/CodexAdapterBuildInfo.swift`.
+
+`python3 Scripts/version.py check` is read-only and rejects generated metadata
+drift. Its `--binary <adapter>` option checks the actual executable's `--version`.
+`check --base <commit>` rejects version regression when HEAD has parents and the
+base is an available ancestor; otherwise it checks the current version and
+reports why comparison was skipped. CI supplies the pull request base or
+previous `master` commit. `check --tag <tag>` verifies the manifest version and
+the tag's commit.
+
+`node Scripts/import-schema.mjs --check` verifies bundled protocol resources
+against the locked SDK commit; [Protocol inputs](../../README.md#protocol-inputs)
+owns regeneration instructions. Packaging checks the manifest, generated
+version and dependency lock, validates the built executable's version and
+architecture, and emits the archive's file/digest receipt. Archive verification
+checks the relocated bytes before runtime acceptance.
+
+## Candidate, Acceptance and Publication
+
+CI runs source checks and `Scripts/package.py`, then verifies and relocates the
+archive with `Scripts/check-package.py`. It uploads the ZIP and native build
+receipt as the commit-named candidate artifact. `release.yml` promotes those
+accepted CI bytes and receipts without rebuilding. Verification, publication
+and catalog notification are separate jobs.
+
+### Runtime acceptance
 
 Use macOS with the selected installed `computer-mcp` CLI, a separately installed
 vendor Codex, Python 3.11 or newer, Git and the verified release archive. The
@@ -35,6 +117,11 @@ python3 Scripts/check-host.py \
   --output-directory "$PWD/.build/host-acceptance" \
   --mode full --auth-file /absolute/path/to/vendor/auth.json --model <model-id>
 ```
+
+`check-workflow.py` exercises the relocated adapter through standard MCP with
+an isolated home and fixed loopback model, covering native approvals, turns,
+cancellation, reconnection and owned-process cleanup. It does not establish
+real model authentication.
 
 `check-host.py` uses only the host's public `serve stdio` command and standard
 MCP. It starts private host instances with explicit workspace selection, host
@@ -90,10 +177,10 @@ Pure driver logic and argument validation run without a host or vendor:
 python3 -m unittest discover -s Tests -p 'test_host_acceptance.py' -v
 ```
 
-## Publish
+### Publish
 
-1. Confirm the manifest's `version` has not been released and the reviewed
-   `master` commit has successful `push` CI from `.github/workflows/ci.yml`.
+1. Select the reviewed `master` commit with successful `push` CI from
+   `.github/workflows/ci.yml`.
    Each declared archive selects the exact CI artifact
    `<archive-stem>-<full-commit-sha>` from that run's latest successful attempt.
 2. Assemble and check the candidate without Release writes:
@@ -104,14 +191,14 @@ python3 -m unittest discover -s Tests -p 'test_host_acceptance.py' -v
    ```
 
    The dry run checks the source manifest, positive integer `plugin_api`,
-   declared archive set, CI attempt and artifact digests, native inventories
-   and byte-identical manifests. It omits tag and signature checks and reads
-   no catalog secret. Inspect the `assets/` directory in the
-   `plugin-release-<run-id>-<attempt>` Actions artifact.
+   declared archive set, CI attempt and artifact digests, native inventories,
+   byte-identical manifests and repository release immutability. It omits tag
+   and signature checks and reads no catalog secret. Inspect the `assets/`
+   directory in the `plugin-release-<run-id>-<attempt>` Actions artifact.
 3. Accept those exact archive bytes through the runtime checks above and record
-   the results and limits in the draft Release notes. Create and push a signed
-   annotated `vX.Y.Z` tag directly on the accepted commit. An operator-created
-   draft must target its full commit SHA; otherwise publication creates a draft.
+   the results and limits in the draft Release notes. Prepare the release tag
+   under VERSIONING. An operator-created draft must target its full commit SHA;
+   otherwise publication creates a draft.
 4. Publish with:
 
    ```sh
@@ -119,29 +206,28 @@ python3 -m unittest discover -s Tests -p 'test_host_acceptance.py' -v
      -f source_run=RUN_ID -f release_tag=vX.Y.Z -F publish=true
    ```
 
-   GitHub must verify the tag signature as valid; the tag's commit and manifest
-   version must match. The verification job has only `contents: read` and
-   `actions: read`, executes the release workflow's revision, and treats the
-   accepted source and CI files as data. Only the publishing job has
-   `contents: write`; it downloads the verified bundle by its exact artifact ID,
-   checks the helper and file digests, and runs no builds.
+   Verification checks GitHub's tag signature result, the tag's commit and the
+   manifest version, and refuses if repository release immutability is disabled
+   or cannot be verified. The verification job has only `contents: read` and
+   `actions: read`, receives no secrets, executes the release workflow's
+   revision, and treats the accepted source and CI files as data. Only the
+   publishing job has `contents: write`; it downloads the verified bundle by its
+   exact artifact ID, checks the helper and file digests, and runs no builds.
 
 The Release assets are exactly the manifest's `compatibility.artifacts` ZIPs,
 their `<archive-stem>.receipt.json` native build receipts, `release-receipt.json`
 and `SHA256SUMS`. The native receipts remain inputs to `check-package.py`.
-The unified schema 1 receipt contains the plugin ID, version, `plugin_api`,
-compatibility, tag and commit; sorted archive names, sizes and SHA-256 digests;
-each archive's `native_receipt` name, size and SHA-256; the CI run ID, attempt
-and artifact IDs/digests; the release workflow ref and commit; and reproduction
-`ci-artifact-promotion`. It uses deterministic sorted-key JSON with no timestamps.
-`SHA256SUMS` covers every ZIP and receipt, sorted by filename.
+`Scripts/plugin_release.py` assembles the schema 1 receipt and checksums under
+the organization's
+[release content contract](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md#plugin-release-contents)
+and [Codex promotion contract](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md#codex-promotion-exception).
 
 Publication uploads the unified receipt first to freeze provenance, then the
 archives and native receipts, then checksums. Every asset's API size and SHA-256
 must match before the draft becomes public. The publication response must report
 `immutable: true`. Release notes remain operator-owned.
 
-## Catalog notification
+### Catalog notification
 
 `notify-catalog.yml` runs when a release is published, edited, released,
 unpublished or deleted, and on manual dispatch. It asks the website to reconcile
@@ -165,7 +251,7 @@ release-event workflows. `release.yml` calls `notify-catalog.yml` as a separate
 dependent job only after confirmed publication. Only that job receives
 `CATALOG_APP_PRIVATE_KEY`; dry runs never notify the catalog.
 
-## Retry
+### Retry
 
 Use **Re-run failed jobs** after a failed publication. A publish-only retry uses
 the original bundle artifact ID and digest outputs, including after a workflow
@@ -180,9 +266,9 @@ Release is a draft. Matching completed assets are retained. Unexpected names,
 conflicting digests or sizes, or an invalid historical attempt fail without
 replacement. If a recorded artifact expired or disappeared, delete the
 unpublished draft, obtain fresh successful CI artifacts, and dispatch publication
-again to start a new assembly. Published releases are never modified: a rerun
-checks the exact asset set against the frozen receipt, requires `immutable: true`,
-and reports it already published even after CI artifact retention expires.
+again to start a new assembly. For an existing public Release, a rerun checks
+the exact asset set against the frozen receipt, requires `immutable: true`,
+and reports it already published without writes or reliance on CI retention.
 
 For a missed or failed catalog notification, rerun only the notifier or dispatch:
 
@@ -199,3 +285,53 @@ hourly schedule also repairs missed notifications.
 The website's
 [catalog publication and notification contract](https://github.com/computer-mcp/computer-mcp.github.io/blob/master/docs/plugin-catalog.md)
 covers provenance, credentials, retry bounds and deployment.
+
+## Evidence Reuse and Invalidation
+
+Successful evidence is reusable when its source, dependency lock, check
+definition, toolchain, environment, target configuration and artifact digest
+match, with verified provenance. The release helper verifies CI run and attempt
+identity and artifact digests; an operator reviews native receipts, runtime
+reports and the accepted host combination. Missing or changed inputs require
+the affected checks and their dependent stages again.
+
+Changes to compiled source, dependencies or packaging inputs require a new
+archive, including changes to the shipped manual. Local rechecks after
+checker-only changes can use unchanged archive bytes with the new checker
+revision recorded separately.
+Publication still uses source CI artifacts for the exact accepted commit and
+the provenance frozen in the draft receipt. A new CI identity can be selected
+before provenance freezes or after deleting an unpublished draft, as described
+in [Retry](#retry).
+
+Source tests do not replace installed-package or authenticated runtime evidence.
+Preserve failed results and distinguish fixture, product and external failures.
+Routine checks and result judgments are scripted; release approval remains an
+operator decision.
+
+## Entry Points and Artifact Retention
+
+| Operation | Existing command or manual procedure | Required access |
+| --- | --- | --- |
+| Version update and drift checks | [Metadata entry points](#derived-metadata-and-drift-checks) | Local source write for updates; read-only checks |
+| Source validation | [Contributing checks](../../CONTRIBUTING.md#validation) | Local toolchain; dependency resolution and public SDK tag lookup |
+| Release workflow validation | `python3 Scripts/check-workflow.py --check-release-workflow` and `python3 -m unittest discover -s Tests -p 'test_*.py'` | Local files; no host, vendor or credentials |
+| Candidate build | `python3 Scripts/package.py --output dist --configuration release` | Local build tools and resolved dependencies; new output directory |
+| Archive and runtime acceptance | [Runtime acceptance](#runtime-acceptance) | Verified archive, installed host and vendor; authorized file-store login for full mode |
+| Dry run and publication | [Publish](#publish) | Actions dispatch; verified immutable-release setting; publication job has contents write access |
+| Interrupted-run recovery and catalog status | [Retry](#retry) | Actions access; catalog authority isolated to the notifier |
+| Install, upgrade and rollback | [Installation](Installation.md) | Host owner authority |
+| Cleanup | Manual inventory and removal after confirming inactivity and cleanup receipts | Ownership of each disposable output |
+
+CI retains source candidate artifacts for 14 days. Keep the native build
+receipts, runtime reports, host acceptance evidence and previous rollback
+package needed for delivery. Frozen provenance recovery depends on the
+recorded CI artifacts until publication; [Retry](#retry) covers unavailable
+artifacts and verification of a complete public Release.
+
+Fixture directories and package staging belong to their creating run. Remove
+inactive, reconciled temporary outputs from `dist/`, `.build/` and private
+fixture directories; preserve unique source changes, required failure or
+delivery evidence and rollback artifacts. Runtime databases, credentials,
+existing user App Servers and unrelated changes remain user-owned. Keep private
+run paths and progress outside normative documentation.
