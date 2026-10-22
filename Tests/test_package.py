@@ -46,7 +46,8 @@ class PackageOwnershipTests(unittest.TestCase):
         checkout = repo / ".build/checkouts/swift-codex"
         schema = checkout / "Vendor/CodexAppServerProtocolSchema"
         schema.mkdir(parents=True)
-        (checkout / "LICENSE").write_text("fixture dependency license")
+        (checkout / "LICENSE.txt").write_text("fixture dependency license")
+        (checkout / "NOTICE").write_text("fixture dependency notice")
         for name in ("LICENSE", "NOTICE"):
             (schema / name).write_text("fixture schema notice")
         return repo, built
@@ -83,6 +84,10 @@ class PackageOwnershipTests(unittest.TestCase):
                 result = package.package(root / "output", "debug")
             with zipfile.ZipFile(result["archive"]) as archive:
                 self.assertEqual(archive.read("computer-mcp-plugin.toml"), manifest)
+                for name in ("LICENSE.txt", "NOTICE"):
+                    original = (repo / ".build/checkouts/swift-codex" / name).read_bytes()
+                    self.assertEqual(archive.read("ThirdPartyNotices/swift-codex/" + name), original)
+                    self.assertIn(original, archive.read("ThirdPartyNotices.txt"))
             receipt = json.loads(Path(result["receipt"]).read_text())
             self.assertEqual(receipt["architectures"], ["arm64"])
             self.assertEqual(receipt["files"]["computer-mcp-plugin.toml"], package.hashlib.sha256(manifest).hexdigest())

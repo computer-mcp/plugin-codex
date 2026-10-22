@@ -3,8 +3,12 @@
 The adapter's original and extracted integration code is Computer MCP code
 licensed under this repository's [LICENSE](LICENSE), FSL-1.1-ALv2.
 
-The MCP Swift SDK transport fork and swift-codex are MIT-licensed. Swift Subprocess
-and other Swift dependencies retain their own upstream licenses. The packaging
+| Component | Selected release | License |
+| --- | --- | --- |
+| swift-codex | 0.5.1 | Apache-2.0 WITH Swift-exception |
+| MCP Swift SDK transport fork (`computer-mcp/swift-sdk`) | 0.13.2-computer-mcp.1 | Apache-2.0 and retained MIT contributions, with CC-BY-4.0 documentation, under the upstream licensing transition |
+
+Swift Subprocess and other Swift dependencies retain their own upstream licenses. The packaging
 script copies license and notice files from each pinned SwiftPM checkout into
 `ThirdPartyNotices/`, together with the unchanged `Package.resolved`. This is a
 resolved-dependency inventory, not a claim that every resolved product is linked.

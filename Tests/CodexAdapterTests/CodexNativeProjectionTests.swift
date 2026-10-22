@@ -43,12 +43,33 @@ struct CodexNativeProjectionTests {
       #expect(Set(actual.map(\.method)) == Set(inventory.adoption.adopted[channel.rawValue] ?? []))
       #expect(actual.allSatisfy { $0.risk == CodexAppServerMethodCatalog.risk(for: $0.method) })
     }
-    #expect(methods.filter { $0.channel == .stable }.count == 96)
-    #expect(methods.filter { $0.channel == .experimental }.count == 51)
+    #expect(methods.filter { $0.channel == .stable }.count == 97)
+    #expect(methods.filter { $0.channel == .experimental }.count == 53)
     #expect(Set(methods.map(\.toolName)).count == methods.count)
     for exclusion in inventory.adoption.excluded {
       #expect(!methods.contains { $0.method == exclusion.method })
     }
+  }
+
+  @Test(arguments: [
+    (
+      "account/bedrock/discover", CodexOperationRisk.readOnly,
+      ProtocolInventory.Channel.experimental
+    ),
+    ("account/bedrock/setup", .externalWrite, .experimental),
+    ("plugin/reconcile", .destructive, .stable),
+  ])
+  func adoptedMethodEffectsDefineToolAnnotations(
+    method: String, risk: CodexOperationRisk, channel: ProtocolInventory.Channel
+  ) throws {
+    let descriptor = try #require(CodexAppServerMethodCatalog.method(named: method))
+    #expect(descriptor.channel == channel)
+    #expect(descriptor.risk == risk)
+    #expect(descriptor.tool._meta?["io.github.computer-mcp/risk"] == .string(risk.rawValue))
+    #expect(descriptor.tool.annotations.readOnlyHint == (risk == .readOnly))
+    #expect(descriptor.tool.annotations.destructiveHint == (risk == .destructive))
+    #expect(descriptor.tool.annotations.idempotentHint == (risk == .readOnly))
+    #expect(descriptor.tool.annotations.openWorldHint == true)
   }
 
   @Test func schemasPreserveNativeFieldsAndReferences() throws {
@@ -91,15 +112,20 @@ struct CodexNativeProjectionTests {
     try write.validate(params: .object(["path": .string("/tmp/file"), "dataBase64": .string("")]))
   }
 
-  @Test func sdkAdoptionCannotAddAnUnclassifiedMethod() throws {
+  @Test(arguments: ProtocolInventory.Channel.allCases)
+  func sdkAdoptionCannotAddAnUnclassifiedMethod(channel: ProtocolInventory.Channel) throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let request = Data(
       #"{"oneOf":[{"properties":{"method":{"enum":["future/new"]}},"required":["method"]}]}"#.utf8)
-    let adoption = Data(
-      #"{"schema":"swift-codex.codex-app-server-method-adoption.v1","upstreamTag":"rust-v1.2.3","adopted":{"stable":["future/new"],"experimental":[]},"excluded":[]}"#
-        .utf8)
+    let adoption = try JSONSerialization.data(withJSONObject: [
+      "schema": "swift-codex.codex-app-server-method-adoption.v1", "upstreamTag": "rust-v1.2.3",
+      "adopted": Dictionary(
+        uniqueKeysWithValues: ProtocolInventory.Channel.allCases.map {
+          ($0.rawValue, $0 == channel ? ["future/new"] : [])
+        }), "excluded": [],
+    ])
     var files: [String: Any] = [:]
     for channel in ProtocolInventory.Channel.allCases {
       try FileManager.default.createDirectory(
@@ -115,7 +141,9 @@ struct CodexNativeProjectionTests {
       "codexVersion": "1.2.3", "adoptionSHA256": AppServerSchema.digest(adoption), "files": files,
     ]).write(to: directory.appendingPathComponent("receipt.json"))
     let inventory = try ProtocolInventory(directory: directory)
-    #expect(throws: SchemaError.self) {
+    #expect(CodexAppServerMethodCatalog.risk(for: "future/new") == nil)
+    #expect(throws: SchemaError.invalid("Adopted SDK method lacks projection policy: future/new."))
+    {
       try CodexAppServerMethodCatalog.derive(inventory: inventory)
     }
   }

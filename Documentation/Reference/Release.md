@@ -45,8 +45,8 @@ requirements are:
 
 | Dependency | Requirement |
 | --- | --- |
-| MCP Swift SDK organization fork (`computer-mcp/swift-sdk`) | `exact: "0.13.1-computer-mcp.1"` |
-| swift-codex | `exact: "0.4.1"` |
+| MCP Swift SDK organization fork (`computer-mcp/swift-sdk`) | `exact: "0.13.2-computer-mcp.1"` |
+| swift-codex | `exact: "0.5.1"` |
 | swift-subprocess | `.upToNextMinor(from: "1.0.2")` |
 | swift-argument-parser | `from: "1.8.2"` |
 | GRDB | `from: "7.11.1"` |

@@ -1,5 +1,5 @@
 {
-  "originHash" : "d140872fb02b7e4c197a7bb62bce1caab4f2de6b609de7fb3d887dea098ca31d",
+  "originHash" : "c971c1b3c7b824696af67bc95c33746b8e9b01a810924c0e3ed165e93b8c3112",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -150,8 +150,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-library/swift-codex.git",
       "state" : {
-        "revision" : "35e4a3dc07e60f084efb8a06424a8315c2ab6f64",
-        "version" : "0.4.1"
+        "revision" : "827e750a265d46dc062eb99015e532100bb09975",
+        "version" : "0.5.1"
       }
     },
     {
@@ -285,8 +285,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/computer-mcp/swift-sdk.git",
       "state" : {
-        "revision" : "61914e07e36440e0a4ee08d9f4644f20e4fa41f4",
-        "version" : "0.13.1-computer-mcp.1"
+        "revision" : "0603094e1c1a6fe249ebb1a1fd71c499cc2c55a3",
+        "version" : "0.13.2-computer-mcp.1"
       }
     },
     {

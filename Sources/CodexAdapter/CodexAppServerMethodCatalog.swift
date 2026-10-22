@@ -125,7 +125,8 @@ enum CodexAppServerMethodCatalog {
 
   static func risk(for method: String) -> CodexOperationRisk? {
     switch method {
-    case "account/rateLimits/read", "account/read", "account/usage/read",
+    case "account/bedrock/discover", "account/rateLimits/read", "account/read",
+      "account/usage/read",
       "account/workspaceMessages/read", "app/installed", "app/list", "app/read", "config/read",
       "configRequirements/read", "experimentalFeature/list", "externalAgentConfig/detect",
       "externalAgentConfig/import/readHistories", "fs/getMetadata", "fs/readDirectory",
@@ -146,7 +147,7 @@ enum CodexAppServerMethodCatalog {
       "thread/increment_elicitation", "thread/memoryMode/set",
       "thread/queue/delete", "thread/queue/reorder", "command/exec/resize", "process/resizePty":
       return .workspaceWrite
-    case "account/login/cancel", "account/login/start", "account/logout",
+    case "account/bedrock/setup", "account/login/cancel", "account/login/start", "account/logout",
       "account/rateLimitResetCredit/consume", "account/sendAddCreditsNudgeEmail",
       "config/batchWrite", "config/value/write", "experimentalFeature/enablement/set",
       "externalAgentConfig/import", "externalAgentConfig/import/recordHistory", "feedback/upload",
@@ -158,7 +159,8 @@ enum CodexAppServerMethodCatalog {
       "remoteControl/enable", "remoteControl/pairing/start", "mcpServer/event/stream/start",
       "mcpServer/event/stream/stop":
       return .externalWrite
-    case "fs/remove", "marketplace/remove", "plugin/share/delete", "plugin/uninstall",
+    case "fs/remove", "marketplace/remove", "plugin/reconcile", "plugin/share/delete",
+      "plugin/uninstall",
       "thread/revert", "threadSection/delete", "memory/reset", "project/delete",
       "remoteControl/client/revoke", "thread/backgroundTerminals/clean",
       "thread/backgroundTerminals/terminate", "command/exec/terminate", "process/kill":

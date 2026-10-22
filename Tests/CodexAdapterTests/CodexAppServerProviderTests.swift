@@ -294,7 +294,7 @@ struct CodexAppServerProviderTests {
   @Test
   func experimentalCallsRequireExplicitAdmissionAndRemainDistinctFromStableTools() async throws {
     let provider = makeProvider()
-    #expect(provider.tools.filter { $0.name.hasPrefix("codex.app.native.") }.count == 96)
+    #expect(provider.tools.filter { $0.name.hasPrefix("codex.app.native.") }.count == 97)
     #expect(!provider.tools.contains { $0.name == "codex.app.native.mock.experimentalMethod" })
     await #expect(throws: CodexToolError.self) {
       try await provider.call(
