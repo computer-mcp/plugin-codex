@@ -257,3 +257,11 @@ persisted thread index; a competing writer remains an error. Live evidence
 outranks durable receipts. `codex.app.handoff.diagnose` correlates the runtime,
 process, connection, thread, turn, approvals, user input and durable receipts
 without claiming control over an external client.
+
+## Release delivery
+
+The [release reference](Release.md) owns candidate acceptance, publication,
+catalog notification, receipts and recovery. This repository's
+[VERSIONING.md](https://github.com/computer-mcp/plugin-codex/blob/master/VERSIONING.md)
+adopts the organization rules and records the native artifact promotion
+exception.

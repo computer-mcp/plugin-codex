@@ -12,12 +12,55 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
 import uuid
+
+
+def check_release_workflow(root):
+    """Check the repository's release job graph and privilege boundaries without a vendor."""
+    source = (root / ".github/workflows/release.yml").read_text()
+    jobs = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:\n|\Z)",
+                           source.split("\njobs:\n", 1)[1]))
+
+    def require(condition, message):
+        if not condition:
+            raise ValueError(message)
+
+    require(set(jobs) == {"verify", "publish", "notify-catalog"}, "Unexpected release job graph")
+    require("\npermissions: {}\n" in source, "Release permissions must default to none")
+    verify, publish, notify = (jobs[name] for name in ("verify", "publish", "notify-catalog"))
+    require("    permissions:\n      contents: read\n      actions: read\n" in verify,
+            "Verification requires read-only contents and actions")
+    require("secrets" not in verify and "contents: write" not in verify,
+            "Verification cannot receive secrets or write permission")
+    require("ref: ${{ github.workflow_sha }}" in verify and "persist-credentials: false" in verify,
+            "Verification must execute the workflow revision without persisted credentials")
+    require("Scripts/plugin_release.py verify" in verify and "--publish" in verify,
+            "Verification must assemble both publication and dry-run bundles")
+    require("    if: inputs.publish\n    needs: verify\n" in publish
+            and "    permissions:\n      contents: write\n" in publish,
+            "Only publication may write after verification")
+    require("actions: read" not in publish and "secrets" not in publish
+            and "actions/checkout@" not in publish
+            and not re.search(r"swift\s+(build|test)|Scripts/package.py", publish),
+            "Publication cannot build or receive catalog secrets")
+    for field in ("artifact_id", "asset_digests", "helper_digest"):
+        require("needs.verify.outputs." + field in publish, "Publication must use frozen verification outputs")
+    require("helper.is_symlink()" in publish and "hashlib.sha256(helper.read_bytes())" in publish,
+            "Publication must verify the helper before execution")
+    require("    needs: publish\n" in notify and "needs.publish.outputs.published == 'true'" in notify
+            and "if: inputs.publish" in notify and "    permissions: {}\n" in notify
+            and "uses: ./.github/workflows/notify-catalog.yml" in notify,
+            "Notification must follow confirmed publication")
+    require(source.count("${{ secrets.CATALOG_APP_PRIVATE_KEY }}") == 1
+            and "${{ secrets.CATALOG_APP_PRIVATE_KEY }}" in notify,
+            "Only notification may receive the catalog secret")
+    return {"jobs": ["verify", "publish", "notify-catalog"], "release_workflow_verified": True}
 
 
 class ModelFixture(http.server.ThreadingHTTPServer):
@@ -464,8 +507,10 @@ metrics_exporter = "none"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--adapter", type=Path, required=True)
-    parser.add_argument("--codex", type=Path, required=True)
+    parser.add_argument("--check-release-workflow", action="store_true",
+                        help="Check release jobs and permissions offline without starting a vendor")
+    parser.add_argument("--adapter", type=Path)
+    parser.add_argument("--codex", type=Path)
     parser.add_argument("--gateway", type=Path, help="Optional existing Computer MCP executable; starts only an isolated stdio Gateway")
     parser.add_argument("--database", type=Path, help="Fresh isolated host-test database containing an installed Codex plugin")
     parser.add_argument("--control-socket", type=Path, help="Owner socket of that isolated host-test instance")
@@ -473,6 +518,11 @@ if __name__ == "__main__":
     parser.add_argument("--require-host-work", action="store_true",
                         help="Require the candidate Gateway to accept provider aliases and observe final release")
     options = parser.parse_args()
+    if options.check_release_workflow:
+        print(json.dumps(check_release_workflow(Path(__file__).resolve().parents[1]), indent=2))
+        parser.exit()
+    if not options.adapter or not options.codex:
+        parser.error("Runtime checks require --adapter and --codex")
     if options.require_host_work and not options.gateway:
         parser.error("Host work observation requires --gateway")
     fixture_options = [options.database, options.control_socket, options.workspace]

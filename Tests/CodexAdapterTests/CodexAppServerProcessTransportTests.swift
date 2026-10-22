@@ -267,28 +267,52 @@ struct CodexAppServerProcessTransportTests {
   func closeDoesNotWaitForBackpressuredProtocolWriter() async throws {
     let transport = try ManagedCodexAppServerTransport(
       configuration: .init(
-        executable: "/bin/sh",
-        arguments: ["-c", "trap '' TERM; while :; do /bin/sleep 1; done"],
+        executable: "/usr/bin/python3",
+        arguments: [
+          "-c",
+          """
+          import array, fcntl, os, select, signal, termios
+          signal.signal(signal.SIGTERM, signal.SIG_IGN)
+          select.select([0], [], [])
+          while True:
+              available = array.array("i", [0])
+              fcntl.ioctl(0, termios.FIONREAD, available, True)
+              if available[0] >= os.fstat(0).st_blksize:
+                  break
+          print("blocked", flush=True)
+          select.select([], [], [])
+          """,
+        ],
         workingDirectory: FileManager.default.temporaryDirectory,
         terminationGraceMilliseconds: 100,
         killGraceMilliseconds: 2_000,
         maximumMessageBytes: 8 * 1_024 * 1_024
       )
     )
-    let running = try await waitForRunning(transport)
-    let processID = try #require(running.processID)
     let blockedWrite = Task {
-      try? await transport.sendLine(String(repeating: "x", count: 4 * 1_024 * 1_024))
+      try await transport.sendLine(String(repeating: "x", count: 4 * 1_024 * 1_024))
     }
-    try await Task.sleep(for: .milliseconds(100))
-    let clock = ContinuousClock()
-    let started = clock.now
+    do {
+      var lines = transport.inboundLines.makeAsyncIterator()
+      // Child-observed bytes establish validation and a full pipe independently
+      // of queue accounting. The child never consumes its input.
+      try #require(try await lines.next() == "blocked")
+      let running = try await waitForRunning(transport)
+      let processID = try #require(running.processID)
+      let started = ContinuousClock.now
 
-    await transport.close()
+      await transport.close()
 
-    #expect(started.duration(to: clock.now) < .seconds(3))
-    #expect(await waitForProcessExit(processID))
-    _ = await blockedWrite.value
+      #expect(started.duration(to: .now) < .seconds(3))
+      #expect(await waitForProcessExit(processID))
+      if case .success = await blockedWrite.result {
+        Issue.record("An incomplete protocol write must fail.")
+      }
+    } catch {
+      await transport.close()
+      _ = await blockedWrite.result
+      throw error
+    }
   }
 
   @Test

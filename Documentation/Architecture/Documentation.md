@@ -6,9 +6,11 @@ CONTRIBUTING.md describes contributor checks. Current package facts belong in
 Documentation/Architecture/Package.md; commands, formats and operating detail
 belong in Documentation/Reference/.
 
-Version and release rules belong in
-Documentation/Architecture/VersioningAndRelease.md, and publication steps in
-Documentation/Reference/Release.md. Durable transitions or accepted decisions
+Version rules belong in the root
+[VERSIONING.md](https://github.com/computer-mcp/plugin-codex/blob/master/VERSIONING.md),
+which adopts the organization's rules and states repository differences.
+Release facts and procedures belong in
+[Release](../Reference/Release.md). Durable transitions or accepted decisions
 may have separate history records when needed.
 GitHub-specific configuration belongs in .github/.
 

@@ -12,13 +12,44 @@ dependency.
 | --- | --- |
 | `computer-mcp/swift-sdk` transport fork | Standard northbound MCP transport, tools and results; stdio and complete POSIX frame writes |
 | swift-codex | App Server client and Exec client, each with its own lifecycle |
-| swift-subprocess 0.4.0 | Child process launch and line I/O |
-| swift-argument-parser 1.8.2 | Named options, schema-comparison subcommand, validation and generated CLI help |
-| GRDB 7.11.1 | Codex approval, runtime/thread ownership, acceptance run, worktree lease and managed-worktree storage and transactions |
+| swift-subprocess | Child process launch and line I/O |
+| swift-argument-parser | Named options, schema-comparison subcommand, validation and generated CLI help |
+| GRDB | Codex approval, runtime/thread ownership, acceptance run, worktree lease and managed-worktree storage and transactions |
 
-`Scripts/verify-swift-codex-release-gate.sh` verifies that the manifest's exact
-SDK version, resolved revision and public Git tag agree. CI requires this check
-before packaging. Its dependency notices ship with the
+The [release reference](../Reference/Release.md#dependencies-and-verified-combinations)
+records dependency requirements, selected revisions and compatibility checks.
+swift-crypto and swift-nio are transitive dependencies, owned by their declaring
+packages.
+
+The managed line process uses swift-subprocess's explicit input writer,
+file-descriptor stdout and stderr sequence. Its child-input owner installs a
+no-op `SA_RESTART` SIGPIPE handler once only for the default disposition,
+preserving existing handlers and ignored signals. A handler resets on exec,
+whereas ignoring SIGPIPE would survive into children. Broken pipe errors from
+the library propagate unchanged; a returned short write fails with the adapter's
+closed-transport error. The child-input owner follows these ordering and
+lifetime rules:
+
+1. Whole frames enter a FIFO queue, with at most one library write outstanding.
+   A caller-requested EOF follows earlier writes in that same order.
+2. Cancellation before admission removes the caller promptly without writing,
+   including cancellation racing with admission.
+3. An admitted write runs in an owner task. Its caller awaits completion even
+   if cancelled; only process I/O termination can interrupt that write.
+4. A positive short count retires input before another caller can be admitted.
+   Queued and later writes fail closed. A zero count fails that write without
+   retiring input; thrown library errors propagate unchanged.
+5. Shutdown rejects queued writes and proceeds with bounded process-group
+   termination independently of the active write. Both explicit input finish
+   and return from the subprocess body wait for that write to settle. Supervisor
+   exit cancels process I/O even if a descendant retains the pipe. Close allows
+   up to five seconds for startup, two termination-grace intervals, and one
+   kill-grace interval before reporting a termination timeout; it never closes
+   input under an outstanding write.
+
+Shutdown preserves EOF delivery and frame/output limits.
+
+Dependency notices ship with the
 adapter artifact, independently of host dependencies.
 
 Argument Parser keeps command structure and help in one declaration. Parsing
@@ -248,8 +279,9 @@ transfer ownership of earlier work.
 
 Shutdown joins notification/request consumers, performs bounded unsubscription,
 marks pending approval records interrupted, and closes the transport. Teardown
-closes stdin, waits for graceful exit, sends TERM to the exact owned process
-group if necessary, then KILL after another bounded interval and records reaping.
+rejects queued input and delivers EOF once any admitted write settles. It waits
+for graceful exit, sends TERM to the exact owned process group if necessary,
+then KILL after another bounded interval and records reaping.
 A private supervisor watches the owner's death and applies the same cleanup.
 No process is selected by executable name or a machine-wide search.
 

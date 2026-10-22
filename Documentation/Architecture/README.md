@@ -4,5 +4,5 @@
 boundaries. [Documentation](Documentation.md) describes repository documentation
 roles and the API documentation scope.
 
-[Versioning and Release](VersioningAndRelease.md) owns component version sources,
-compatibility decisions, candidate evidence and release identity.
+The [release reference](../Reference/Release.md) records component version
+sources, compatibility, candidate evidence and publication mechanics.
