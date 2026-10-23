@@ -76,6 +76,3 @@ jobs:
             dist/receipt.json
           if-no-files-found: error
           retention-days: 14
-
-  brand:
-    uses: computer-mcp/.github/.github/workflows/brand-check.yml@f402911abcdfb87ef0c41a2759e8c51387b18935 # master
