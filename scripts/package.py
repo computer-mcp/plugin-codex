@@ -138,6 +138,10 @@ def package(output, configuration):
         copy_tree(bundle, binary_directory / bundle.name)
         for name in ["computer-mcp-plugin.toml", "README.md", "CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "Package.resolved"]:
             copy_file(repo / name, payload / name)
+        logos = payload / ".github/assets/logo"
+        logos.mkdir(parents=True)
+        for name in ("logo-light.png", "logo-dark.png"):
+            copy_file(repo / ".github/assets/logo" / name, logos / name)
         copy_tree(repo / "Documentation", payload / "Documentation")
         notices = payload / "ThirdPartyNotices"
         notices.mkdir()
@@ -197,7 +201,14 @@ def package(output, configuration):
         archive = stage / archive_name
         with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as package_zip:
             for entry in sorted(payload.rglob("*")):
-                package_zip.write(entry, entry.relative_to(payload).as_posix())
+                name = entry.relative_to(payload).as_posix()
+                directory = entry.is_dir()
+                info = zipfile.ZipInfo(name + "/" if directory else name, (1980, 1, 1, 0, 0, 0))
+                info.create_system = 3
+                mode = 0o40755 if directory else (0o100755 if entry.stat().st_mode & 0o111 else 0o100644)
+                info.external_attr = (mode << 16) | (0x10 if directory else 0)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                package_zip.writestr(info, b"" if directory else entry.read_bytes())
         receipt = {"plugin_id": "codex", "configuration": configuration, "architectures": architectures,
                    "platform": platform, "signature": "ad-hoc",
                    "publisher_verified": False, "published": False,

@@ -32,6 +32,15 @@ Computer MCP version. Official GitHub installation verifies the archive
 manifest against its release tag.
 See [third-party components](../../THIRD_PARTY_NOTICES.md) for distribution terms.
 
+The archive includes `README.md`, `CONTRIBUTING.md`, `LICENSE`,
+`THIRD_PARTY_NOTICES.md`, `Package.resolved`, `Documentation/`, the manifest,
+the executable and resource bundle, and collected `ThirdPartyNotices/` and
+`ThirdPartyNotices.txt`. README images retain their relative paths at
+`.github/assets/logo/logo-light.png` and `.github/assets/logo/logo-dark.png`.
+ZIP entries use sorted paths, fixed timestamps and normalized permissions;
+identical staged file bytes and executable bits produce identical archive bytes.
+Native rebuilds may still produce different executable bytes.
+
 Package inputs must be regular files and directories. Symbolic links and special
 files are rejected before signing or running the staged adapter. The output is
 published atomically without replacing any existing destination, including an

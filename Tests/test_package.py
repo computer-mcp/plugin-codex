@@ -40,6 +40,10 @@ class PackageOwnershipTests(unittest.TestCase):
         metadata.parent.mkdir(parents=True)
         metadata.write_text(version.generated("1.2.3"))
         (repo / "Package.resolved").write_text(json.dumps({"pins": [{"identity": "swift-codex"}]}))
+        logos = repo / ".github/assets/logo"
+        logos.mkdir(parents=True)
+        for name in ("logo-light.png", "logo-dark.png"):
+            (logos / name).write_bytes(name.encode())
         documentation = repo / "Documentation"
         documentation.mkdir()
         (documentation / "README.md").write_text("fixture documentation")
@@ -82,13 +86,30 @@ class PackageOwnershipTests(unittest.TestCase):
                 package, "command", side_effect=command
             ):
                 result = package.package(root / "output", "debug")
+                for entry in repo.rglob("*"):
+                    os.utime(entry, (1700000000, 1700000000))
+                repeated = package.package(root / "repeated", "debug")
+                self.assertEqual(Path(result["archive"]).read_bytes(), Path(repeated["archive"]).read_bytes())
             with zipfile.ZipFile(result["archive"]) as archive:
+                expected = {
+                    "computer-mcp-plugin.toml", "README.md", "CONTRIBUTING.md", "LICENSE",
+                    "THIRD_PARTY_NOTICES.md", "Package.resolved", "Documentation/README.md",
+                    "bin/codex-mcp-adapter", "bin/codex-plugin_CodexAdapter.bundle/schema.json",
+                    "ThirdPartyNotices/swift-codex/LICENSE.txt", "ThirdPartyNotices/swift-codex/NOTICE",
+                    "ThirdPartyNotices/codex-protocol/LICENSE", "ThirdPartyNotices/codex-protocol/NOTICE",
+                    "ThirdPartyNotices.txt", ".github/assets/logo/logo-light.png", ".github/assets/logo/logo-dark.png",
+                }
+                self.assertEqual({item.filename for item in archive.infolist() if not item.is_dir()}, expected)
+                for name in ("logo-light.png", "logo-dark.png"):
+                    relative = ".github/assets/logo/" + name
+                    self.assertEqual(archive.read(relative), (repo / relative).read_bytes())
                 self.assertEqual(archive.read("computer-mcp-plugin.toml"), manifest)
                 for name in ("LICENSE.txt", "NOTICE"):
                     original = (repo / ".build/checkouts/swift-codex" / name).read_bytes()
                     self.assertEqual(archive.read("ThirdPartyNotices/swift-codex/" + name), original)
                     self.assertIn(original, archive.read("ThirdPartyNotices.txt"))
             receipt = json.loads(Path(result["receipt"]).read_text())
+            self.assertEqual(set(receipt["files"]), expected)
             self.assertEqual(receipt["architectures"], ["arm64"])
             self.assertEqual(receipt["files"]["computer-mcp-plugin.toml"], package.hashlib.sha256(manifest).hexdigest())
 
@@ -151,7 +172,7 @@ class PackageOwnershipTests(unittest.TestCase):
                 self.assertEqual((repo / "computer-mcp-plugin.toml").read_bytes(), original)
 
     def test_package_rejects_links_before_signing_or_running_payload(self):
-        for relative in ("README.md", "Documentation/link", ".build/debug/codex-plugin_CodexAdapter.bundle/link"):
+        for relative in ("README.md", ".github/assets/logo/logo-light.png", "Documentation/link", ".build/debug/codex-plugin_CodexAdapter.bundle/link"):
             with self.subTest(input=relative), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 repo, built = self.make_repository(root)
