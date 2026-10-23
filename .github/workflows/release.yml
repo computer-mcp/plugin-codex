@@ -15,9 +15,6 @@ on:
         type: boolean
         default: false
 permissions: {}
-concurrency:
-  group: plugin-release-${{ github.repository }}-${{ inputs.release_tag || inputs.source_run }}
-  cancel-in-progress: false
 jobs:
   verify:
     if: github.repository == 'computer-mcp/plugin-codex' && github.ref == 'refs/heads/master'
