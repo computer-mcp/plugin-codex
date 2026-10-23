@@ -98,7 +98,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const check = args.includes('--check');
   const positional = args.filter(value => value !== '--check');
   if (positional.length > 1 || positional.some(value => value.startsWith('--'))) {
-    throw new Error('Usage: node Scripts/import-schema.mjs [SDK_REPOSITORY] [--check]');
+    throw new Error('Usage: node scripts/import-schema.mjs [SDK_REPOSITORY] [--check]');
   }
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const sdk = resolve(positional[0] ?? join(root, '.build/checkouts/swift-codex'));

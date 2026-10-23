@@ -1,14 +1,15 @@
 name: CI
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
   push:
     branches: [master]
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   package:
     runs-on: macos-latest
@@ -27,16 +28,16 @@ jobs:
         env:
           BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          python3 Scripts/version.py check
+          python3 scripts/version.py check
           if [[ "$BASE_COMMIT" =~ ^[0-9a-f]{40}$ && "$BASE_COMMIT" != 0000000000000000000000000000000000000000 ]]; then
-            python3 Scripts/version.py check --base "$BASE_COMMIT"
+            python3 scripts/version.py check --base "$BASE_COMMIT"
           fi
           /usr/bin/swift --version
           /usr/bin/swift package resolve
           git diff --exit-code -- Package.resolved
-          Scripts/verify-swift-codex-release-gate.sh
+          scripts/verify-swift-codex-release-gate.sh
           node --test Tests/schema-import.test.mjs
-          node Scripts/import-schema.mjs --check
+          node scripts/import-schema.mjs --check
           /usr/bin/swift format lint --strict --recursive Package.swift Sources Tests
           /usr/bin/swift build --build-tests --disable-automatic-resolution
       - name: Run Swift tests
@@ -63,11 +64,11 @@ jobs:
       - name: Validate package ownership and publication
         run: |
           python3 -m unittest discover -s Tests -p 'test_*.py' -v
-          python3 Scripts/check-workflow.py --check-release-workflow
+          python3 scripts/check-workflow.py --check-release-workflow
       - name: Build relocatable adapter and receipt
         run: |
-          python3 Scripts/package.py --output dist --configuration release
-          python3 Scripts/check-package.py --archive dist/codex-plugin-macos-arm64.zip --receipt dist/receipt.json --destination .build/accepted-package
+          python3 scripts/package.py --output dist --configuration release
+          python3 scripts/check-package.py --archive dist/codex-plugin-macos-arm64.zip --receipt dist/receipt.json --destination .build/accepted-package
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: codex-plugin-macos-arm64-${{ github.sha }}
@@ -77,5 +78,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  brand:
-    uses: computer-mcp/.github/.github/workflows/brand-check.yml@f402911abcdfb87ef0c41a2759e8c51387b18935 # master
+  validate:
+    if: always()
+    needs: [package]
+    uses: computer-mcp/github-workflows/.github/workflows/result.yml@d65bc20504f39c3a30232d67043abeca43d2c7b1
+    with:
+      needs-json: ${{ toJSON(needs) }}

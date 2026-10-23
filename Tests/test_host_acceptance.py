@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-SCRIPT = Path(__file__).resolve().parents[1] / "Scripts/check-host.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/check-host.py"
 spec = importlib.util.spec_from_file_location("host_acceptance", SCRIPT)
 acceptance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(acceptance)

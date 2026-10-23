@@ -40,14 +40,14 @@ def check_release_workflow(root):
             "Verification cannot receive secrets or write permission")
     require("ref: ${{ github.workflow_sha }}" in verify and "persist-credentials: false" in verify,
             "Verification must execute the workflow revision without persisted credentials")
-    require("Scripts/plugin_release.py verify" in verify and "--publish" in verify,
+    require("scripts/plugin_release.py verify" in verify and "--publish" in verify,
             "Verification must assemble both publication and dry-run bundles")
     require("    if: inputs.publish\n    needs: verify\n" in publish
             and "    permissions:\n      contents: write\n" in publish,
             "Only publication may write after verification")
     require("actions: read" not in publish and "secrets" not in publish
             and "actions/checkout@" not in publish
-            and not re.search(r"swift\s+(build|test)|Scripts/package.py", publish),
+            and not re.search(r"swift\s+(build|test)|scripts/package.py", publish),
             "Publication cannot build or receive catalog secrets")
     for field in ("artifact_id", "asset_digests", "helper_digest"):
         require("needs.verify.outputs." + field in publish, "Publication must use frozen verification outputs")

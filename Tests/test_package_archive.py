@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-scripts = Path(__file__).resolve().parents[1] / "Scripts"
+scripts = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(scripts))
 spec = importlib.util.spec_from_file_location("check_package", scripts / "check-package.py")
 checker = importlib.util.module_from_spec(spec)

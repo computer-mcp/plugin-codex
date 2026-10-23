@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readLockedSnapshot, syncArtifacts } from '../Scripts/import-schema.mjs';
+import { readLockedSnapshot, syncArtifacts } from '../scripts/import-schema.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'codex-schema-authority-'));

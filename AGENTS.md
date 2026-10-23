@@ -162,16 +162,6 @@ Do not install or bundle vendor Codex binaries. Keep generated schema provenance
 
 Use Swift Testing. Run strict swift-format lint, swift build, swift test, schema
 drift checks, and an isolated standard MCP client before handoff. Use `Documentation/Reference/Release.md` for packaged runtime acceptance through
-the installed host; run `Scripts/check-host.py --help` and its Python unit tests
+the installed host; run `scripts/check-host.py --help` and its Python unit tests
 when changing that driver. Logs must never
 write to the protocol stdout. Do not publish repositories or releases implicitly.
-
-## Brand delivery
-
-The organization `.github` repository owns the design system and renders every
-image; the main Computer MCP repository owns ProductIdentity. Imported
-`Documentation/Brand/header-light.png` and `header-dark.png` travel with the
-packaged manual; `.github/brand/social.png` supplies the repository preview.
-`.github/brand/brand.lock.json` binds them to the organization exports, and CI
-verifies it with the shared brand-check workflow. Update imports with the
-organization repository's `python3 Brand/brand.py sync`.

@@ -21,7 +21,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "Scripts/plugin_release.py"
+SCRIPT = ROOT / "scripts/plugin_release.py"
 WORKFLOW = ROOT / ".github/workflows/release.yml"
 spec = importlib.util.spec_from_file_location("plugin_release", SCRIPT)
 release = importlib.util.module_from_spec(spec)
@@ -639,7 +639,7 @@ class ReleaseTests(unittest.TestCase):
 
 class ReleaseWorkflowTests(unittest.TestCase):
     def test_job_graph_permissions_and_frozen_output_checks(self):
-        spec = importlib.util.spec_from_file_location("workflow_check", ROOT / "Scripts/check-workflow.py")
+        spec = importlib.util.spec_from_file_location("workflow_check", ROOT / "scripts/check-workflow.py")
         checker = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(checker)
         self.assertTrue(checker.check_release_workflow(ROOT)["release_workflow_verified"])

@@ -1,7 +1,7 @@
 # Native Codex model fixture
 
 `ModelServer.py` serves a private loopback Responses endpoint and network token.
-It never executes commands. `Scripts/check-host.py` owns its input recipes,
+It never executes commands. `scripts/check-host.py` owns its input recipes,
 workspaces, network token, process and native Codex generations. Each recipe
 issues at most one native `exec_command` call using a non-login shell. Exact
 `function_call_output` receipts are correlated to the issued call ID and checked
