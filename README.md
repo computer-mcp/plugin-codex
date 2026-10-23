@@ -11,8 +11,8 @@
 
 <p align="center">
   <a href="https://github.com/computer-mcp/plugin-codex/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/computer-mcp/plugin-codex/ci.yml?branch=master&label=CI&style=flat"></a>
-  <img alt="Swift 6.2 or newer" src="https://img.shields.io/badge/Swift-6.2%2B-orange?style=flat">
-  <img alt="Platform: macOS 14 or newer" src="https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey?style=flat">
+  <a href="Package.swift"><img alt="Swift 6.2 or newer" src="https://img.shields.io/badge/Swift-6.2%2B-orange?style=flat"></a>
+  <a href="Package.swift"><img alt="Platform: macOS 14 or newer" src="https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey?style=flat"></a>
   <a href="LICENSE"><img alt="License: FSL-1.1-ALv2" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-blue?style=flat"></a>
 </p>
 
