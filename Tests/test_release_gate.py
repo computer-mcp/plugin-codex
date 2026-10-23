@@ -12,9 +12,9 @@ class SDKReleaseGateTests(unittest.TestCase):
                  revision="a" * 40, remote=None, remote_status=0):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            scripts = root / "Scripts"
+            scripts = root / "scripts"
             scripts.mkdir()
-            source = Path(__file__).resolve().parents[1] / "Scripts/verify-swift-codex-release-gate.sh"
+            source = Path(__file__).resolve().parents[1] / "scripts/verify-swift-codex-release-gate.sh"
             shutil.copy2(source, scripts / source.name)
             (root / "Package.swift").write_text(
                 '.package(\n url: "https://github.com/swift-library/swift-codex.git",\n '

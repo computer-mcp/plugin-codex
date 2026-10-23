@@ -8,10 +8,10 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import version
 
-spec = importlib.util.spec_from_file_location("plugin_package", Path(__file__).resolve().parents[1] / "Scripts/package.py")
+spec = importlib.util.spec_from_file_location("plugin_package", Path(__file__).resolve().parents[1] / "scripts/package.py")
 package = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
 
@@ -57,7 +57,7 @@ class PackageOwnershipTests(unittest.TestCase):
             root = Path(directory)
             repo, _ = self.make_repository(root)
             (repo / version.GENERATED).write_text(version.generated("1.2.4"))
-            with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(package, "command") as command:
+            with patch.object(package, "__file__", str(repo / "scripts/package.py")), patch.object(package, "command") as command:
                 with self.assertRaisesRegex(ValueError, "differs from manifest"):
                     package.package(root / "output", "debug")
                 command.assert_not_called()
@@ -78,7 +78,7 @@ class PackageOwnershipTests(unittest.TestCase):
                     return "1.2.3"
                 return ""
 
-            with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(
+            with patch.object(package, "__file__", str(repo / "scripts/package.py")), patch.object(
                 package, "command", side_effect=command
             ):
                 result = package.package(root / "output", "debug")
@@ -141,7 +141,7 @@ class PackageOwnershipTests(unittest.TestCase):
                             manifest.write_bytes(original + b"\n# changed declaration bytes\n")
                     return ""
 
-                with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(
+                with patch.object(package, "__file__", str(repo / "scripts/package.py")), patch.object(
                     package, "command", side_effect=command
                 ):
                     with self.assertRaises(ValueError):
@@ -161,7 +161,7 @@ class PackageOwnershipTests(unittest.TestCase):
                 if link.exists():
                     link.unlink()
                 link.symlink_to(outside)
-                with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(
+                with patch.object(package, "__file__", str(repo / "scripts/package.py")), patch.object(
                     package, "command", side_effect=["", str(built)]
                 ) as commands:
                     with self.assertRaises(ValueError):
@@ -187,7 +187,7 @@ class PackageOwnershipTests(unittest.TestCase):
                     return "1.2.3"
                 return ""
 
-            with patch.object(package, "__file__", str(repo / "Scripts/package.py")), patch.object(
+            with patch.object(package, "__file__", str(repo / "scripts/package.py")), patch.object(
                 package, "command", side_effect=command
             ):
                 with self.assertRaises(FileExistsError):

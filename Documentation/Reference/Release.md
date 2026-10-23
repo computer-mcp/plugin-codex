@@ -53,7 +53,7 @@ requirements are:
 
 The [package dependency overview](../Architecture/Package.md#dependencies)
 records their architectural responsibilities. CI resolves the committed lock
-and rejects drift. `Scripts/verify-swift-codex-release-gate.sh` checks the
+and rejects drift. `scripts/verify-swift-codex-release-gate.sh` checks the
 declared exact swift-codex version and resolved revision against its public Git
 tag, accepting the tag's peeled commit when it is annotated. The SDK's public
 tag owns its release identity.
@@ -67,12 +67,12 @@ combination's runtime acceptance.
 
 ## Derived Metadata and Drift Checks
 
-`python3 Scripts/version.py update --kind <fix|feature|breaking> --reason <reason>`
+`python3 scripts/version.py update --kind <fix|feature|breaking> --reason <reason>`
 updates the manifest and generated constant. After an explicit manifest edit,
-`python3 Scripts/version.py generate` regenerates
+`python3 scripts/version.py generate` regenerates
 `Sources/CodexAdapter/CodexAdapterBuildInfo.swift`.
 
-`python3 Scripts/version.py check` is read-only and rejects generated metadata
+`python3 scripts/version.py check` is read-only and rejects generated metadata
 drift. Its `--binary <adapter>` option checks the actual executable's `--version`.
 `check --base <commit>` rejects version regression when HEAD has parents and the
 base is an available ancestor; otherwise it checks the current version and
@@ -80,7 +80,7 @@ reports why comparison was skipped. CI supplies the pull request base or
 previous `master` commit. `check --tag <tag>` verifies the manifest version and
 the tag's commit.
 
-`node Scripts/import-schema.mjs --check` verifies bundled protocol resources
+`node scripts/import-schema.mjs --check` verifies bundled protocol resources
 against the locked SDK commit; [Protocol inputs](../../README.md#protocol-inputs)
 owns regeneration instructions. Packaging checks the manifest, generated
 version and dependency lock, validates the built executable's version and
@@ -89,8 +89,8 @@ checks the relocated bytes before runtime acceptance.
 
 ## Candidate, Acceptance and Publication
 
-CI runs source checks and `Scripts/package.py`, then verifies and relocates the
-archive with `Scripts/check-package.py`. It uploads the ZIP and native build
+CI runs source checks and `scripts/package.py`, then verifies and relocates the
+archive with `scripts/check-package.py`. It uploads the ZIP and native build
 receipt as the commit-named candidate artifact. `release.yml` promotes those
 accepted CI bytes and receipts without rebuilding. Verification, publication
 and catalog notification are separate jobs.
@@ -105,12 +105,12 @@ not model execution. Run the ordinary checks in [Contributing](../../CONTRIBUTIN
 first.
 
 ```sh
-python3 Scripts/check-package.py --archive <archive.zip> --receipt <receipt.json> \
+python3 scripts/check-package.py --archive <archive.zip> --receipt <receipt.json> \
   --destination .build/accepted-package
-python3 Scripts/check-workflow.py \
+python3 scripts/check-workflow.py \
   --adapter "$PWD/.build/accepted-package/bin/codex-mcp-adapter" \
   --codex /absolute/path/to/codex
-python3 Scripts/check-host.py \
+python3 scripts/check-host.py \
   --host /absolute/path/to/computer-mcp \
   --adapter "$PWD/.build/accepted-package/bin/codex-mcp-adapter" \
   --codex /absolute/path/to/codex \
@@ -217,7 +217,7 @@ python3 -m unittest discover -s Tests -p 'test_host_acceptance.py' -v
 The Release assets are exactly the manifest's `compatibility.artifacts` ZIPs,
 their `<archive-stem>.receipt.json` native build receipts, `release-receipt.json`
 and `SHA256SUMS`. The native receipts remain inputs to `check-package.py`.
-`Scripts/plugin_release.py` assembles the schema 1 receipt and checksums under
+`scripts/plugin_release.py` assembles the schema 1 receipt and checksums under
 the organization's
 [release content contract](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md#plugin-release-contents)
 and [Codex promotion contract](https://github.com/computer-mcp/.github/blob/master/VERSIONING.md#codex-promotion-exception).
@@ -315,8 +315,8 @@ operator decision.
 | --- | --- | --- |
 | Version update and drift checks | [Metadata entry points](#derived-metadata-and-drift-checks) | Local source write for updates; read-only checks |
 | Source validation | [Contributing checks](../../CONTRIBUTING.md#validation) | Local toolchain; dependency resolution and public SDK tag lookup |
-| Release workflow validation | `python3 Scripts/check-workflow.py --check-release-workflow` and `python3 -m unittest discover -s Tests -p 'test_*.py'` | Local files; no host, vendor or credentials |
-| Candidate build | `python3 Scripts/package.py --output dist --configuration release` | Local build tools and resolved dependencies; new output directory |
+| Release workflow validation | `python3 scripts/check-workflow.py --check-release-workflow` and `python3 -m unittest discover -s Tests -p 'test_*.py'` | Local files; no host, vendor or credentials |
+| Candidate build | `python3 scripts/package.py --output dist --configuration release` | Local build tools and resolved dependencies; new output directory |
 | Archive and runtime acceptance | [Runtime acceptance](#runtime-acceptance) | Verified archive, installed host and vendor; authorized file-store login for full mode |
 | Dry run and publication | [Publish](#publish) | Actions dispatch; verified immutable-release setting; publication job has contents write access |
 | Interrupted-run recovery and catalog status | [Retry](#retry) | Actions access; catalog authority isolated to the notifier |

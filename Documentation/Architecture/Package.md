@@ -332,7 +332,7 @@ and API documentation scope.
 
 The repository validation workflow resolves and verifies the checked-in dependency
 lock, lints and tests the Swift package, verifies package input ownership and
-exclusive output publication, then invokes `Scripts/package.py` for a
+exclusive output publication, then invokes `scripts/package.py` for a
 relocatable release-configuration archive. It retains the ZIP and file/digest
 receipt with read-only repository permissions. The version-controlled manifest
 owns archive compatibility; packaging verifies the built adapter's slices against

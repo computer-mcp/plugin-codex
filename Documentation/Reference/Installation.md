@@ -12,7 +12,7 @@ From this independent repository, with Python 3.11 or newer and its Swift
 dependencies already resolved:
 
 ```sh
-python3 Scripts/package.py --output /absolute/new/artifact-directory
+python3 scripts/package.py --output /absolute/new/artifact-directory
 ```
 
 The default build is release; `--configuration debug` is available for development.
@@ -41,7 +41,7 @@ packager's temporary staging directory; existing outputs remain unchanged.
 The repository's CI workflow (`ci.yml`) runs on pull requests, `master` pushes
 and manual dispatch. It checks formatting, tests and the dependency lock, then
 retains the macOS ZIP and receipt as a downloadable workflow artifact. CI verifies
-and relocates the exact archive with `Scripts/check-package.py`. These outputs
+and relocates the exact archive with `scripts/check-package.py`. These outputs
 are validation builds, not published or verified official releases.
 Check the receipt's architecture before installation. Public distribution needs
 separate publisher authorization and its signing/provenance review.

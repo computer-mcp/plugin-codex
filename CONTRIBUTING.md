@@ -10,16 +10,16 @@ CI runs these checks on macOS; run them before opening a pull request. They need
 Node.js, `jq` and `ripgrep`:
 
 ```sh
-python3 Scripts/version.py check
+python3 scripts/version.py check
 swift package resolve && git diff --exit-code -- Package.resolved
-Scripts/verify-swift-codex-release-gate.sh
+scripts/verify-swift-codex-release-gate.sh
 node --test Tests/schema-import.test.mjs
-node Scripts/import-schema.mjs --check
+node scripts/import-schema.mjs --check
 swift format lint --strict --recursive Package.swift Sources Tests
 swift build --build-tests --disable-automatic-resolution
 swift test --skip-build --disable-automatic-resolution --no-parallel
 python3 -m unittest discover -s Tests -p 'test_*.py'
-python3 Scripts/package.py --output OUTPUT_DIRECTORY --configuration release
+python3 scripts/package.py --output OUTPUT_DIRECTORY --configuration release
 ```
 
 Exercise help, valid input and invalid input
