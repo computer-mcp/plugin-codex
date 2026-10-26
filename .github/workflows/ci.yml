@@ -81,6 +81,6 @@ jobs:
   validate:
     if: always()
     needs: [package]
-    uses: computer-mcp/github-workflows/.github/workflows/result.yml@36a8e11e46fc8831397cebab54cd4657dcac7898
+    uses: computer-mcp/github-workflows/.github/workflows/result.yml@fd25fcface41732fda099017c6945912366fc7c1
     with:
       needs-json: ${{ toJSON(needs) }}
