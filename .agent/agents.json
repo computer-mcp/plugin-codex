@@ -3,7 +3,7 @@
     "computer-mcp": {
       "git": "github.com/computer-mcp/.github",
       "path": ".agent",
-      "revision": "0c2531e982509bf6aee719cb7398819f64a5f966"
+      "revision": "ad4901bf01abb22ae655943d48b50483bf4c6b3a"
     }
   },
   "instructions": {

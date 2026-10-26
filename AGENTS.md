@@ -35,8 +35,9 @@
   selection, tool grants and approval authority. Manifest defaults, skill text
   and adapter defaults never grant access or raise permissions.
 - When the plugin ships interface data such as `cli-tree.json`, generate it
-  only from verified native `--help` and `--version` output, keep its coverage
-  explicitly partial, and never hand-edit generated output.
+  only from the verified source its README names, such as the tool's native
+  output or a pinned SDK, keep its coverage explicitly partial, and never
+  hand-edit generated output.
 - Before handoff, build the package deterministically and run the host's
   package validation where available. Do not publish repositories or releases
   implicitly.
