@@ -5,6 +5,7 @@
   },
   "sources": {
     "computer-mcp": {
+      "branch": "master",
       "git": "github.com/computer-mcp/.github",
       "path": ".agent"
     }
