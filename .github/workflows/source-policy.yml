@@ -12,6 +12,6 @@ concurrency:
   cancel-in-progress: true
 jobs:
   policy:
-    uses: computer-mcp/github-workflows/.github/workflows/policy.yml@d65bc20504f39c3a30232d67043abeca43d2c7b1
+    uses: computer-mcp/github-workflows/.github/workflows/policy.yml@fd25fcface41732fda099017c6945912366fc7c1
     with:
       declaration-revision: 5c54a40cb7953db7472ebbefd3db608036b7b3ab
