@@ -1,47 +1,37 @@
 {
-  "instructions" : {
-    "chatgpt" : {
-
-    },
-    "sections" : [
+  "instructions": {
+    "chatgpt": {},
+    "sections": [
       {
-        "hash" : "sha256:27438529c0bd598e0b6de8cf8f5e8ac7c5e96300db764bc0bea2cf998b6a7ff3",
-        "name" : "guide",
-        "path" : ".agent/instructions/guide.md",
-        "source" : "."
+        "hash": "sha256:27438529c0bd598e0b6de8cf8f5e8ac7c5e96300db764bc0bea2cf998b6a7ff3",
+        "name": "guide",
+        "path": ".agent/instructions/guide.md",
+        "source": "."
       },
       {
-        "hash" : "sha256:d0c9d33c22d7357951d792c5c2377b392e0cdf6bd8470159e4d2930cdcee3550",
-        "name" : "shared/plugin-rules",
-        "path" : ".agent/instructions/shared/plugin-rules.md",
-        "revision" : "ad4901bf01abb22ae655943d48b50483bf4c6b3a",
-        "source" : "github.com/computer-mcp/.github"
+        "hash": "sha256:d0c9d33c22d7357951d792c5c2377b392e0cdf6bd8470159e4d2930cdcee3550",
+        "name": "shared/plugin-rules",
+        "path": ".agent/instructions/shared/plugin-rules.md",
+        "revision": "b7c9d5b086418ebba0686f97cdb71e8c1084d5f5",
+        "source": "github.com/computer-mcp/.github"
       }
     ],
-    "targets" : {
-      "AGENTS.md" : {
-        "agents" : [
-          "claude-code",
-          "codex"
-        ],
-        "blockHash" : "sha256:a4496a22d157a9cf08f28abfff82e9f6d22ec96f06367393cb2ea2289715e761",
-        "created" : false,
-        "headingOffset" : 0
+    "targets": {
+      "AGENTS.md": {
+        "agents": ["claude-code", "codex"],
+        "blockHash": "sha256:a4496a22d157a9cf08f28abfff82e9f6d22ec96f06367393cb2ea2289715e761",
+        "created": false,
+        "headingOffset": 0
       }
     }
   },
-  "skills" : {
-
-  },
-  "sources" : {
-    "github.com/computer-mcp/.github" : {
-      "kind" : "git",
-      "path" : ".agent",
-      "requirement" : {
-        "revision" : "ad4901bf01abb22ae655943d48b50483bf4c6b3a"
-      },
-      "url" : "https://github.com/computer-mcp/.github"
+  "skills": {},
+  "sources": {
+    "github.com/computer-mcp/.github": {
+      "kind": "git",
+      "path": ".agent",
+      "url": "https://github.com/computer-mcp/.github"
     }
   },
-  "version" : 1
+  "version": 1
 }
