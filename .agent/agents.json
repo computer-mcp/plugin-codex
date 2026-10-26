@@ -1,0 +1,19 @@
+{
+  "sources": {
+    "computer-mcp": {
+      "git": "github.com/computer-mcp/.github",
+      "path": ".agent",
+      "revision": "0c2531e982509bf6aee719cb7398819f64a5f966"
+    }
+  },
+  "instructions": {
+    "agents": [
+      "claude-code",
+      "codex"
+    ],
+    "sections": [
+      "guide",
+      "computer-mcp:shared/plugin-rules"
+    ]
+  }
+}

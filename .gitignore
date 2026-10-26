@@ -1,8 +1,11 @@
 .build/
 .swiftpm/
-.agent/
 .DS_Store
 __pycache__/
 *.pyc
 bin/
 dist/
+/.agent/*
+!/.agent/instructions/
+!/.agent/agents.json
+!/.agent/agents.resolved
