@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: Request complete catalog reconciliation
         id: catalog
-        uses: computer-mcp/github-workflows/actions/notify-catalog@4359ca27a4637460ba8d3f6461e42701f76f647a
+        uses: computer-mcp/github-workflows/actions/notify-catalog@36a8e11e46fc8831397cebab54cd4657dcac7898
         with:
           client-id: ${{ vars.CATALOG_APP_CLIENT_ID }}
           private-key: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}
