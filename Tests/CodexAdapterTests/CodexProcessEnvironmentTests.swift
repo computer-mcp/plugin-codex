@@ -34,6 +34,26 @@ final class CodexProcessEnvironmentTests {
   }
 
   @Test
+  func managedVendorHomeMatchesReaderAndChildEnvironment() {
+    var base = [
+      "COMPUTER_MCP_HOST_CONTEXT": "fixture",
+      "HOME": "/tmp/container/home",
+      "XDG_STATE_HOME": "/tmp/container/state",
+    ]
+    for explicit in [nil, "/tmp/configured-codex-home"] as [String?] {
+      base["CODEX_HOME"] = explicit
+      let expected = explicit ?? "/tmp/container/home/.codex"
+      let child = CodexProcessEnvironment.resolved(base: base, systemProxy: .init())
+      #expect(child["CODEX_HOME"] == expected)
+      #expect(CodexProcessEnvironment.vendorHome(in: base).path == expected)
+      #expect(child["COMPUTER_MCP_HOST_CONTEXT"] == nil)
+    }
+    base["COMPUTER_MCP_HOST_CONTEXT"] = nil
+    base["CODEX_HOME"] = nil
+    #expect(CodexProcessEnvironment.resolved(base: base, systemProxy: .init())["CODEX_HOME"] == nil)
+  }
+
+  @Test
   func testFixedMacOSProxiesAreMappedToConventionalCodexEnvironment() {
     let environment = CodexProcessEnvironment.resolved(
       base: ["PATH": "/usr/bin"],

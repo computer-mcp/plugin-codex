@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Accept a packaged adapter through an installed Computer MCP CLI's public MCP surface.
+"""Accept a packaged adapter through a source-built registered Computer MCP gateway.
 
-Fixture mode uses real native Codex with a private loopback Responses server.
+Container mode uses a deterministic protocol peer. Fixture mode uses native
+Codex with a private loopback Responses server.
 Full mode additionally requires authenticated model execution. All host instances,
 workspaces, runtime homes and failure injection targets are private to this run.
 """
@@ -13,6 +14,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,7 +22,9 @@ import threading
 import time
 import uuid
 
-MODEL_SOURCE = Path(__file__).resolve().parents[1] / "Tests/Fixtures/NativeCodex/ModelServer.py"
+REPOSITORY = Path(__file__).resolve().parents[1]
+MODEL_SOURCE = REPOSITORY / "Tests/Fixtures/NativeCodex/ModelServer.py"
+REGISTERED_HOST_SOURCE = REPOSITORY / "Tests/Fixtures/RegisteredHost/RegisteredHost.swift"
 MAX_MESSAGE = 8_388_608
 
 
@@ -55,11 +59,11 @@ def timeout_seconds(value):
 
 def parse_arguments(arguments=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", required=True, type=executable, help="Installed computer-mcp CLI")
+    parser.add_argument("--host", required=True, type=executable, help="Source-built CodexRegisteredHost fixture")
     parser.add_argument("--adapter", required=True, type=executable, help="Adapter from the verified, relocated archive")
-    parser.add_argument("--codex", required=True, type=executable, help="User-installed vendor Codex")
+    parser.add_argument("--codex", type=executable, help="Native modes: user-installed vendor Codex")
     parser.add_argument("--output-directory", required=True, type=Path, help="New private directory in ignored build output")
-    parser.add_argument("--mode", choices=("fixture", "full"), default="full")
+    parser.add_argument("--mode", choices=("container", "fixture", "full"), default="full")
     parser.add_argument("--auth-file", type=absolute_file, help="Full mode: existing vendor auth.json; copied privately and deleted on exit")
     parser.add_argument("--model", help="Full mode: authenticated model ID")
     parser.add_argument("--timeout-seconds", type=timeout_seconds, default=180)
@@ -67,9 +71,13 @@ def parse_arguments(arguments=None):
     root = options.output_directory
     if not root.is_absolute() or root.exists() or root.is_symlink():
         parser.error("--output-directory must be a new absolute path")
+    if options.mode == "container" and options.codex:
+        parser.error("Container mode uses only the disposable protocol peer")
+    if options.mode != "container" and not options.codex:
+        parser.error("Native modes require --codex")
     if options.mode == "full" and (not options.auth_file or not options.model or not options.model.strip()):
         parser.error("Full mode requires --auth-file and --model")
-    if options.mode == "fixture" and (options.auth_file or options.model):
+    if options.mode != "full" and (options.auth_file or options.model):
         parser.error("Authentication inputs require full mode")
     if options.model and any(c in options.model for c in "\0\r\n"):
         parser.error("Model ID must be a single nonempty line")
@@ -239,16 +247,19 @@ class Host:
         fixture.generation += 1
         self.log = (fixture.root / f"host-{fixture.generation}.log").open("w")
         self.evidence = (fixture.root / f"protocol-{fixture.generation}.jsonl").open("w")
-        self.process = subprocess.Popen([str(fixture.options.host), "serve", "stdio", "--config",
-                                         str(fixture.root / "host.toml"), "--database", str(fixture.root / "host.sqlite")],
+        self.process = subprocess.Popen([str(fixture.options.host), "serve", str(fixture.root)],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
                                         text=True, bufsize=1, env=fixture.environment, cwd=fixture.root)
         fixture.hosts.append(self)
         self.client = MCPClient(self.process, self.evidence, fixture.options.timeout_seconds)
-        self.catalog = self.client.initialize()
-        require(set(RISKS) <= self.catalog.keys(), {"missing_tools": sorted(set(RISKS) - self.catalog.keys())})
-        require(self.catalog["mcp.tools.call"]["inputSchema"]["properties"]["workspace_id"]["type"] == "string",
-                "Generic dispatch lacks workspace selection")
+        gateway_catalog = self.client.initialize()
+        tools = unwrap(self.client.send("tools/call", {
+            "name": "mcp.tools.list", "arguments": {"server": "codex"},
+        }))
+        self.catalog = {tool["name"]: tool for tool in tools} if indirect else gateway_catalog
+        require(set(fixture.risks) <= self.catalog.keys(), {"missing_tools": sorted(set(fixture.risks) - self.catalog.keys())})
+        require(gateway_catalog["mcp.tools.call"]["inputSchema"]["properties"]["project_id"]["type"] == "string",
+                "Generic dispatch lacks project selection")
 
     def raw(self, name, arguments=None, timeout=None):
         name = name if name.startswith("codex.") else "codex.app." + name
@@ -256,9 +267,9 @@ class Host:
         require(set(arguments) <= self.catalog[name]["inputSchema"]["properties"].keys(), {"tool": name, "undeclared_inputs": sorted(set(arguments) - self.catalog[name]["inputSchema"]["properties"].keys())})
         if self.indirect:
             params = {"name": "mcp.tools.call", "arguments": {"server": "codex", "tool": name,
-                      "workspace_id": self.workspace, "arguments": arguments}}
+                      "project_id": self.workspace, "arguments": arguments}}
         else:
-            params = {"name": name, "arguments": dict(arguments, workspace_id=self.workspace)}
+            params = {"name": name, "arguments": dict(arguments, project_id=self.workspace)}
         result = self.client.send("tools/call", params, timeout=timeout)
         return unwrap(result) if self.indirect else result
 
@@ -344,10 +355,17 @@ class Fixture:
         self.generation = 0
         self.model = None
         self.model_log = None
+        self.container = None
+        self.adapter_config = self.root / "adapter.json"
+        self.launches = self.root / "launches.jsonl"
+        self.risks = RISKS
+        if options.mode == "container":
+            self.risks = {name: RISKS[name] for name in (
+                "codex.app.status", "codex.app.thread.loaded.list", "codex.diagnostics.snapshot")}
         self.home = self.root / "codex-home"
         self.home.mkdir(mode=0o700)
         # Private HOME also isolates Git, native skills, hooks and host configuration.
-        self.environment = {"HOME": str(self.root), "PATH": str(options.codex.parent) + ":/usr/bin:/bin",
+        self.environment = {"HOME": str(self.root), "PATH": "/usr/bin:/bin",
                             "TMPDIR": str(self.root / "tmp"), "GIT_CONFIG_GLOBAL": os.devnull,
                             "GIT_CONFIG_NOSYSTEM": "1"}
         (self.root / "tmp").mkdir(mode=0o700)
@@ -355,17 +373,23 @@ class Fixture:
     def setup(self):
         for name in ("primary", "other"):
             (self.root / name).mkdir()
+            if self.options.mode == "container":
+                continue
             self.git(["init", "--quiet"], name)
             for key, value in (("user.name", "Acceptance"), ("user.email", "acceptance@example.invalid"),
                                ("commit.gpgsign", "false"), ("core.hooksPath", str(self.root / name / ".git/hooks"))):
                 self.git(["config", key, value], name)
-        wrapper = self.root / "configured-codex"
+        self.register()
+        if self.options.mode == "container":
+            self.configure_adapter(self.peer, exec_enabled=False)
+            return
+        wrapper = self.package / "bin/configured-codex"
         wrapper.write_text(f'''#!{sys.executable}
 import json, os, sys
 keys = ("COMPUTER_MCP_HOST_CONTEXT", "COMPUTER_MCP_HOST_FD", "CODEX_THREAD_ID")
 assert not any(key in os.environ for key in keys), "Parent authority leaked"
-assert os.environ.get("COMPUTER_MCP_FIXTURE_VALUE") == "preserved", "Ordinary environment lost"
-with open({str(self.root / 'launches.jsonl')!r}, "a") as receipt:
+assert os.environ.get("CODEX_HOME") == {str(self.home)!r}, "Wrong vendor container"
+with open({str(self.launches)!r}, "a") as receipt:
     receipt.write(json.dumps({{"mode": sys.argv[1], "cwd": os.getcwd(), "argv": sys.argv[1:], "pid": os.getpid()}}) + "\\n")
 os.execv({str(self.options.codex)!r}, [{str(self.options.codex)!r}] + sys.argv[1:])
 ''')
@@ -402,50 +426,79 @@ stream_max_retries = 0
 '''
         config += '[analytics]\nenabled = false\n[otel]\nmetrics_exporter = "none"\n'
         (self.home / "config.toml").write_text(config)
-        (self.root / "adapter.json").write_text(json.dumps({
-            "enabled": True, "executable": "configured-codex", "app_server_enabled": True,
-            "exec_enabled": True, "app_server_request_timeout_seconds": 30,
+        self.configure_adapter(self.package / "bin/configured-codex", exec_enabled=True)
+
+    def configure_adapter(self, vendor, exec_enabled):
+        self.adapter_config.write_text(json.dumps({
+            "enabled": True, "executable": str(vendor), "app_server_enabled": True,
+            "exec_enabled": exec_enabled, "app_server_request_timeout_seconds": 30,
             "app_server_app_list_timeout_seconds": 120,
         }))
-        policies = ", ".join(q(name) + " = " + q(risk) for name, risk in RISKS.items())
+
+    def register(self):
+        q = json.dumps
+        self.package = self.root / "plugin"
+        bin_directory = self.package / "bin"
+        bin_directory.mkdir(parents=True)
+        manifest = REPOSITORY / "computer-mcp-plugin.toml"
+        shutil.copy2(manifest, self.package / manifest.name)
+        shutil.copy2(self.options.adapter, bin_directory / "codex-mcp-adapter")
+        resources = self.options.adapter.with_name("codex-plugin_CodexAdapter.bundle")
+        shutil.copytree(resources, bin_directory / resources.name)
+        self.peer = bin_directory / "fixture-vendor"
+        if self.options.mode == "container":
+            shutil.copy2(self.options.host, self.peer)
+
+        access = "read" if self.options.mode == "container" else "write"
         config = f'''schema_version = 1
 [runtime]
 caller = "local-mcp"
 profile = "acceptance"
+project_id = "primary"
+
 [[profiles]]
 id = "acceptance"
-mode = "local-full-access"
-confirmation_policy = "never"
-full_shell_enabled = true
-capabilities = ["mcp.tools.call", "workspace.list"]
-workspaces = ["primary", "other"]
 allowed_callers = ["local-mcp"]
+full_access = false
+
+[profiles.projects]
+primary = {{ access = "{access}", network = "none" }}
+other = {{ access = "{access}", network = "none" }}
+
+[profiles.plugins]
+codex = "use"
+
+[builtin]
+enabled = ["file.read"]
 '''
         for name in ("primary", "other"):
-            config += f'''[[workspaces]]
+            config += f'''[[projects]]
 id = {q(name)}
 display_name = {q(name)}
 path = {q(str(self.root / name))}
 '''
-        config += f'''[[mcp.servers]]
-id = "codex"
-transport = "stdio"
-command = {q(str(self.options.adapter))}
-args = ["--config", {q(str(self.root / 'adapter.json'))}, "--state-directory", {q(str(self.root / 'adapter-state'))}]
-exposure = "reexport"
-prefix = ""
-allowed_tools = {q(list(RISKS))}
-host_services = true
-tool_risks = {{ {policies} }}
-startup_timeout_ms = 10000
-request_timeout_ms = {max(130, self.options.timeout_seconds) * 1000}
-[mcp.servers.env]
-CODEX_HOME = {q(str(self.home))}
-PATH = {q(str(self.root) + os.pathsep + self.environment['PATH'])}
-CODEX_THREAD_ID = "acceptance-parent-session"
-COMPUTER_MCP_FIXTURE_VALUE = "preserved"
-'''
         (self.root / "host.toml").write_text(config)
+        (self.root / "contribution.json").write_text(json.dumps({
+            "registrationID": "codex", "exposure": "gateway" if self.options.mode == "container" else "reexport",
+            "prefix": "",
+            "hostServices": True, "allowedTools": list(self.risks),
+            "toolRisks": {name: "project-write" if risk == "workspace-write" else risk
+                          for name, risk in self.risks.items()},
+        }))
+        result = subprocess.run([str(self.options.host), "register", str(self.root)],
+                                env=self.environment, cwd=self.root, capture_output=True, text=True,
+                                timeout=self.options.timeout_seconds)
+        (self.root / "registration.log").write_text(result.stderr)
+        require(result.returncode == 0, {"registration_exit": result.returncode, "stderr": result.stderr})
+        self.container = json.loads(result.stdout)
+        for key in ("home", "cache", "state", "config"):
+            require(Path(self.container[key]).is_relative_to(self.root / "host.sqlite.providers"),
+                    {"invalid_container_path": key})
+        (self.root / "registration.json").write_text(json.dumps(self.container, indent=2) + "\n")
+        self.home = Path(self.container["home"]) / ".codex"
+        self.home.mkdir(mode=0o700)
+        self.adapter_config = Path(self.container["config"])
+        self.launches = self.home / "launches.jsonl"
 
     def git(self, args, workspace="primary"):
         return subprocess.run(["/usr/bin/git", *args], cwd=self.root / workspace, env=self.environment,
@@ -475,18 +528,18 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
 
     def catalog_and_diagnostics(self):
         host = Host(self)
-        require(not (self.root / "launches.jsonl").exists(), "Discovery started the vendor")
+        require(not self.launches.exists(), "Discovery started the vendor")
         diagnostic = host.call("codex.diagnostics.snapshot", {"limit": 10})
         require(diagnostic["persistence_available"] and diagnostic["host_diagnostics_available"], diagnostic)
         require(diagnostic["state_storage"]["scope"] == "authorization_subject", diagnostic)
-        require(not (self.root / "launches.jsonl").exists(), "Diagnostics started the vendor")
+        require(not self.launches.exists(), "Diagnostics started the vendor")
         host.call("codex.run.list")
         host.call("codex.worktree.managed.list")
         host.call("codex.worktree.leases.list")
         lease = host.call("codex.worktree.leases.acquire", {"agent_id": "acceptance"})
         host.call("codex.worktree.leases.release", {"lease_id": lease["id"],
                   "expected_revision": lease["revision"], "reason": "Acceptance complete"})
-        require(not (self.root / "launches.jsonl").exists(), "Domain lease operations started the vendor")
+        require(not self.launches.exists(), "Domain lease operations started the vendor")
         host.close()
         self.record("catalog-diagnostics-domain-leases-lazy-start")
 
@@ -630,7 +683,7 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
 
     def app_lifecycle(self):
         self.configure(sandbox="workspace-write", approval="on-request")
-        config = self.root / "adapter.json"
+        config = self.adapter_config
         settings = json.loads(config.read_text())
         settings.update(sandbox="workspace-write", approval_policy="untrusted")
         config.write_text(json.dumps(settings))
@@ -682,7 +735,7 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
             page = host.call("codex.exec.events", {"session_id": session, "after_cursor": 0, "max_results": 1000})
             require(page["missed_events"] == 0 and page["events"], page)
             host.call("codex.exec.release", {"session_id": session})
-        launches = [json.loads(line) for line in (self.root / "launches.jsonl").read_text().splitlines()]
+        launches = [json.loads(line) for line in self.launches.read_text().splitlines()]
         exec_launches = [entry for entry in launches if entry["mode"] == "exec"]
         require(len(exec_launches) == 2, exec_launches)
         inherited, explicit = (entry["argv"] for entry in exec_launches)
@@ -708,102 +761,70 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
         self.response("cleanup")
         self.record("exec-defaults-overrides-events-result-resume-cancel-release")
 
-    def host_callbacks(self):
-        source = MODEL_SOURCE.with_name("HostToolVendor.py")
-        vendor = self.root / "host-tool-vendor"
-        vendor.write_text("#!" + sys.executable + "\n" + source.read_text().split("\n", 1)[1])
-        vendor.chmod(0o700)
-        sequence = 900
-
-        def callback(name, arguments, success=True, request_error=None):
-            nonlocal sequence
-            sequence += 1
-            request = {"id": sequence, "method": "item/tool/call", "params": {
-                "namespace": "computer-mcp", "tool": name, "arguments": arguments,
-                "callId": f"callback-{sequence}", "threadId": "callback-thread", "turnId": "callback-turn"}}
-            temporary = self.home / "queued.tmp"
-            temporary.write_text(json.dumps(request))
-            temporary.replace(self.home / f"queued-{sequence}.json")
-            response = self.home / f"callback-{sequence}.json"
-            wait_until(response.exists, 15, "Native host callback")
-            value = json.loads(response.read_text())
-            if request_error:
-                require(value.get("error") == request_error, value)
-                return value
-            require(value.get("result", {}).get("success") is success, value)
-            if not success:
-                return value
-            text = value["result"]["contentItems"][0]["text"]
-            return unwrap(json.loads(text))
-
-        for confirmation in ("never", "all-writes"):
-            self.configure()
-            config = self.root / "adapter.json"
-            settings = json.loads(config.read_text())
-            settings["executable"] = str(vendor)
-            config.write_text(json.dumps(settings))
-            host_config = self.root / "host.toml"
-            text = host_config.read_text().replace('confirmation_policy = "never"',
-                                                   'confirmation_policy = "' + confirmation + '"')
-            text = text.replace('capabilities = ["mcp.tools.call", "workspace.list"]',
-                                'capabilities = ["mcp.tools.call", "workspace.list", "policy.probe", '
-                                '"operations.prepare", "operations.commit", "file.read", "file.write", "git.add", "git.commit"]')
-            text += '\n[[cli.commands]]\nid = "git"\nexecutable = "/usr/bin/git"\n'
-            text += '\n[builtin]\nenabled = ["file.read", "file.write", "git.add", "git.commit"]\n'
-            host_config.write_text(text)
+    def registered_container(self):
+        marker = "caller project fixture\n"
+        sibling = "sibling project fixture\n"
+        (self.root / "primary/product.txt").write_text(marker)
+        (self.root / "other/product.txt").write_text(sibling)
+        vendor_receipt = self.home / "vendor.json"
+        prior_vendor = prior_runtime = None
+        for generation in (1, 2):
             host = Host(self)
-            host.call("thread.loaded.list")
-            receipt = json.loads((self.home / "vendor.json").read_text())
-            require(not receipt["inherited_host_env"] and not receipt["inherited_host_socket"], receipt)
-            self.pids.add(receipt["pid"])
-            callback("file.read", {"workspace_id": "other", "path": "product.txt"}, success=False)
-            callback("codex.app.status", {}, request_error={"code": -32001,
-                     "message": "This App Server request is not part of the supported coding contract."})
-            if confirmation == "never":
-                (self.root / "primary/product.txt").write_text("governed-native\n")
-                index = self.root / "primary/.git/index"
-                before = index.read_bytes()
-                staged = self.git(["diff", "--cached", "--name-only"])
-                callback("git.add", {"paths": ["product.txt"], "dry_run": True})
-                require(index.read_bytes() == before and self.git(["diff", "--cached", "--name-only"]) == staged,
-                        "Native dry-run callback changed the index")
-                require(host.call("approvals.list", {"state": "pending"})["approvals"] == [],
-                        "Host dry-run created native approval")
-                (self.root / "primary/product.txt").unlink()
-                # Keep all acceptance artifacts out of this exact Git workflow's status.
-                (self.root / "primary/.git/info/exclude").write_text("*\n!product.txt\n")
-                hook = self.root / "primary/.git/hooks/pre-commit"
-                hook.write_text("#!/bin/sh\n/usr/bin/touch .git/callback-hook-ran\n")
-                hook.chmod(0o700)
-                steps = [("file.write", {"path": "product.txt", "content": "governed-native\n"}),
-                         ("git.add", {"paths": ["product.txt"]}),
-                         ("git.commit", {"message": "Governed native callback acceptance"})]
-                for tool, arguments in steps:
-                    ticket = callback("operations.prepare", {"tool": tool, "arguments": arguments})["ticket_id"]
-                    if tool == "file.write":
-                        require(not (self.root / "primary/product.txt").exists(), "Prepare executed the write")
-                    elif tool == "git.add":
-                        require(not self.git(["diff", "--cached", "--name-only"]), "Prepare staged files")
-                    else:
-                        require(not (self.root / "primary/.git/callback-hook-ran").exists(), "Prepare committed")
-                    commit = {"tool": tool, "arguments": arguments, "ticket_id": ticket}
-                    callback("operations.commit", dict(commit, ticket_id="unrelated-ticket"), success=False)
-                    callback("operations.commit", commit)
-                    callback("operations.commit", commit, success=False)
-                require((self.root / "primary/.git/callback-hook-ran").exists(), "Callback Git hook did not run")
-                require(self.git(["show", "HEAD:product.txt"]) == "governed-native\n", "Callback commit content differs")
-                require(not self.git(["status", "--porcelain"]), "Callback worktree is not clean")
+            initial = host.call("codex.diagnostics.snapshot")
+            require(initial["host_diagnostics_available"] and initial["persistence_available"], initial)
+            require(initial["state_storage"]["scope"] == "authorization_subject", initial)
+            require(initial["scope"]["project_id"] == "primary"
+                    and initial["scope"]["principal_id"] == "registered-codex-fixture", initial)
+            if prior_runtime:
+                require(any(row["id"] == prior_runtime for row in initial["persisted_runtimes"]), initial)
+            require(not vendor_receipt.exists() or json.loads(vendor_receipt.read_text()) == prior_vendor,
+                    "Catalog or diagnostics launched the peer")
+
+            request_id = 900 + generation
+            arguments = {"path": "product.txt"}
+            if generation == 2:
+                arguments["project_id"] = "other"
+            request = {"id": request_id, "method": "item/tool/call", "params": {
+                "namespace": "computer-mcp", "tool": "file.read", "arguments": arguments,
+                "callId": f"fixture-read-{generation}", "threadId": "fixture-thread", "turnId": "fixture-turn"}}
+            (self.home / "queued.json").write_text(json.dumps(request))
+            loaded = host.call("thread.loaded.list")
+            require(loaded["data"] == [], loaded)
+            vendor = json.loads(vendor_receipt.read_text())
+            self.pids.add(vendor["pid"])
+            response = json.loads((self.home / f"callback-{request_id}.json").read_text())
+            require(response["id"] == request_id and "error" not in response, response)
+            callback = response["result"]
+            require(callback["success"] is (generation == 1), callback)
+            content = json.loads(callback["contentItems"][0]["text"])
+            if generation == 1:
+                require(unwrap(content)["content"] == marker, content)
+                execution = content["structuredContent"]["gateway_execution"]
+                require(all(execution[key] == initial["scope"][key]
+                            for key in ("project_id", "profile_id", "caller", "socket_connection_id")), execution)
             else:
-                arguments = {"path": "pending.txt", "content": "must require local approval"}
-                prepared = callback("operations.prepare", {"tool": "file.write", "arguments": arguments})
-                require("pending_approval" in json.dumps(prepared), prepared)
-                callback("operations.commit", {"tool": "file.write", "arguments": arguments,
-                                                "ticket_id": prepared["ticket_id"]}, success=False)
-                require(not (self.root / "primary/pending.txt").exists(), "Pending host ticket was consumed")
+                require("bound connection scope" in content["error"] and sibling not in json.dumps(content), content)
+
+            require(vendor["count"] == generation and vendor["codex_home"] == str(self.home), vendor)
+            require(all(vendor[key] == self.container[key] for key in ("home", "cache", "state")), vendor)
+            require(not vendor["inherited_host_env"] and not vendor["inherited_host_socket"], vendor)
+            require(prior_vendor is None or vendor["pid"] != prior_vendor["pid"], vendor)
             host.processes()
+            snapshot = host.call("codex.diagnostics.snapshot")
+            if generation == 1:
+                reads = [row for row in snapshot["recent_tool_audits"]
+                         if row["capability_id"] == "file.read" and row["request_id"] == execution["request_id"]]
+                require(any(row["decision"] == "allowed"
+                            and row["socket_connection_id"] == execution["socket_connection_id"]
+                            for row in reads), reads)
+            prior_runtime = host.call("status")["runtime_id"]
+            prior_vendor = vendor
+            (self.root / f"vendor-{generation}.json").write_text(json.dumps(vendor, indent=2) + "\n")
             host.close()
-        self.configure()
-        self.record("native-host-callback-scope-dry-run-exact-tickets-hooked-git-and-pending-approval")
+            wait_until(lambda: exited(vendor["pid"]), 15, "Fixture peer exit")
+        require(list(Path(self.container["state"]).glob("codex-adapter/subjects/*/codex.sqlite")),
+                "Adapter records are missing in the injected state directory")
+        self.record("registered-container-vendor-and-adapter-persistence-and-caller-scoped-read")
 
     def authenticated(self):
         with self.options.auth_file.open("rb") as source:
@@ -894,7 +915,7 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
         except Exception as error:
             errors.append(f"Model log cleanup: {error}")
         try:
-            launches = self.root / "launches.jsonl"
+            launches = self.launches
             if launches.exists():
                 entries = [json.loads(line) for line in launches.read_text().splitlines()]
                 self.pids.update(entry["pid"] for entry in entries)
@@ -923,28 +944,30 @@ def run(options):
     report = {"schema_version": 1, "mode": options.mode, "passed": False,
               "authenticated_model_verified": False, "steps": fixture.steps,
               "binaries": {key: {"path": str(getattr(options, key)), "sha256": digest(getattr(options, key))}
-                           for key in ("host", "adapter", "codex")},
-              "fixture_sha256": {source.name: digest(source) for source in
-                                  (MODEL_SOURCE, MODEL_SOURCE.with_name("HostToolVendor.py"))}}
+                           for key in ("host", "adapter", "codex") if getattr(options, key)},
+              "fixture_sha256": {source.name: digest(source) for source in (
+                  MODEL_SOURCE, REGISTERED_HOST_SOURCE)}}
     try:
         fixture.setup()
-        for key in ("host", "adapter", "codex"):
+        for key in report["binaries"]:
             result = subprocess.run([str(getattr(options, key)), "--version"], text=True, capture_output=True,
                                     timeout=10, check=True, env=fixture.environment)
             report["binaries"][key]["version"] = result.stdout.strip()
-        fixture.catalog_and_diagnostics()
-        fixture.directories()
-        fixture.native_permissions()
-        fixture.handoff()
-        fixture.sibling_workspace()
-        fixture.recovery()
-        fixture.app_lifecycle()
-        fixture.exec_lifecycle()
-        fixture.host_callbacks()
-        if options.mode == "full":
-            fixture.authenticated()
-            report["authenticated_model_verified"] = True
-        fixture.archive_threads()
+        if options.mode == "container":
+            fixture.registered_container()
+        else:
+            fixture.catalog_and_diagnostics()
+            fixture.directories()
+            fixture.native_permissions()
+            fixture.handoff()
+            fixture.sibling_workspace()
+            fixture.recovery()
+            fixture.app_lifecycle()
+            fixture.exec_lifecycle()
+            if options.mode == "full":
+                fixture.authenticated()
+                report["authenticated_model_verified"] = True
+            fixture.archive_threads()
         report["passed"] = True
     except Exception as error:
         report["failure"] = str(error)

@@ -8,6 +8,7 @@ struct CodexLaunchContext: Sendable {
   let localControlAllowed: Bool
   let managedProjectRoot: URL?
   let hostServiceContract: String?
+  private let hostStateDirectory: URL?
 
   init(environment: [String: String], currentDirectory: URL) throws {
     if let text = environment["COMPUTER_MCP_HOST_CONTEXT"] {
@@ -30,6 +31,8 @@ struct CodexLaunchContext: Sendable {
         throw ConfigurationError.invalid("Invalid Computer MCP launch context.")
       }
       hostServiceContract = marker
+      hostStateDirectory = CodexProcessEnvironment.hostStateRoot(in: environment)?
+        .appendingPathComponent("codex-adapter", isDirectory: true)
       workspaceURL = URL(fileURLWithPath: host.project.rootPath).standardizedFileURL
       if let root = host.managedProjectRoot {
         guard Self.isAbsolutePath(root), root.utf8.count <= 16_384, !root.contains("\0") else {
@@ -50,6 +53,7 @@ struct CodexLaunchContext: Sendable {
       workspaceURL = currentDirectory.standardizedFileURL
       managedProjectRoot = nil
       hostServiceContract = nil
+      hostStateDirectory = nil
       let identity = SHA256.hash(data: Data(workspaceURL.path.utf8))
         .map { String(format: "%02x", $0) }.joined()
       owner = CodexRuntimeOwner(
@@ -80,7 +84,7 @@ struct CodexLaunchContext: Sendable {
   ) throws -> CodexAppServerProvider? {
     try configuration.validate()
     guard configuration.enabled, configuration.appServerEnabled else { return nil }
-    guard let stateDirectory else {
+    guard let stateDirectory = stateDirectory ?? hostStateDirectory else {
       throw ConfigurationError.invalid(
         "App Server execution requires --state-directory for adapter-owned records.")
     }
@@ -132,7 +136,7 @@ struct CodexLaunchContext: Sendable {
 
   private func makeThreadOwnerIndex(stateDirectory: URL?) throws -> CodexThreadOwnerIndex? {
     guard let principalID = owner.principalID else { return nil }
-    guard let stateDirectory else {
+    guard let stateDirectory = stateDirectory ?? hostStateDirectory else {
       throw ConfigurationError.invalid(
         "Host-bound Codex execution requires --state-directory for thread ownership.")
     }
@@ -143,12 +147,9 @@ struct CodexLaunchContext: Sendable {
     try FileManager.default.createDirectory(
       at: stateDirectory, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
-    let codexHome =
-      ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
-      ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     return try CodexThreadOwnerIndex(
       path: stateDirectory.appendingPathComponent("thread-owners.sqlite").path, subject: scope,
-      codexHome: codexHome)
+      codexHome: CodexProcessEnvironment.vendorHome())
   }
 
   private static func isAbsolutePath(_ path: String) -> Bool {

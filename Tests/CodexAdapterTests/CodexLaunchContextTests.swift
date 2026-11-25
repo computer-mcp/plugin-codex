@@ -179,6 +179,37 @@ struct CodexLaunchContextTests {
     await other.shutdown()
   }
 
+  @Test func hostStateDefaultPreservesExplicitAndStandaloneOptions() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let configuration = CodexConfig(enabled: true, executable: "/missing/codex")
+    let host = try CodexLaunchContext(
+      environment: [
+        "COMPUTER_MCP_HOST_CONTEXT": validHost, "XDG_STATE_HOME": root.path,
+      ], currentDirectory: root)
+    let managed = try #require(
+      try host.appServerProvider(configuration: configuration, stateDirectory: nil))
+    #expect(
+      managed.database?.fileURL?.path
+        == root.appendingPathComponent("codex-adapter/codex.sqlite").path)
+    await managed.shutdown()
+
+    let explicit = root.appendingPathComponent("explicit")
+    let standalone = try CodexLaunchContext(
+      environment: ["XDG_STATE_HOME": root.path], currentDirectory: root)
+    #expect(throws: ConfigurationError.self) {
+      try standalone.appServerProvider(configuration: configuration, stateDirectory: nil)
+    }
+    for context in [host, standalone] {
+      let provider = try #require(
+        try context.appServerProvider(configuration: configuration, stateDirectory: explicit))
+      #expect(
+        provider.database?.fileURL?.path == explicit.appendingPathComponent("codex.sqlite").path)
+      await provider.shutdown()
+    }
+  }
+
   private var validHost: String {
     #"{"formatVersion":1,"runtimeID":"B66E26EE-53AF-4455-A25D-E2BDD219798C","caller":"local-mcp","profileID":"observe","hostServiceContract":"projects-v1","project":{"id":"fixture","rootPath":"/tmp/bound-workspace"},"readOnly":true}"#
   }

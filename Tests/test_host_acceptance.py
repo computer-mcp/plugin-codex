@@ -38,6 +38,15 @@ class HostAcceptanceTests(unittest.TestCase):
         self.assertEqual(parsed.mode, "fixture")
         self.assertFalse(parsed.output_directory.exists())
 
+    def test_container_mode_requires_only_the_registered_fixture_and_adapter(self):
+        arguments = self.arguments[:-4] + self.arguments[-2:] + ["--mode", "container"]
+        options = acceptance.parse_arguments(arguments)
+        self.assertIsNone(options.codex)
+        self.assertFalse(options.output_directory.exists())
+        self.invalid(self.arguments + ["--mode", "container"])
+        self.invalid(arguments + ["--model", "unused"])
+        self.invalid(arguments[:-2] + ["--mode", "fixture"])
+
     def test_full_requires_explicit_authentication_and_model(self):
         self.invalid(self.arguments)
         auth = self.root / "auth.json"
@@ -145,7 +154,7 @@ class HostAcceptanceTests(unittest.TestCase):
             launch = stack.enter_context(patch.object(acceptance.subprocess, "Popen",
                                                       side_effect=AssertionError("Unexpected process launch")))
             for phase in ("setup", "catalog_and_diagnostics", "directories", "native_permissions", "handoff",
-                          "sibling_workspace", "recovery", "app_lifecycle", "exec_lifecycle", "host_callbacks"):
+                          "sibling_workspace", "recovery", "app_lifecycle", "exec_lifecycle"):
                 stack.enter_context(patch.object(fixture, phase))
             configure = stack.enter_context(patch.object(fixture, "configure", side_effect=fail_configuration))
             stack.enter_context(contextlib.redirect_stdout(output))

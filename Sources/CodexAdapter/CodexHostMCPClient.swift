@@ -20,8 +20,8 @@ actor CodexHostMCPClient: CodexHostTools, CodexProjectServices,
   private struct Decision: Equatable {
     let name: String
     let digest: String
-    let declared: CodexOperationRisk
-    let effective: CodexOperationRisk
+    let risk: CodexOperationRisk
+    let requirements: JSONValue
   }
   private var decisions: [String: Decision] = [:]
 
@@ -68,7 +68,7 @@ actor CodexHostMCPClient: CodexHostTools, CodexProjectServices,
         "The host decision changed while its preflight was pending.")
     }
     decisions[requestID] = decision
-    return decision.effective
+    return decision.risk
   }
 
   func discard(requestID: String) { decisions.removeValue(forKey: requestID) }
@@ -132,16 +132,14 @@ actor CodexHostMCPClient: CodexHostTools, CodexProjectServices,
       ])
     guard let value = result.objectValue?["structuredContent"]?.objectValue?["result"]?.objectValue,
       value["decision"] == .string("allowed"), value["capability_id"] == .string(name),
-      value["project_id"] == .string(self.projectID),
-      let declared = value["risk"]?.stringValue.flatMap(CodexOperationRisk.init(hostValue:)),
-      let effective = value["effective_risk"]?.stringValue.flatMap(
-        CodexOperationRisk.init(hostValue:))
+      let risk = value["risk"]?.stringValue.flatMap(CodexOperationRisk.init(hostValue:)),
+      let requirements = value["requirements"], requirements.objectValue != nil
     else {
       throw CodexToolError.executionFailed(
         "Host preflight returned an invalid or unsupported decision.")
     }
     return Decision(
-      name: name, digest: try Self.digest(arguments), declared: declared, effective: effective)
+      name: name, digest: try Self.digest(arguments), risk: risk, requirements: requirements)
   }
 
   private func connect() async throws {

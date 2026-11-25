@@ -32,10 +32,10 @@ fork of the MCP Swift SDK. The host owns registration, caller grants, project au
 audit; the plugin does not link Computer MCP Core or install the vendor Codex binary.
 
 Computer MCP supplies the initial directory and a stable authorization subject, and admits each
-invocation using its current permissions. Codex controls its own sandbox and approvals: explicit
-native directories and Full Access selections are preserved, and native Full Access uses the
-executing user's operating-system authority. The initial directory is task ownership metadata,
-not an operating-system sandbox. Host callbacks still require their own grants.
+invocation using its current permissions. Codex controls its own sandbox and approvals, including
+explicit native directories and Full Access selections. The enclosing host sandbox also applies
+to native Full Access. The initial directory identifies task ownership. Host callbacks require
+their own grants.
 
 ## Quick look
 
@@ -90,10 +90,12 @@ configuration fields as a local JSON file and launch with
 }
 ```
 
-For App Server execution, set `app_server_enabled` to `true` and pass
-`--state-directory /absolute/path/adapter-state`. The directory holds the adapter's `codex.sqlite`
-records, separate from the vendor's `CODEX_HOME` and the Computer MCP host database; host-bound
-Exec also uses it for shared native thread ownership. Keep it across restarts and updates.
+For App Server execution, set `app_server_enabled` to `true`. A registered host launch
+stores adapter records under `$XDG_STATE_HOME/codex-adapter` and defaults the vendor's
+`CODEX_HOME` to `$HOME/.codex` inside the provider container. Host-bound Exec also uses
+the adapter state for native thread ownership. Standalone App Server clients pass
+`--state-directory /absolute/path/adapter-state`. An explicit state directory or
+`CODEX_HOME` takes precedence, subject to the host's filesystem policy.
 
 The configuration file is limited to 64 KiB, and no executable starts for catalog discovery.
 Omitted sandbox and approval settings follow native Codex configuration, including a

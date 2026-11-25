@@ -256,7 +256,7 @@ private actor HostClientState {
     if params.name == "policy.probe" {
       result = .object([
         "decision": .string("allowed"), "capability_id": arguments["capability_id"]!,
-        "project_id": .string("fixture"), "risk": .string(risk), "effective_risk": .string(risk),
+        "risk": .string(risk), "requirements": .object([:]),
       ])
     } else if params.name == "host.projects.worktree_add" {
       return .init(

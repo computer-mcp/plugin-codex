@@ -17,11 +17,3 @@ for full and fixture-only acceptance.
 Fixture provenance: Computer MCP commit
 `65921cd298783003895106b293fa6dd540e47313`,
 `Tests/ComputerMCPTests/Fixtures/NativeCodex/ModelServer.py`.
-
-`HostToolVendor.py` is a disposable protocol peer for native `item/tool/call`
-forwarding. It reads queued requests from its private vendor home and records
-exact replies and descriptor/environment isolation. It exercises the real
-adapter and public host MCP; it does not impersonate an authenticated model.
-The driver owns the Git repository and verifies tickets, side effects and
-native callback results separately. This peer adapts the `vendorSource` in the
-same source commit's `CodexPluginHostIntegrationTests.swift`.

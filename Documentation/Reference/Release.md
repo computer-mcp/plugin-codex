@@ -97,12 +97,9 @@ and catalog notification are separate jobs.
 
 ### Runtime acceptance
 
-Use macOS with the selected installed `computer-mcp` CLI, a separately installed
-vendor Codex, Python 3.11 or newer, Git and the verified release archive. The
-adapter must be the executable extracted from that archive. Record the host,
-plugin and vendor combination; a package doctor proves configuration and files,
-not model execution. Run the ordinary checks in [Contributing](../../CONTRIBUTING.md)
-first.
+Use macOS, Python 3.11 or newer, Git and the verified release archive. Record
+both source revisions and the executable digests. Run the ordinary checks in
+[Contributing](../../CONTRIBUTING.md) first.
 
 ```sh
 python3 scripts/check-package.py --archive <archive.zip> --receipt <receipt.json> \
@@ -111,11 +108,10 @@ python3 scripts/check-workflow.py \
   --adapter "$PWD/.build/accepted-package/bin/codex-mcp-adapter" \
   --codex /absolute/path/to/codex
 python3 scripts/check-host.py \
-  --host /absolute/path/to/computer-mcp \
+  --host /absolute/path/to/CodexRegisteredHost \
   --adapter "$PWD/.build/accepted-package/bin/codex-mcp-adapter" \
-  --codex /absolute/path/to/codex \
-  --output-directory "$PWD/.build/host-acceptance" \
-  --mode full --auth-file /absolute/path/to/vendor/auth.json --model <model-id>
+  --output-directory "$PWD/.build/host-container-acceptance" \
+  --mode container
 ```
 
 `check-workflow.py` exercises the relocated adapter through standard MCP with
@@ -123,15 +119,15 @@ an isolated home and fixed loopback model, covering native approvals, turns,
 cancellation, reconnection and owned-process cleanup. It does not establish
 real model authentication.
 
-`check-host.py` uses only the host's public `serve stdio` command and standard
-MCP. It starts private host instances with explicit workspace selection, host
-configuration and databases. It does not contact the normal App control socket
-or an existing App Server. The model fixture and all native generations are
-owned by the run. The selected output directory must be new; after inspecting
-its receipt and confirming cleanup, remove its disposable state before reusing
-that location.
+`check-host.py` registers the package in a disposable host database and approves
+the selected provider and caller permissions before serving standard MCP over
+stdio. Use a new output directory. Container mode verifies injected storage
+across two host and adapter launches, an allowed project file callback, refusal
+to redirect a callback to a sibling project, and peer descriptor isolation.
+It uses a deterministic vendor peer and omits authentication and model calls.
 
-Full mode needs a vendor file-store login authorized for the selected model.
+Full mode additionally takes `--codex`, `--auth-file` and `--model`. It needs a
+vendor file-store login authorized for the selected model.
 The supplied `auth.json` is copied with mode `0600` into the private vendor home
 and deleted on exit; the original is never changed. Keychain-only credentials
 are not imported. The real-model checks make bounded text-only App Server and
@@ -140,21 +136,10 @@ Model use may incur the account's ordinary usage charges. Keep the output
 private because native histories and diagnostic evidence can include account
 metadata. Never publish the authentication file or raw runtime state.
 
-For a deterministic native check without credentials, use `--mode fixture` and
-omit `--auth-file` and `--model`. This still needs the installed host and real
-vendor executable. It tests catalog/diagnostic laziness, explicit Skills
-directories and app-list deadlines, inherited and explicit Full Access, a native
-read-only override, Git hooks, loopback and outside-workspace access, workspace
-process isolation, three-connection thread/Goal handoff, vendor/adapter crash
-recovery without replay, native approval, fork/review/steer/interruption, Exec
-options/events/results/resume/cancellation/release, and exact thread archiving.
-A separate disposable App Server protocol peer exercises native host callbacks:
-workspace/recursion denial, Git dry-run index preservation, prepare without
-mutation, exact single-use host tickets, a complete hooked file/Git commit, and
-rejection of a pending local-approval ticket. The standalone host's configured
-policy authorizes the successful ticket path; local App approval resolution is
-verified by the host's generic tests, not simulated as an App UI check here.
-It cannot prove real authentication or model availability.
+Use `--mode fixture` with `--codex` to select the native loopback recipes. The
+enclosing host sandbox applies to native commands in both native modes. Run
+native and authenticated acceptance for the exact reviewed host and vendor
+configuration before release.
 
 The driver writes `report.json` with step results, binary versions/digests,
 fixture digest, authentication status and cleanup errors. It separately records
@@ -168,14 +153,50 @@ owned thread; unrelated errors remain failures.
 The release candidate requires the full report to pass for its exact executable
 bytes, in addition to source tests and archive verification. Host plugin
 installation, grants, local approval and uninstall remain the host's generic
-acceptance responsibility; this driver validates the native runtime through a
-public host registration. Keep those host checks with the accepted combination.
+acceptance responsibility; this driver validates the runtime through a
+disposable host registration. Keep those host checks with the accepted combination.
 
 Pure driver logic and argument validation run without a host or vendor:
 
 ```sh
 python3 -m unittest discover -s Tests -p 'test_host_acceptance.py' -v
 ```
+
+#### Build the registered host fixture
+
+Build this fixture with the selected Computer MCP source revision on macOS.
+The fixture uses the host's plugin store, provider review, permission service,
+sandbox launcher and standard MCP gateway. Its authorization watermark and
+managed policy source are confined to the fixture. It also serves the
+deterministic App Server peer used by `check-host.py --mode container`.
+
+From the plugin checkout, set `host_source` to the selected host checkout,
+`host_revision` to its full commit SHA, and `stage` to a new absolute path in
+ignored build output. Record the host and plugin commit SHAs with the report.
+
+```sh
+test "$(git -C "$host_source" rev-parse HEAD)" = "$host_revision"
+mkdir -p "$stage/registered-host"
+git -C "$host_source" archive "$host_revision" | tar -xf - -C "$stage/registered-host"
+mkdir "$stage/registered-host/Tests/CodexRegisteredHost"
+cp Tests/Fixtures/RegisteredHost/RegisteredHost.swift "$stage/registered-host/Tests/CodexRegisteredHost/"
+cat >>"$stage/registered-host/Package.swift" <<'SWIFT'
+
+package.targets.append(.executableTarget(
+  name: "CodexRegisteredHost",
+  dependencies: [
+    "ComputerMCPConfiguration", "ComputerMCPCore", "ComputerMCPGateway", "ComputerMCPMacOS",
+    "ComputerMCPPermissions", "ComputerMCPPlatform", "ComputerMCPPlugins",
+  ],
+  path: "Tests/CodexRegisteredHost"
+))
+SWIFT
+swift build --package-path "$stage/registered-host" --product CodexRegisteredHost
+swift build --package-path "$stage/registered-host" --product computer-mcp-execution-bootstrap
+```
+
+Pass the resulting `CodexRegisteredHost` executable to `check-host.py --host`.
+Keep the SwiftPM build output alongside it until the fixture has finished.
 
 ### Publish
 
