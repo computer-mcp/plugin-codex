@@ -6,8 +6,8 @@ import Testing
 
 @Suite(.timeLimit(.minutes(1)))
 struct CodexHostMCPClientTests {
-  @Test(arguments: ["read-only", "destructive"])
-  func executionUsesFreshHostAuthorizationWithoutImplicitTickets(risk: String) async throws {
+  @Test(arguments: ["read-only", "project-write", "destructive"])
+  func executionUsesFreshHostAuthorization(risk: String) async throws {
     let fixture = try HostClientFixture()
     await fixture.state.setRisk(risk)
     try await fixture.start()
@@ -15,13 +15,13 @@ struct CodexHostMCPClientTests {
       let arguments: JSONValue = .object(["path": .string("fixture.txt")])
       let decision = try await fixture.client.risk(
         named: "file.test", arguments: arguments, requestID: "call", workspaceID: "fixture")
-      #expect(decision.rawValue == risk)
+      #expect(decision.hostValue == risk)
       let result = try await fixture.client.execute(
         name: "file.test", arguments: arguments, requestID: "call", workspaceID: "fixture")
       #expect(result.objectValue?["isError"] == .bool(false))
       let calls = await fixture.state.calls
       #expect(calls.map(\.0) == ["policy.probe", "policy.probe", "file.test"])
-      #expect(calls.allSatisfy { $0.1["workspace_id"] == .string("fixture") })
+      #expect(calls.allSatisfy { $0.1["project_id"] == .string("fixture") })
       await fixture.close()
     } catch {
       await fixture.close()
@@ -61,7 +61,7 @@ struct CodexHostMCPClientTests {
       let arguments: JSONValue =
         change == "arguments"
         ? .object(["extra": .bool(true)])
-        : change == "nested-workspace" ? .object(["workspace_id": .string("other")]) : .object([:])
+        : change == "nested-workspace" ? .object(["project_id": .string("other")]) : .object([:])
       await #expect(throws: (any Error).self) {
         try await fixture.client.execute(
           name: change == "name" ? "file.other" : "file.test", arguments: arguments,
@@ -156,39 +156,34 @@ struct CodexHostMCPClientTests {
     }
   }
 
-  @Test(arguments: ["same", "different", "unbound"])
-  func managedWorkspaceOwnershipUsesSubjectNotChannel(_ binding: String) async throws {
-    let fixture = try HostClientFixture(principalID: "subject-a")
+  @Test(arguments: [nil, "projects-v0", "projects-v1"] as [String?])
+  func lifecycleRequiresObservedHostContract(_ marker: String?) async throws {
+    let fixture = try HostClientFixture(peerContract: marker, launchContract: "projects-v1")
     try await fixture.start()
-    var worktree = CodexManagedWorktree(
-      id: "worktree", sourceWorkspaceID: "fixture", workspaceID: "child",
-      sourceRepositoryRoot: "/tmp/source", gitCommonDirectory: "/tmp/source/.git",
-      path: "/tmp/child", branch: "codex/fixture", startPoint: "HEAD", headOID: "head",
-      agentID: "agent", threadID: nil, runID: nil, parentLeaseID: "lease", profileID: "fixture",
-      caller: "local-mcp", ttlSeconds: 60, leaseID: nil, state: .active, createdAt: Date(),
-      updatedAt: Date(), planExpiresAt: nil, removedAt: nil, lastError: nil, revision: 1)
-    worktree.principalID =
-      binding == "unbound" ? nil : (binding == "same" ? "subject-a" : "subject-b")
     do {
-      if binding == "same" {
-        try await fixture.client.authorizeRemoval(worktree)
-        let calls = await fixture.state.calls
-        #expect(calls.count == 1)
-        #expect(calls.first?.1["worktree"]?.objectValue?["principal_id"] == .string("subject-a"))
-      } else {
-        await #expect(throws: CodexToolError.self) {
-          try await fixture.client.authorizeRemoval(worktree)
-        }
-        #expect(await fixture.state.calls.isEmpty)
-      }
-      let decoded = try JSONDecoder().decode(
-        CodexManagedWorktree.self, from: JSONEncoder().encode(worktree))
-      #expect(decoded.principalID == worktree.principalID)
-      await fixture.close()
+      let response = try await fixture.client.add(
+        CodexWorktreeSelection(["name": .string("change"), "base": .null]),
+        ids: .init(invocationID: UUID(), operationID: UUID()))
+      #expect(marker == "projects-v1")
+      #expect(response.isError == true)
+      #expect(response.refusal?.objectValue?["extra"] == .integer(9))
+      #expect(response.raw.objectValue?["content"]?.arrayValue?.count == 1)
+    } catch let error as CodexProjectContract.Unsupported {
+      #expect(marker != "projects-v1")
+      #expect(error.observed == marker)
     } catch {
       await fixture.close()
       throw error
     }
+    let calls = await fixture.state.calls
+    if marker == "projects-v1" {
+      #expect(calls.map(\.0) == ["host.projects.worktree_add"])
+      #expect(calls.first?.1["base"] == .null)
+      #expect(calls.first?.1["branch"] == nil)
+    } else {
+      #expect(calls.isEmpty)
+    }
+    await fixture.close()
   }
 
   @Test
@@ -218,7 +213,9 @@ private final class HostClientFixture: Sendable {
   let transport: MCPInheritedSocketTransport
   let client: CodexHostMCPClient
   let server = MCP.Server(name: "host-fixture", version: "1", capabilities: .init(tools: .init()))
-  init(principalID: String? = nil) throws {
+  let peerContract: String?
+  init(peerContract: String? = nil, launchContract: String? = nil) throws {
+    self.peerContract = peerContract
     let pair = try MCPInheritedSocketTransport.makePair()
     transport = try MCPInheritedSocketTransport(takingOwnershipOf: pair.0)
     client = try CodexHostMCPClient(
@@ -226,13 +223,18 @@ private final class HostClientFixture: Sendable {
       owner: .init(
         workspaceID: "fixture", profileID: "fixture", caller: "secure-tunnel",
         transport: "gateway_socket", socketConnectionID: "fixture-socket", tunnelInstanceID: nil,
-        tunnelProfileID: nil, principalID: principalID))
+        tunnelProfileID: nil, principalID: "subject-a"), launchContract: launchContract)
   }
   func start() async throws {
     await server.withMethodHandler(MCP.CallTool.self) { [state] params in
       await state.respond(params)
     }
-    try await server.start(transport: transport)
+    if let peerContract {
+      try await server.start(
+        transport: CodexProjectHandshakeTransport(transport, contract: peerContract))
+    } else {
+      try await server.start(transport: transport)
+    }
   }
   func close() async {
     await client.shutdown()
@@ -254,12 +256,14 @@ private actor HostClientState {
     if params.name == "policy.probe" {
       result = .object([
         "decision": .string("allowed"), "capability_id": arguments["capability_id"]!,
-        "workspace_id": .string("fixture"), "risk": .string(risk), "effective_risk": .string(risk),
+        "project_id": .string("fixture"), "risk": .string(risk), "effective_risk": .string(risk),
       ])
-    } else if params.name == "host.workspaces.authorize_removal" {
-      result = .object(["authorized": .bool(true)])
-    } else if params.name == "operations.prepare" {
-      result = .object(["ticket_id": .string("host-ticket")])
+    } else if params.name == "host.projects.worktree_add" {
+      return .init(
+        content: [.text(text: "fixture refusal", annotations: nil, _meta: nil)],
+        structuredContent: .object([
+          "error": .object(["code": .string("host.service_denied"), "extra": .int(9)])
+        ]), isError: true)
     } else if failExecution {
       return .init(
         content: [],

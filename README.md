@@ -104,7 +104,7 @@ vendor process, and neither launch mode grants host administration. Standalone c
 process working directory as the initial directory.
 
 A host that enables `hostServices` supplies the scoped MCP callback connection for dynamic tools,
-managed-workspace registration and diagnostics. See
+project worktree services and diagnostics. See
 [host integration](Documentation/Reference/HostIntegration.md) for approval ownership, recovery
 and availability boundaries.
 
@@ -112,9 +112,10 @@ and availability boundaries.
 
 App Server, Exec, native Goals, acceptance runs, thread handoff and managed worktrees are
 experimental and opt-in. A completed turn does not imply Goal completion or acceptance. The
-adapter cannot inspect or terminate another client's connection or processes. Managed-worktree
-planning and receipts use the adapter's database; provisioning and removal require a connected
-host workspace service.
+adapter cannot inspect or terminate another client's connection or processes. Codex stores
+worktree plans, writer leases, and operation IDs. The connected `projects-v1` host service
+creates and removes worktrees. Existing plugin-created worktree records remain available as
+unmanaged history.
 
 Native tools preserve request extensions, response fields and exact signed 64-bit integers.
 `codex.app.methods.call` accepts experimental methods with `experimental: true` when the runtime

@@ -8,8 +8,7 @@ struct CodexAppServerProvider: Sendable {
   let workspaceURL: URL
   let recentThreadReader: CodexRecentThreadReader?
   let localControlAllowed: Bool
-  let workspaceHost: (any CodexManagedWorkspaceHost)?
-  let managedWorktreeRoot: URL?
+  let projectServices: (any CodexProjectServices)?
   let configuredSandbox: CodexSandboxMode?
   let hostDiagnostics: (any CodexHostDiagnostics)?
   let unboundStateAvailable: Bool
@@ -19,7 +18,7 @@ struct CodexAppServerProvider: Sendable {
     appServer: any CodexAppServerRuntimeProtocol, owner: CodexRuntimeOwner?,
     database: CodexDatabase?, workspaceURL: URL, recentThreadReader: CodexRecentThreadReader?,
     localControlAllowed: Bool,
-    workspaceHost: (any CodexManagedWorkspaceHost)? = nil, managedWorktreeRoot: URL? = nil,
+    projectServices: (any CodexProjectServices)? = nil,
     configuredSandbox: CodexSandboxMode? = CodexConfig().sandbox,
     hostDiagnostics: (any CodexHostDiagnostics)? = nil,
     unboundStateAvailable: Bool = false, threadOwnerIndex: CodexThreadOwnerIndex? = nil
@@ -30,8 +29,7 @@ struct CodexAppServerProvider: Sendable {
     self.workspaceURL = workspaceURL
     self.recentThreadReader = recentThreadReader
     self.localControlAllowed = localControlAllowed
-    self.workspaceHost = workspaceHost
-    self.managedWorktreeRoot = managedWorktreeRoot
+    self.projectServices = projectServices
     self.configuredSandbox = configuredSandbox
     self.hostDiagnostics = hostDiagnostics
     self.unboundStateAvailable = unboundStateAvailable
@@ -44,7 +42,9 @@ struct CodexAppServerProvider: Sendable {
     } + CodexAppServerMethodCatalog.methods.filter { $0.channel == .stable }.map(\.tool)
   }
 
-  func call(name: String, arguments: JSONValue?) async throws -> MCP.CallTool.Result {
+  func call(
+    name: String, arguments: JSONValue?, hostInvocation: CodexHostInvocation? = nil
+  ) async throws -> MCP.CallTool.Result {
     try CodexAppServerMethodCatalog.validate()
     if let method = CodexAppServerMethodCatalog.methods.first(where: {
       $0.channel == .stable && $0.toolName == name
@@ -463,7 +463,8 @@ struct CodexAppServerProvider: Sendable {
         ),
         liveRuntimeStatus: await CodexRuntimeDirectory.shared.statuses(
           workspaceID: owner?.workspaceID
-        )
+        ),
+        scope: CodexProjectScope(owner)
       ).json
     case "codex.worktree.leases.list":
       result = .object([
@@ -513,78 +514,52 @@ struct CodexAppServerProvider: Sendable {
       )
 
     case "codex.worktree.managed.list":
-      result = .object([
-        "worktrees": .array(
-          try database?.codexManagedWorktrees(
-            sourceWorkspaceID: owner?.workspaceID,
-            limit: try Self.boundedInt("limit", in: object, default: 100, range: 1...1_000)
-          ).map(\.json) ?? []
-        )
-      ])
+      let limit = try Self.boundedInt("limit", in: object, default: 100, range: 1...1_000)
+      let history =
+        try owner.flatMap { try database?.unmanagedWorktrees(owner: $0, limit: limit) } ?? []
+      if CodexProjectScope(owner) != nil {
+        return try await worktreeManager().list(
+          history: history, limit: limit, invocation: hostInvocation)
+      }
+      result = .object(["worktrees": .array([]), "unmanaged_history": .array(history)])
     case "codex.worktree.managed.read":
-      result = try selectedManagedWorktree(
-        id: Self.requiredString("managed_worktree_id", in: object)
-      ).json
+      let id = try Self.requiredIdentifier("managed_worktree_id", in: object)
+      if let scope = CodexProjectScope(owner),
+        let (worktree, operation) = try database?.hostWorktree(id: id, in: scope)
+      {
+        if let operation, operation.observedState?.isTerminal != true {
+          return try await worktreeManager().read(worktree, operation: operation)
+        }
+        result =
+          operation?.projection(in: scope, worktree: worktree)
+          ?? .object(worktree.projection(in: scope))
+      } else if let owner, let history = try database?.unmanagedWorktree(id: id, owner: owner) {
+        result = history
+      } else {
+        throw CodexManagedWorktreeError.unknown(id)
+      }
     case "codex.worktree.provision.plan":
-      result = try CodexManagedWorktreeManager.planProvision(
-        database: database,
-        sourceWorkspaceID: owner?.workspaceID,
-        sourceWorkspaceURL: workspaceURL,
-        profileID: owner?.profileID,
-        caller: owner?.caller,
-        principalID: owner?.principalID,
+      result = try worktreeManager().planProvision(
+        selection: CodexWorktreeSelection(object),
         agentID: Self.requiredString("agent_id", in: object),
         threadID: try Self.optionalString("thread_id", in: object),
         runID: try Self.optionalString("run_id", in: object),
         parentLeaseID: Self.requiredString("parent_lease_id", in: object),
-        branch: Self.requiredString("branch", in: object),
-        startPoint: try Self.optionalString("start_point", in: object) ?? "HEAD",
-        ttlSeconds: try Self.boundedInt(
-          "ttl_seconds", in: object, default: 900, range: 30...86_400
-        ),
-        managedRoot: managedWorktreeRoot
-      ).json
+        ttlSeconds: Self.boundedInt("ttl_seconds", in: object, default: 900, range: 30...86_400))
     case "codex.worktree.provision.perform":
-      _ = try selectedManagedWorktree(
-        id: Self.requiredString("plan_id", in: object), requiresOwnership: true)
-      result = try await CodexManagedWorktreeManager.performProvision(
-        database: database,
-        sourceWorkspaceID: owner?.workspaceID,
-        planID: Self.requiredString("plan_id", in: object),
-        expectedRevision: try Self.requiredInt("expected_revision", in: object),
-        confirmProvision: try Self.requiredBool("confirm_provision", in: object),
-        workspaceHost: try requireWorkspaceHost(),
-        managedRoot: managedWorktreeRoot
-      ).json
+      return try await worktreeManager().perform(
+        id: Self.requiredIdentifier("plan_id", in: object), action: .provision,
+        revision: Self.requiredInt("expected_revision", in: object),
+        arguments: object, invocation: hostInvocation)
     case "codex.worktree.remove.plan":
-      let managed = try selectedManagedWorktree(
-        id: Self.requiredString("managed_worktree_id", in: object), requiresOwnership: true
-      )
-      result = try CodexManagedWorktreeManager.planRemoval(
-        database: database,
-        sourceWorkspaceID: owner?.workspaceID,
-        managedWorktreeID: managed.id,
-        liveRuntimeStatus: await CodexRuntimeDirectory.shared.statuses(
-          workspaceID: managed.workspaceID
-        ),
-        managedRoot: managedWorktreeRoot
-      ).json
+      result = try worktreeManager().planRemoval(
+        id: Self.requiredIdentifier("managed_worktree_id", in: object),
+        force: object["force"] == nil ? false : Self.requiredBool("force", in: object))
     case "codex.worktree.remove.perform":
-      let managed = try selectedManagedWorktree(
-        id: Self.requiredString("managed_worktree_id", in: object), requiresOwnership: true
-      )
-      result = try await CodexManagedWorktreeManager.performRemoval(
-        database: database,
-        sourceWorkspaceID: owner?.workspaceID,
-        managedWorktreeID: managed.id,
-        expectedRevision: try Self.requiredInt("expected_revision", in: object),
-        confirmRemoval: try Self.requiredBool("confirm_remove", in: object),
-        workspaceHost: try requireWorkspaceHost(),
-        liveRuntimeStatus: await CodexRuntimeDirectory.shared.statuses(
-          workspaceID: managed.workspaceID
-        ),
-        managedRoot: managedWorktreeRoot
-      ).json
+      return try await worktreeManager().perform(
+        id: Self.requiredIdentifier("managed_worktree_id", in: object), action: .remove,
+        revision: Self.requiredInt("expected_revision", in: object),
+        arguments: object, invocation: hostInvocation)
 
     default: throw CodexToolError.unknownTool(name)
     }
@@ -618,32 +593,12 @@ struct CodexAppServerProvider: Sendable {
 
   private func tryAppServer() throws -> any CodexAppServerRuntimeProtocol { appServer }
   private func selectedWorkspacePath() throws -> String { workspaceURL.path }
-  private func requireWorkspaceHost() throws -> any CodexManagedWorkspaceHost {
-    guard let workspaceHost else {
-      throw CodexToolError.disabled(
-        "Managed workspace mutation requires the owning host's registration and operation-ticket service."
-      )
+  private func worktreeManager() throws -> CodexHostWorktreeManager {
+    guard let scope = CodexProjectScope(owner), let projectServices else {
+      throw CodexProjectContract.Unsupported(observed: nil)
     }
-    return workspaceHost
-  }
-
-  private func selectedManagedWorktree(id: String, requiresOwnership: Bool = false) throws
-    -> CodexManagedWorktree
-  {
-    guard let worktree = try database?.codexManagedWorktree(id: id),
-      worktree.sourceWorkspaceID == owner?.workspaceID
-    else {
-      throw CodexManagedWorktreeError.unknown(id)
-    }
-    if requiresOwnership {
-      guard let principalID = owner?.principalID, worktree.principalID == principalID,
-        worktree.profileID == owner?.profileID
-      else {
-        throw CodexManagedWorktreeError.invalid(
-          "Managed worktree ownership is unbound or belongs to another authorization subject.")
-      }
-    }
-    return worktree
+    guard let database else { throw CodexManagedWorktreeError.unavailable }
+    return CodexHostWorktreeManager(database: database, scope: scope, services: projectServices)
   }
 
   private func selectedRun(id: String) throws -> CodexOrchestrationRun {
@@ -1279,6 +1234,14 @@ struct CodexAppServerProvider: Sendable {
     return value
   }
 
+  private static let worktreeNameSchema: JSONValue = .object([
+    "type": .string("string"), "pattern": .string("^[a-z0-9]+(-[a-z0-9]+)*$"),
+    "minLength": .integer(1), "maxLength": .integer(48),
+  ])
+  private static let optionalBranchSchema: JSONValue = .object([
+    "type": .array([.string("string"), .string("null")]),
+    "minLength": .integer(1), "maxLength": .integer(1024),
+  ])
   private static let emptySchema = objectSchema()
   private static let cursorSchema = objectSchema(properties: [
     "after_cursor": integerSchema(minimum: 0),
@@ -1287,74 +1250,81 @@ struct CodexAppServerProvider: Sendable {
   private static let definitions: [MCP.Tool] = [
     tool(
       "codex.diagnostics.snapshot",
-      "Read one redacted, workspace-scoped operational snapshot that correlates Codex runtimes, process and connection ownership, approvals, acceptance runs, worktree leases, cleanup state, and recent tool or Git audit receipts.",
+      "Read one redacted, project-scoped operational snapshot that correlates Codex runtimes, process and connection ownership, approvals, acceptance runs, worktree leases, cleanup state, and recent tool or Git audit receipts.",
       objectSchema(properties: ["limit": integerSchema(minimum: 1, maximum: 1_000)]),
       hostAction: "diagnostics.snapshot"
     ),
     tool(
       "codex.worktree.managed.list",
-      "List Computer MCP-owned worktree plans and lifecycle receipts rooted in the selected source workspace.",
-      objectSchema(properties: ["limit": integerSchema(minimum: 1, maximum: 1_000)])
+      "List Codex worktree plans, unmanaged history, and host project inventory for the selected project.",
+      objectSchema(properties: ["limit": integerSchema(minimum: 1, maximum: 1_000)]),
+      hostAction: "projects.list", reportsHostResponse: true
     ),
     tool(
       "codex.worktree.managed.read",
-      "Read one Computer MCP-owned worktree plan or lifecycle receipt.",
+      "Read a worktree record and inspect any unresolved operation through the selected source or child project.",
       objectSchema(
         properties: ["managed_worktree_id": stringSchema()],
         required: ["managed_worktree_id"]
-      )
+      ),
+      reportsHostResponse: true
     ),
     tool(
       "codex.worktree.provision.plan",
-      "Persist and validate a five-minute plan for a new isolated Git worktree under the Computer MCP-managed root. This does not create a branch or directory.",
+      "Review and persist a five-minute plan for a host worktree in the selected source project.",
       objectSchema(
         properties: [
           "agent_id": stringSchema(),
           "thread_id": stringSchema(),
           "run_id": stringSchema(),
           "parent_lease_id": stringSchema(),
-          "branch": stringSchema(),
-          "start_point": stringSchema(),
+          "name": worktreeNameSchema,
+          "branch": optionalBranchSchema,
+          "base": optionalBranchSchema,
           "ttl_seconds": integerSchema(minimum: 30, maximum: 86_400),
         ],
-        required: ["agent_id", "parent_lease_id", "branch"]
+        required: ["agent_id", "parent_lease_id", "name"]
       ),
-      risk: .workspaceWrite
+      risk: .workspaceWrite, reportsHostResponse: true
     ),
     tool(
       "codex.worktree.provision.perform",
-      "Create exactly one reviewed managed worktree, register it as a child workspace, inherit the current profile's workspace grant, and acquire an isolated writer lease.",
+      "Ask the host to create the reviewed worktree and report the host result and Codex lease disposition.",
       objectSchema(
         properties: [
           "plan_id": stringSchema(),
           "expected_revision": integerSchema(minimum: 1),
           "confirm_provision": booleanSchema(),
+          "name": worktreeNameSchema,
+          "branch": optionalBranchSchema,
+          "base": optionalBranchSchema,
         ],
-        required: ["plan_id", "expected_revision", "confirm_provision"]
+        required: ["plan_id", "expected_revision", "confirm_provision", "name"]
       ),
-      risk: .workspaceWrite, hostAction: "workspaces.provision"
+      risk: .workspaceWrite, hostAction: "projects.provision", reportsHostResponse: true
     ),
     tool(
       "codex.worktree.remove.plan",
-      "Verify Computer MCP ownership, an inactive writer lease, no live runtime, exact Git linkage, and a clean worktree before persisting a five-minute removal plan.",
+      "Review a five-minute removal plan in the child project after releasing its writer lease.",
       objectSchema(
-        properties: ["managed_worktree_id": stringSchema()],
+        properties: ["managed_worktree_id": stringSchema(), "force": booleanSchema()],
         required: ["managed_worktree_id"]
       ),
-      risk: .workspaceWrite
+      risk: .workspaceWrite, reportsHostResponse: true
     ),
     tool(
       "codex.worktree.remove.perform",
-      "Remove exactly the reviewed clean Computer MCP-owned worktree and its managed workspace registration. The local branch is preserved. This destructive operation also requires a gateway operation ticket.",
+      "Ask the host to retain recoverable Git data and remove the selected child project using the reviewed force setting.",
       objectSchema(
         properties: [
           "managed_worktree_id": stringSchema(),
           "expected_revision": integerSchema(minimum: 1),
           "confirm_remove": booleanSchema(),
+          "force": booleanSchema(),
         ],
         required: ["managed_worktree_id", "expected_revision", "confirm_remove"]
       ),
-      risk: .destructive, hostAction: "workspaces.remove"
+      risk: .destructive, hostAction: "projects.remove", reportsHostResponse: true
     ),
     tool(
       "codex.app.status", "Read the persistent Codex App Server connection status.", emptySchema),
@@ -1948,13 +1918,14 @@ struct CodexAppServerProvider: Sendable {
   ]
   private static func tool(
     _ name: String, _ description: String, _ inputSchema: JSONValue,
-    risk: CodexOperationRisk = .readOnly, hostAction: String? = nil
+    risk: CodexOperationRisk = .readOnly, hostAction: String? = nil,
+    reportsHostResponse: Bool = false
   ) -> MCP.Tool {
     let title = name.split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" })
       .map { String($0.prefix(1)).uppercased() + $0.dropFirst() }.joined(separator: " ")
     let input = try! JSONDecoder().decode(
       MCP.Value.self, from: JSONEncoder().encode(inputSchema))
-    var metadata: [String: MCP.Value] = ["io.github.computer-mcp/risk": .string(risk.rawValue)]
+    var metadata: [String: MCP.Value] = ["io.github.computer-mcp/risk": .string(risk.hostValue)]
     if let hostAction { metadata["io.github.computer-mcp/host-action"] = .string(hostAction) }
     return .init(
       name: name, title: title, description: description, inputSchema: input,
@@ -1962,12 +1933,27 @@ struct CodexAppServerProvider: Sendable {
         readOnlyHint: risk == .readOnly,
         destructiveHint: risk == .destructive || risk == .fullShell,
         idempotentHint: risk == .readOnly, openWorldHint: risk != .readOnly),
-      outputSchema: .object([
-        "type": .string("object"), "properties": .object(["result": .object([:])]),
-        "required": .array([.string("result")]), "additionalProperties": .bool(false),
-      ]),
+      outputSchema: reportsHostResponse
+        ? worktreeOutputSchema
+        : .object([
+          "type": .string("object"), "properties": .object(["result": .object([:])]),
+          "required": .array([.string("result")]), "additionalProperties": .bool(false),
+        ]),
       _meta: .init(additionalFields: metadata))
   }
+
+  private static let worktreeOutputSchema: MCP.Value = .object([
+    "type": .string("object"),
+    "properties": .object([
+      "result": .object(["type": .string("object")]),
+      "error": .object(["type": .string("object")]),
+    ]),
+    "oneOf": .array([
+      .object(["required": .array([.string("result")])]),
+      .object(["required": .array([.string("error")])]),
+    ]),
+    "additionalProperties": .bool(false),
+  ])
 
   private static func objectSchema(
     properties: [String: JSONValue] = [:],

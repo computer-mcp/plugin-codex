@@ -11,7 +11,7 @@ by the runtime; do not substitute upstream thread IDs for local handles.
 | App Server approval | `codex.app.approvals.list` / `read` → `respond` with the exact approval ID |
 | App Server input and events | `codex.app.requests.list` / `respond`; `codex.app.events.read` |
 | Acceptance and writer ownership | `codex.run.*` and `codex.worktree.leases.*`, with durable revisions |
-| Managed worktrees | `codex.worktree.provision.plan` / `perform`, `managed.list` / `read`, and `remove.plan` / `perform`; mutations require the host workspace service |
+| Managed worktrees | `codex.worktree.provision.plan` / `perform`, `managed.list` / `read`, and `remove.plan` / `perform` through the host project service |
 | Operational diagnostics | `codex.diagnostics.snapshot`, with optional bounded `limit` |
 | Exec | `codex.exec.start` / `resume`; inspect `list` / `events` / `result`; `cancel` while running; `release` after cleanup |
 
@@ -142,18 +142,12 @@ and are not repaired by reconnecting or force-stopping another client.
 Native tools also expose `thread/read`, `thread/turns/list` and
 `thread/items/list` with the SDK's complete schemas and parameter names.
 
-## Workspace and diagnostic availability
+## Project and diagnostic availability
 
-Managed-worktree plans are bound to the source workspace and a live parent
-lease. A child lease must be released through its own workspace-bound connection.
-Removal requires a fresh reviewed plan, a clean owned worktree, no active lease
-or live runtime, and host authorization. Removal preserves the branch.
-
-An explicitly enabled host-services connection supplies registration, removal
-authorization and diagnostics. Without that connection, `provision.perform` and
-`remove.perform` fail before Git mutation; planning and receipt inspection remain
-available. See [host integration](HostIntegration.md) for exact scope and
-metadata-only recovery after a partially completed removal.
+Worktree provisioning, inventory and removal use the host's scoped
+`projects-v1` channel. Standalone adapters can read their local unmanaged
+history and use ordinary Codex execution. See [host integration](HostIntegration.md)
+for authorization and recovery.
 
 Diagnostics read adapter state without starting Codex.
 `host_diagnostics_available: false` means `recent_tool_audits` is unavailable,
@@ -223,20 +217,25 @@ selected child reconciliation. It may reference a native Goal without treating
 its own state as native Goal state. Turn completion can leave both active.
 
 `codex.worktree.leases.*` records mutation ownership, heartbeat, release and
-conflicts. Receipt cleanup does not delete a worktree. Managed provisioning is
-two steps: `provision.plan` validates the source repository, active parent lease,
-branch, start commit, derived path, profile and lineage; `provision.perform`
-consumes the reviewed revision before the five-minute plan expires. It creates
-the child, requests host registration and the profile grant, and acquires the
-isolated lease. Reconnect to select the newly registered child before starting
-a leased turn there.
+conflicts. Expiry updates lease metadata.
 
-Removal planning binds the receipt, Git common directory and HEAD. Perform
-requires the current revision, explicit confirmation and the host's executing
-operation ticket. The child lease must be inactive and the worktree clean with
-no live child runtime. Paths must be real current-user-owned directories under
-the canonical managed root. A replacement symlink or independently created
-worktree is not a cleanup target. Ordinary removal preserves the branch.
+1. In the source project, acquire a parent lease and call
+   `codex.worktree.provision.plan` with the lease ID, agent and worktree
+   `name`. Include the desired branch or base branch if you want an explicit
+   selection. Absent and null values both request host defaults.
+2. Copy the returned `perform_arguments` into
+   `codex.worktree.provision.perform` within five minutes. The host selects
+   `worktree/<name>` for a defaulted branch and captures a defaulted base
+   from the source's main checkout at perform admission.
+3. Select the returned child `project_id` for leased work. If creation
+   succeeds with a lease conflict or unavailable lease, use the child
+   lease-acquire flow once a writer lease is available.
+4. Release the child's writer lease, then call `codex.worktree.remove.plan`
+   in the child project. Review `force` before copying the removal
+   `perform_arguments` into `codex.worktree.remove.perform`.
+5. If a mutation reply is lost, call `codex.worktree.managed.read` in
+   the source project to inspect the recorded operation. Wait for a
+   confirmed host disposition before taking further lifecycle action.
 
 ## Runtime inspection and handoff
 

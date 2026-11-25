@@ -30,9 +30,28 @@ struct CodexWorktreeLease: Codable, Equatable, Sendable, Identifiable {
   var releaseReason: String?
   var revision: Int
   var managedWorktreeID: String? = nil
+  var hostWorktreeID: UUID? = nil
+  var creationOperationID: UUID? = nil
 
   var json: JSONValue {
     (try? JSONValue.encoded(self)) ?? .object([:])
+  }
+}
+
+extension CodexWorktreeLease {
+  init(
+    workspaceID: String, workspacePath: String, mode: CodexWorktreeLeaseMode, agentID: String,
+    threadID: String?, runID: String?, parentLeaseID: String?, branch: String?, ttlSeconds: Int,
+    now: Date, association: CodexHostWorktree?
+  ) {
+    self.init(
+      id: UUID().uuidString, workspaceID: workspaceID, workspacePath: workspacePath,
+      mode: mode, agentID: agentID, threadID: threadID, runID: runID,
+      parentLeaseID: parentLeaseID, branch: branch, state: .active, createdAt: now,
+      heartbeatAt: now, expiresAt: now.addingTimeInterval(TimeInterval(ttlSeconds)),
+      releasedAt: nil, releaseReason: nil, revision: 1, managedWorktreeID: association?.id,
+      hostWorktreeID: association?.creation?.worktreeID,
+      creationOperationID: association?.creationOperationID)
   }
 }
 
@@ -76,6 +95,7 @@ enum CodexWorktreeLeaseManager {
     mode: CodexWorktreeLeaseMode,
     ttlSeconds: Int,
     liveRuntimeStatus: JSONValue,
+    scope: CodexProjectScope? = nil,
     now: Date = Date()
   ) throws -> CodexWorktreeLease {
     guard let database else { throw CodexWorktreeLeaseError.unavailable }
@@ -101,31 +121,6 @@ enum CodexWorktreeLeaseManager {
         )
       }
     }
-    var managedWorktreeID: String?
-    if let parentLeaseID {
-      guard let parent = try database.codexWorktreeLease(id: parentLeaseID),
-        parent.state == .active, parent.expiresAt > now
-      else {
-        throw CodexWorktreeLeaseError.invalid("parent_lease_id must identify an active lease")
-      }
-      guard parent.workspaceID != workspaceID || parent.mode == .exclusive else {
-        throw CodexWorktreeLeaseError.invalid(
-          "an isolated child must use a separately registered worktree workspace"
-        )
-      }
-      if database.sharesWorktreeLeases, parent.workspaceID != workspaceID {
-        let lineage = try database.codexWorktreeLeases(workspaceID: workspaceID, limit: 5_000)
-          .first {
-            $0.parentLeaseID == parentLeaseID && $0.managedWorktreeID != nil
-              && $0.workspacePath == workspaceURL.standardizedFileURL.path
-          }
-        guard let lineage else {
-          throw CodexWorktreeLeaseError.invalid(
-            "The parent lease must belong to this workspace's registered managed-worktree lineage.")
-        }
-        managedWorktreeID = lineage.managedWorktreeID
-      }
-    }
     if mode == .isolatedWorktree, parentLeaseID == nil {
       throw CodexWorktreeLeaseError.invalid(
         "isolated_worktree requires parent_lease_id to preserve task lineage"
@@ -148,7 +143,7 @@ enum CodexWorktreeLeaseManager {
       branch: safeBranch,
       ttlSeconds: ttlSeconds,
       now: now,
-      managedWorktreeID: managedWorktreeID
+      scope: scope
     )
   }
 

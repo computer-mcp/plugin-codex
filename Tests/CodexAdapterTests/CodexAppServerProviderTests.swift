@@ -51,7 +51,7 @@ struct CodexAppServerProviderTests {
     }
     let goal = try #require(tools.first { $0.name == "codex.app.goal.clear" })
     #expect(
-      goal._meta?["io.github.computer-mcp/risk"] == .string("workspace-write"))
+      goal._meta?["io.github.computer-mcp/risk"] == .string("project-write"))
   }
 
   @Test

@@ -2,17 +2,18 @@ import CryptoKit
 import Foundation
 import MCP
 
-/// Host tools use standard MCP and the existing gateway policy/ticket tool surface.
+/// Host tools use standard MCP and the existing gateway project tool surface.
 /// Caller-provided tool arguments cannot select this connection or its authority.
-actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
+actor CodexHostMCPClient: CodexHostTools, CodexProjectServices,
   CodexHostDiagnostics
 {
   static let descriptorEnvironmentKey = "COMPUTER_MCP_HOST_FD"
   private let owner: CodexRuntimeOwner
-  private let workspaceID: String
+  private let projectID: String
   private let client = MCP.Client(name: "codex-host-tools", version: CodexAdapterBuildInfo.version)
   private let transport: MCPInheritedSocketTransport
   private let requestTimeout: Duration
+  private let launchContract: String?
   private var startup: Task<Void, Error>?
   private var connected = false
   private var closed = false
@@ -32,23 +33,25 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
     else { throw ConfigurationError.invalid("Invalid inherited host MCP descriptor.") }
     return try Self(
       takingOwnershipOf: FileHandle(fileDescriptor: descriptor, closeOnDealloc: true),
-      owner: context.owner)
+      owner: context.owner, launchContract: context.hostServiceContract)
   }
 
   init(
     takingOwnershipOf handle: FileHandle, owner: CodexRuntimeOwner,
-    requestTimeout: Duration = .seconds(30)
+    requestTimeout: Duration = .seconds(30), launchContract: String? = nil
   ) throws {
     guard requestTimeout > .zero else {
       throw ConfigurationError.invalid("Invalid host request timeout.")
     }
-    guard let workspaceID = owner.workspaceID, !workspaceID.isEmpty else {
-      throw ConfigurationError.invalid("Host MCP requires a bound workspace identity.")
+    guard let projectID = owner.workspaceID, !projectID.isEmpty else {
+      throw ConfigurationError.invalid("Host MCP requires a bound project identity.")
     }
     self.owner = owner
-    self.workspaceID = workspaceID
+    self.projectID = projectID
     self.requestTimeout = requestTimeout
-    transport = try MCPInheritedSocketTransport(takingOwnershipOf: handle)
+    self.launchContract = launchContract
+    transport = try MCPInheritedSocketTransport(
+      takingOwnershipOf: handle, observesProjectContract: true)
   }
 
   func risk(named name: String, arguments: JSONValue, requestID: String, workspaceID: String?)
@@ -105,9 +108,9 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
     guard !closed, arguments.objectValue != nil, !name.hasPrefix("codex."),
       !name.hasPrefix("host."), !name.isEmpty, name.utf8.count <= 512, !requestID.isEmpty,
       requestID.utf8.count <= 512,
-      workspaceID == nil || workspaceID == self.workspaceID,
-      arguments.objectValue?["workspace_id"] == nil
-        || arguments.objectValue?["workspace_id"] == .string(self.workspaceID)
+      workspaceID == nil || workspaceID == self.projectID,
+      arguments.objectValue?["project_id"] == nil
+        || arguments.objectValue?["project_id"] == .string(self.projectID)
     else {
       throw CodexToolError.executionFailed(
         "Host tool call does not match the bound connection scope.")
@@ -116,7 +119,7 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
 
   private func scoped(_ arguments: [String: JSONValue]) -> [String: JSONValue] {
     var arguments = arguments
-    arguments["workspace_id"] = .string(self.workspaceID)
+    arguments["project_id"] = .string(self.projectID)
     return arguments
   }
 
@@ -125,14 +128,14 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
       name: "policy.probe",
       arguments: [
         "capability_id": .string(name), "arguments": .object(scoped(arguments.objectValue ?? [:])),
-        "workspace_id": .string(self.workspaceID),
+        "project_id": .string(self.projectID),
       ])
     guard let value = result.objectValue?["structuredContent"]?.objectValue?["result"]?.objectValue,
       value["decision"] == .string("allowed"), value["capability_id"] == .string(name),
-      value["workspace_id"] == .string(self.workspaceID),
-      let declared = value["risk"]?.stringValue.flatMap(CodexOperationRisk.init(rawValue:)),
+      value["project_id"] == .string(self.projectID),
+      let declared = value["risk"]?.stringValue.flatMap(CodexOperationRisk.init(hostValue:)),
       let effective = value["effective_risk"]?.stringValue.flatMap(
-        CodexOperationRisk.init(rawValue:))
+        CodexOperationRisk.init(hostValue:))
     else {
       throw CodexToolError.executionFailed(
         "Host preflight returned an invalid or unsupported decision.")
@@ -141,9 +144,7 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
       name: name, digest: try Self.digest(arguments), declared: declared, effective: effective)
   }
 
-  private func call(
-    name: String, arguments: [String: JSONValue], preserveToolError: Bool = false
-  ) async throws -> JSONValue {
+  private func connect() async throws {
     try Task.checkCancellation()
     guard !closed else { throw MCPError.connectionClosed }
     if !connected {
@@ -168,18 +169,30 @@ actor CodexHostMCPClient: CodexHostTools, CodexManagedWorkspaceHost,
       guard !closed else { throw MCPError.connectionClosed }
       connected = true
     }
+  }
+
+  private enum RawToolCall: MCP.Method {
+    static let name = MCP.CallTool.name
+    typealias Parameters = MCP.CallTool.Parameters
+    typealias Result = MCP.Value
+  }
+
+  private func call(
+    name: String, arguments: [String: JSONValue], preserveToolError: Bool = false
+  ) async throws -> JSONValue {
+    try await connect()
     let client = client
     let parameters = try JSONDecoder().decode(
       [String: MCP.Value].self, from: JSONEncoder().encode(arguments))
-    let result: MCP.CallTool.Result = try await Self.bounded(
+    let result: MCP.Value = try await Self.bounded(
       client: client, transport: transport, timeout: requestTimeout
     ) {
-      let request: RequestContext<MCP.CallTool.Result> = try await client.callTool(
-        name: name, arguments: parameters)
+      let request = try await client.send(
+        RawToolCall.request(.init(name: name, arguments: parameters)))
       return try await request.value
     }
     let value = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(result))
-    guard preserveToolError || result.isError != true else {
+    guard preserveToolError || value.objectValue?["isError"] != .bool(true) else {
       let error = value.objectValue?["structuredContent"]?.objectValue?["error"]?.objectValue
       throw CodexToolError.executionFailed(
         CodexApprovalRedactor.redactString(
@@ -243,14 +256,15 @@ extension CodexHostMCPClient {
     let value = try await service("host.diagnostics.snapshot", ["limit": .integer(Int64(limit))])
     guard let object = value.objectValue,
       let returnedOwner = object["owner"],
-      try JSONDecoder().decode(CodexRuntimeOwner.self, from: JSONEncoder().encode(returnedOwner))
-        == owner,
+      try JSONDecoder().decode(
+        CodexHostDiagnosticOwner.self, from: JSONEncoder().encode(returnedOwner)
+      ).runtimeOwner == owner,
       let audits = object["recent_tool_audits"]?.arrayValue, audits.count <= limit
     else {
       throw CodexToolError.executionFailed(
         "Host diagnostic response differs from the connection scope or limit.")
     }
-    guard audits.allSatisfy({ $0.objectValue?["workspace_id"] == .string(workspaceID) })
+    guard audits.allSatisfy({ $0.objectValue?["project_id"] == .string(projectID) })
     else {
       throw CodexToolError.executionFailed("Host diagnostics included a different owner.")
     }
@@ -258,39 +272,49 @@ extension CodexHostMCPClient {
       owner: owner, recentToolAudits: audits)
   }
 
-  func registerDerivedWorkspace(_ worktree: CodexManagedWorktree, now: Date) async throws {
-    try validateDerived(worktree)
-    let result = try await service("host.workspaces.register", ["worktree": worktree.json])
-    guard result.objectValue?["registered"] == .bool(true),
-      result.objectValue?["workspace_id"] == .string(worktree.workspaceID)
-    else {
-      throw CodexToolError.executionFailed("Host did not confirm the exact derived registration.")
+  func validateContract() async throws {
+    guard launchContract == CodexProjectContract.identifier else {
+      throw CodexProjectContract.Unsupported(observed: launchContract)
+    }
+    try await connect()
+    let observed = await transport.observedProjectContract
+    guard observed == CodexProjectContract.identifier else {
+      throw CodexProjectContract.Unsupported(observed: observed)
     }
   }
 
-  func unregisterDerivedWorkspace(_ worktree: CodexManagedWorktree, now: Date) async throws {
-    try validateDerived(worktree)
-    let result = try await service("host.workspaces.unregister", ["worktree": worktree.json])
-    guard result.objectValue?["unregistered"] == .bool(true) else {
-      throw CodexToolError.executionFailed("Host did not confirm registration removal.")
+  func describe(_ inspection: CodexProjectInspection) async throws -> CodexHostToolResponse {
+    let arguments: [String: JSONValue]
+    switch inspection {
+    case .invocation(let id): arguments = ["invocation_id": .string(id.uuidString)]
+    case .operation(let id): arguments = ["operation_id": .string(id.uuidString)]
     }
+    return try await projectService("host.invocations.describe", arguments)
   }
 
-  func authorizeRemoval(_ worktree: CodexManagedWorktree) async throws {
-    try validateDerived(worktree)
-    let result = try await service("host.workspaces.authorize_removal", ["worktree": worktree.json])
-    guard result.objectValue?["authorized"] == .bool(true) else {
-      throw CodexToolError.executionFailed("Host did not authorize this removal.")
-    }
+  func add(_ selection: CodexWorktreeSelection, ids: CodexHostOperationIDs) async throws
+    -> CodexHostToolResponse
+  {
+    try await projectService(
+      "host.projects.worktree_add", ids.arguments.merging(selection.arguments) { id, _ in id })
   }
 
-  private func validateDerived(_ worktree: CodexManagedWorktree) throws {
-    guard let principalID = owner.principalID, worktree.principalID == principalID,
-      worktree.sourceWorkspaceID == workspaceID, worktree.profileID == owner.profileID
-    else {
-      throw CodexToolError.executionFailed(
-        "Derived workspace receipt belongs to a different scope.")
-    }
+  func list(invocationID: UUID) async throws -> CodexHostToolResponse {
+    try await projectService(
+      "host.projects.worktree_list", ["invocation_id": .string(invocationID.uuidString)])
+  }
+
+  func remove(force: Bool, ids: CodexHostOperationIDs) async throws -> CodexHostToolResponse {
+    var arguments = ids.arguments
+    arguments["force"] = .bool(force)
+    return try await projectService("host.projects.worktree_remove", arguments)
+  }
+
+  private func projectService(_ name: String, _ arguments: [String: JSONValue]) async throws
+    -> CodexHostToolResponse
+  {
+    try await validateContract()
+    return .init(raw: try await call(name: name, arguments: arguments, preserveToolError: true))
   }
 
   private func service(_ name: String, _ arguments: [String: JSONValue]) async throws -> JSONValue {

@@ -12,6 +12,9 @@ actor MCPInheritedSocketTransport: Transport {
   private let maximumMessageBytes: Int
   private let maximumQueuedMessages: Int
   private let writeTimeout: Duration
+  private let observesProjectContract: Bool
+  private var initializeID: JSONValue?
+  private(set) var observedProjectContract: String?
   private let stream: AsyncThrowingStream<Data, Error>
   private let continuation: AsyncThrowingStream<Data, Error>.Continuation
   private var connected = false
@@ -23,7 +26,8 @@ actor MCPInheritedSocketTransport: Transport {
 
   init(
     takingOwnershipOf handle: FileHandle, maximumMessageBytes: Int = 1_048_576,
-    maximumQueuedMessages: Int = 32, writeTimeout: Duration = .seconds(30)
+    maximumQueuedMessages: Int = 32, writeTimeout: Duration = .seconds(30),
+    observesProjectContract: Bool = false
   ) throws {
     guard (1...16_777_216).contains(maximumMessageBytes),
       (1...256).contains(maximumQueuedMessages), writeTimeout > .zero
@@ -58,6 +62,7 @@ actor MCPInheritedSocketTransport: Transport {
     self.maximumMessageBytes = maximumMessageBytes
     self.maximumQueuedMessages = maximumQueuedMessages
     self.writeTimeout = writeTimeout
+    self.observesProjectContract = observesProjectContract
     (stream, continuation) = AsyncThrowingStream.makeStream(
       bufferingPolicy: .bufferingOldest(maximumQueuedMessages))
   }
@@ -105,6 +110,12 @@ actor MCPInheritedSocketTransport: Transport {
     guard queuedWrites < maximumQueuedMessages else {
       finish(throwing: MCPError.transportError(POSIXError(.ENOBUFS)))
       throw MCPError.connectionClosed
+    }
+    if observesProjectContract,
+      let request = try? JSONDecoder().decode(JSONValue.self, from: message).objectValue,
+      request["method"] == .string("initialize")
+    {
+      initializeID = request["id"]
     }
     queuedWrites += 1
     defer { queuedWrites -= 1 }
@@ -187,6 +198,16 @@ actor MCPInheritedSocketTransport: Transport {
       else {
         finish(throwing: MCPError.parseError("Invalid inherited MCP frame."))
         return false
+      }
+      if let initializeID,
+        let reply = try? JSONDecoder().decode(JSONValue.self, from: message).objectValue,
+        reply["id"] == initializeID
+      {
+        observedProjectContract =
+          reply["result"]?.objectValue?["capabilities"]?.objectValue?[
+            "experimental"
+          ]?.objectValue?[CodexProjectContract.capabilityKey]?.stringValue
+        self.initializeID = nil
       }
       switch continuation.yield(message) {
       case .enqueued: break

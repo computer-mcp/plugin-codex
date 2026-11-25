@@ -1,775 +1,536 @@
 import Foundation
+import GRDB
 import MCP
 import Testing
 
 @testable import CodexAdapter
 
-@Suite(.serialized)
-final class CodexManagedWorktreeTests {
-  @Test(.timeLimit(.minutes(1)))
-  func mcpWorktreeLifecyclePreservesHostDenialAndWorkspaceScope() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    let repository = directory.appendingPathComponent("repository", isDirectory: true)
-    let managedRoot = directory.appendingPathComponent("managed", isDirectory: true)
-    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try runGit(["init", "-q"], in: repository)
-    try runGit(["config", "user.name", "Computer MCP Test"], in: repository)
-    try runGit(["config", "user.email", "computer-mcp@example.invalid"], in: repository)
-    try Data("baseline\n".utf8).write(to: repository.appendingPathComponent("README.md"))
-    try runGit(["add", "README.md"], in: repository)
-    try runGit(["commit", "-q", "-m", "test: baseline"], in: repository)
-    let host = RecordingManagedWorkspaceHost()
-    func provider(
-      workspaceID: String, path: URL, hostConnected: Bool = true,
-      principalID: String = "fixture-principal", profileID: String = "local-admin"
-    ) throws -> CodexAppServerProvider {
-      let launch: [String: Any] = [
-        "formatVersion": 1, "runtimeID": UUID().uuidString, "caller": "local-mcp",
-        "principalID": principalID, "profileID": profileID,
-        "workspace": ["id": workspaceID, "rootPath": path.path],
+@Suite(.timeLimit(.minutes(1)))
+struct CodexManagedWorktreeTests {
+  @Test(arguments: [nil, .null, .string("reviewed-base")] as [JSONValue?])
+  func mcpPreservesReviewedSelectionAndCommitsHostIDsBeforeInspection(base: JSONValue?) async throws
+  {
+    let fixture = try WorktreeFixture()
+    let provider = fixture.provider()
+    try await withMCPClient(provider) { client in
+      var planArguments: [String: JSONValue] = [
+        "name": .string("example"), "agent_id": .string("child-agent"),
+        "parent_lease_id": .string(fixture.parent.id),
       ]
-      let context = try CodexLaunchContext(
-        environment: [
-          "COMPUTER_MCP_HOST_CONTEXT": String(
-            decoding: JSONSerialization.data(withJSONObject: launch), as: UTF8.self)
-        ],
-        currentDirectory: path)
-      let scoped = try #require(
-        try context.appServerProvider(
-          configuration: .init(enabled: true, executable: "/missing/codex"),
-          stateDirectory: directory.appendingPathComponent("state")))
-      return CodexAppServerProvider(
-        appServer: FakeAppServerRuntime(),
-        owner: context.owner,
-        database: scoped.database, workspaceURL: path, recentThreadReader: nil,
-        localControlAllowed: true,
-        workspaceHost: hostConnected ? host : nil, managedWorktreeRoot: managedRoot)
-    }
-    let source = try provider(workspaceID: "source-workspace", path: repository)
-    let database = try #require(source.database)
-    try await withMCPClient(provider: source) {
-      client in
-      let parent = try await invoke(
-        client, "codex.worktree.leases.acquire",
-        [
-          "agent_id": .string("parent"), "mode": .string("exclusive"),
-        ])
-      let plan = try await invoke(
-        client, "codex.worktree.provision.plan",
-        [
-          "agent_id": .string("child"),
-          "parent_lease_id": try #require(parent.objectValue?["id"]),
-          "branch": .string("codex/mcp-worktree"),
-        ])
-      let planID = try #require(plan.objectValue?["id"])
-      try await withMCPClient(
-        provider: provider(workspaceID: "source-workspace", path: repository, hostConnected: false)
-      ) { unconnected in
-        let unavailable = try await unconnected.callTool(
-          name: "codex.worktree.provision.perform",
-          arguments: [
-            "plan_id": planID, "expected_revision": try #require(plan.objectValue?["revision"]),
-            "confirm_provision": .bool(true),
-          ])
-        #expect(unavailable.isError == true)
-        let plannedPath = try #require(plan.objectValue?["path"]?.stringValue)
-        #expect(!FileManager.default.fileExists(atPath: plannedPath))
-        #expect(
-          try database.codexManagedWorktree(id: try #require(planID.stringValue))?.state == .planned
-        )
-      }
-      let active = try await invoke(
-        client, "codex.worktree.provision.perform",
-        [
-          "plan_id": planID, "expected_revision": try #require(plan.objectValue?["revision"]),
-          "confirm_provision": .bool(true),
-        ])
-      let worktreeID = try #require(active.objectValue?["id"]?.stringValue)
-      let record = try #require(try database.codexManagedWorktree(id: worktreeID))
-      #expect(record.state == .active)
-      #expect(await host.record(id: record.workspaceID)?.id == worktreeID)
-      let listed = try await invoke(client, "codex.worktree.managed.list")
-      #expect(listed.objectValue?["worktrees"]?.arrayValue?.count == 1)
-      let read = try await invoke(
-        client, "codex.worktree.managed.read",
-        [
-          "managed_worktree_id": .string(worktreeID)
-        ])
-      #expect(read == active)
-      let sourceDiagnostic = try await invoke(client, "codex.diagnostics.snapshot")
+      let branch: JSONValue? = base?.stringValue == nil ? base : .string("explicit-branch")
+      planArguments["base"] = base
+      planArguments["branch"] = branch
+      let plan = try result(await call(client, "codex.worktree.provision.plan", planArguments))
+      let performArguments = try #require(plan["perform_arguments"]?.objectValue)
+      #expect(performArguments["base"] == base)
+      #expect(performArguments["branch"] == branch)
+      let ids = newIDs()
+      var altered = performArguments
+      altered["branch"] = .string("worktree/example")
+      let substituted = try await call(
+        client, "codex.worktree.provision.perform", altered, ids: ids)
+      #expect(substituted.isError == true)
+      let missing = try await call(client, "codex.worktree.provision.perform", performArguments)
+      #expect(missing.isError == true)
+      var spoofed = performArguments
+      spoofed["operation_id"] = .string(ids.operationID.uuidString)
+      let spoof = try await call(client, "codex.worktree.provision.perform", spoofed, ids: ids)
+      #expect(spoof.isError == true)
+      #expect(await fixture.host.callbacks.isEmpty)
+      let digest = try CodexHostInvocation.digest(performArguments)
+      await fixture.host.capture(digest, action: .provision)
+      let completed = try result(
+        await call(client, "codex.worktree.provision.perform", performArguments, ids: ids))
+      #expect(completed["state"] == .string("active"))
+      #expect(completed["host_state"] == .string("completed"))
+      #expect(completed["requested"]?.objectValue?["base"] == base)
       #expect(
-        sourceDiagnostic.objectValue?["summary"]?.objectValue?["active_managed_worktree_count"]
-          == .int(1))
-      let leaseID = try #require(record.leaseID)
-      let lease = try #require(try database.codexWorktreeLease(id: leaseID))
-      let releaseArguments: [String: MCP.Value] = [
-        "lease_id": .string(leaseID), "expected_revision": .int(lease.revision),
-        "reason": .string("Child work accepted."),
-      ]
-      let wrongScope = try await client.callTool(
-        name: "codex.worktree.leases.release", arguments: releaseArguments)
-      #expect(wrongScope.isError == true)
-      #expect(try database.codexWorktreeLease(id: leaseID)?.state == .active)
-      let busy = try await client.callTool(
-        name: "codex.worktree.remove.plan",
-        arguments: [
-          "managed_worktree_id": .string(worktreeID)
-        ])
-      #expect(busy.isError == true)
-      for (workspace, principal, profile) in [
-        ("unrelated-workspace", "fixture-principal", "local-admin"),
-        (record.workspaceID, "foreign-principal", "local-admin"),
-        (record.workspaceID, "fixture-principal", "foreign-profile"),
-      ] {
-        try await withMCPClient(
-          provider: provider(
-            workspaceID: workspace, path: URL(fileURLWithPath: record.path),
-            principalID: principal, profileID: profile)
-        ) { unauthorized in
-          for name in [
-            "codex.worktree.leases.read", "codex.worktree.leases.heartbeat",
-            "codex.worktree.leases.release",
-          ] {
-            let arguments: [String: MCP.Value]
-            if name.hasSuffix(".read") {
-              arguments = ["lease_id": .string(leaseID)]
-            } else if name.hasSuffix(".heartbeat") {
-              arguments = ["lease_id": .string(leaseID), "expected_revision": .int(lease.revision)]
-            } else {
-              arguments = releaseArguments
-            }
-            #expect(
-              try await unauthorized.callTool(name: name, arguments: arguments).isError == true)
+        completed["resolved"]?.objectValue?["branch"]
+          == (branch?.stringValue.map(JSONValue.string) ?? .string("worktree/example")))
+      #expect(
+        completed["resolved"]?.objectValue?["base"]
+          == (base?.stringValue.map(JSONValue.string) ?? .string("captured-main")))
+      #expect(completed["lease"]?.objectValue?["state"] == .string("acquired"))
+      #expect(await fixture.host.callbacks == ["inspect-invocation", "add"])
+      #expect(await fixture.host.selection?.arguments["base"] == base)
+      let id = try #require(completed["id"]?.stringValue)
+      let child = try #require(try fixture.child.hostWorktree(id: id, in: fixture.childScope)?.0)
+      #expect(child.projection(in: fixture.childScope)["run_id"] == nil)
+      #expect(
+        try fixture.child.hostWorktree(
+          id: id, in: #require(CodexProjectScope(fixture.owner(project: "sibling")))) == nil)
+      #expect(
+        try fixture.child.hostWorktree(
+          id: id,
+          in: #require(CodexProjectScope(fixture.owner(project: "child", principal: "other"))))
+          == nil)
+    }
+  }
+
+  @Test
+  func hostDigestMismatchPreservesPendingOperationWithoutCallingEffect() async throws {
+    let fixture = try WorktreeFixture()
+    let (id, request) = try fixture.plan()
+    let ids = newIDs()
+    await fixture.host.capture("mismatched-complete-digest", action: .provision)
+    let reply = try await fixture.manager.perform(
+      id: id, action: .provision, revision: 1, arguments: request, invocation: metadata(ids))
+    #expect(reply.isError == true)
+    let projection = try result(reply)
+    #expect(projection["operation_id"] == .string(ids.operationID.uuidString))
+    #expect(projection["uncertain_host_response"]?.objectValue?["structuredContent"] != nil)
+    #expect(await fixture.host.callbacks == ["inspect-invocation"])
+    let stored = try #require(try fixture.source.hostWorktree(id: id, in: fixture.sourceScope))
+    #expect(stored.0.state == .provisioning)
+    #expect(stored.1?.ids == ids)
+  }
+
+  @Test
+  func conflictingLeaseLeavesCompletedAssociationAndAllowsLaterChildAcquisition() async throws {
+    let fixture = try WorktreeFixture()
+    let conflict = try fixture.acquire(
+      in: fixture.child, scope: fixture.childScope, agent: "other-agent")
+    let (id, request) = try fixture.plan()
+    let created = try await fixture.performProvision(id, request: request)
+    #expect(created["host_state"] == .string("completed"))
+    #expect(created["lease"]?.objectValue?["state"] == .string("conflict"))
+    #expect(try fixture.child.codexWorktreeLease(id: conflict.id) == conflict)
+    #expect(throws: CodexManagedWorktreeError.self) {
+      try fixture.childManager.planRemoval(id: id, force: false)
+    }
+    try fixture.release(conflict, in: fixture.child)
+    let original = try #require(try fixture.child.hostWorktree(id: id, in: fixture.childScope))
+    let operation = try #require(original.1)
+    let envelope = try #require(operation.envelope)
+    let response = try #require(operation.response)
+    _ = try fixture.child.settleWorktreeOperation(
+      id: id, in: fixture.childScope, operationID: operation.ids.operationID,
+      envelope: envelope, response: response, now: Date())
+    #expect(try fixture.child.hostWorktree(id: id, in: fixture.childScope)?.0.lease == .conflict)
+    let acquired = try fixture.acquire(
+      in: fixture.child, scope: fixture.childScope, agent: "child-agent", parent: fixture.parent.id)
+    #expect(acquired.hostWorktreeID == fixture.host.worktreeID)
+    #expect(acquired.creationOperationID == operation.ids.operationID)
+    #expect(acquired.managedWorktreeID == id)
+  }
+
+  @Test
+  func concurrentSourceConnectionsCommitOnlyOneOperation() async throws {
+    let fixture = try WorktreeFixture()
+    let another = try CodexDatabase(path: fixture.sourcePath, worktreeLeasePath: fixture.sharedPath)
+    let (id, request) = try fixture.plan()
+    let digest = try CodexHostInvocation.digest(request)
+    await fixture.host.capture(digest, action: .provision)
+
+    let successes = await withTaskGroup(of: Bool.self, returning: Int.self) { tasks in
+      for database in [fixture.source, another] {
+        tasks.addTask {
+          let manager = CodexHostWorktreeManager(
+            database: database, scope: fixture.sourceScope, services: fixture.host)
+          do {
+            _ = try await manager.perform(
+              id: id, action: .provision, revision: 1, arguments: request,
+              invocation: metadata(newIDs()))
+            return true
+          } catch CodexManagedWorktreeError.revisionConflict {
+            return false
+          } catch {
+            Issue.record("Unexpected admission failure: \(error)")
+            return false
           }
-          let hidden = try await invoke(unauthorized, "codex.worktree.leases.list")
-          #expect(hidden.objectValue?["leases"]?.arrayValue?.isEmpty == true)
-          let invalidLineage = try await unauthorized.callTool(
-            name: "codex.worktree.leases.acquire",
-            arguments: [
-              "agent_id": .string("unrelated"), "mode": .string("isolated_worktree"),
-              "parent_lease_id": try #require(parent.objectValue?["id"]),
-            ])
-          #expect(invalidLineage.isError == true)
         }
       }
-      #expect(try database.codexWorktreeLease(id: leaseID)?.state == .active)
-      try await withMCPClient(
-        provider: provider(workspaceID: record.workspaceID, path: URL(fileURLWithPath: record.path))
-      ) { child in
-        let hidden = try await child.callTool(
-          name: "codex.worktree.managed.read",
-          arguments: [
-            "managed_worktree_id": .string(worktreeID)
-          ])
-        #expect(hidden.isError == true)
-        let childDiagnostic = try await invoke(child, "codex.diagnostics.snapshot")
-        #expect(
-          childDiagnostic.objectValue?["active_worktree_leases"]?.arrayValue?.first?.objectValue?[
-            "managedWorktreeID"]
-            == .string(worktreeID))
-        #expect(
-          childDiagnostic.objectValue?["summary"]?.objectValue?["active_worktree_lease_count"]
-            == .int(1))
-        let childLease = try await invoke(
-          child, "codex.worktree.leases.read", ["lease_id": .string(leaseID)])
-        #expect(childLease.objectValue?["managedWorktreeID"] == .string(worktreeID))
-        let renewed = try await invoke(
-          child, "codex.worktree.leases.heartbeat",
-          ["lease_id": .string(leaseID), "expected_revision": .int(lease.revision)])
-        var currentRelease = releaseArguments
-        currentRelease["expected_revision"] = try #require(renewed.objectValue?["revision"])
-        _ = try await invoke(child, "codex.worktree.leases.release", currentRelease)
-      }
-      #expect(try database.codexWorktreeLease(id: leaseID)?.state == .released)
-      let restartedChild = try provider(
-        workspaceID: record.workspaceID, path: URL(fileURLWithPath: record.path))
-      #expect(restartedChild.database?.fileURL != database.fileURL)
-      #expect(try restartedChild.database?.codexWorktreeLease(id: leaseID)?.state == .released)
-      let dirty = URL(fileURLWithPath: record.path).appendingPathComponent("unaccepted.txt")
-      try Data("keep until reviewed\n".utf8).write(to: dirty)
-      let dirtyRemoval = try await client.callTool(
-        name: "codex.worktree.remove.plan",
-        arguments: [
-          "managed_worktree_id": .string(worktreeID)
-        ])
-      #expect(dirtyRemoval.isError == true)
-      #expect(try Data(contentsOf: dirty) == Data("keep until reviewed\n".utf8))
-      try FileManager.default.removeItem(at: dirty)
-      let removal = try await invoke(
-        client, "codex.worktree.remove.plan",
-        [
-          "managed_worktree_id": .string(worktreeID)
-        ])
-      let removeArguments: [String: MCP.Value] = [
-        "managed_worktree_id": .string(worktreeID),
-        "expected_revision": try #require(removal.objectValue?["revision"]),
-        "confirm_remove": .bool(true),
-      ]
-      await host.setRemovalAllowed(false)
-      let denied = try await client.callTool(
-        name: "codex.worktree.remove.perform", arguments: removeArguments)
-      #expect(denied.isError == true)
-      #expect(try database.codexManagedWorktree(id: worktreeID)?.state == .removalPlanned)
-      #expect(
-        try database.codexManagedWorktree(id: worktreeID)?.json
-          == JSONDecoder().decode(
-            JSONValue.self, from: JSONEncoder().encode(removal)))
-      #expect(FileManager.default.fileExists(atPath: record.path))
-      #expect(await host.record(id: record.workspaceID)?.id == worktreeID)
-      await host.setRemovalAllowed(true)
-      let removed = try await invoke(client, "codex.worktree.remove.perform", removeArguments)
-      #expect(removed.objectValue?["state"] == .string("removed"))
-      #expect(!FileManager.default.fileExists(atPath: record.path))
-      #expect(await host.record(id: record.workspaceID) == nil)
-      let removedDiagnostic = try await invoke(client, "codex.diagnostics.snapshot")
-      #expect(
-        removedDiagnostic.objectValue?["summary"]?.objectValue?["active_managed_worktree_count"]
-          == .int(0))
-      let reopened = try #require(
-        try provider(workspaceID: "source-workspace", path: repository).database)
-      #expect(try reopened.codexManagedWorktree(id: worktreeID)?.state == .removed)
-      #expect(try reopened.codexWorktreeLease(id: leaseID)?.state == .released)
-      #expect(
-        try gitResult(
-          ["show-ref", "--verify", "--quiet", "refs/heads/codex/mcp-worktree"], in: repository
-        ).exitCode == 0)
+      var successes = 0
+      for await admitted in tasks where admitted { successes += 1 }
+      return successes
     }
+    #expect(successes == 1)
+    #expect(await fixture.host.callbacks == ["inspect-invocation", "add"])
   }
 
-  @Test(arguments: [false, true])
-  func testManagedWorktreeProvisionAndRemovalRequireOwnedCleanLifecycle(retryHostFailure: Bool)
+  @Test(arguments: [CodexHostWorktreeState.failed, .recoveryRequired])
+  func structuredHostErrorsRetainTheirEnvelopeAndNeverReplay(state: CodexHostWorktreeState)
     async throws
   {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    let repository = directory.appendingPathComponent("repository", isDirectory: true)
-    let managedRoot = directory.appendingPathComponent("managed", isDirectory: true)
-    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try runGit(["init", "-q"], in: repository)
-    try runGit(["config", "user.name", "Computer MCP Test"], in: repository)
-    try runGit(["config", "user.email", "computer-mcp@example.invalid"], in: repository)
-    try Data("baseline\n".utf8).write(to: repository.appendingPathComponent("README.md"))
-    try runGit(["add", "README.md"], in: repository)
-    try runGit(["commit", "-q", "-m", "test: baseline"], in: repository)
-
-    let database = try CodexDatabase(inMemory: ())
-    let sourceWorkspaceID = "source-workspace"
-    let workspaceHost = RecordingManagedWorkspaceHost()
-    let parent = try CodexWorktreeLeaseManager.acquire(
-      database: database,
-      workspaceID: sourceWorkspaceID,
-      workspaceURL: repository,
-      agentID: "parent-agent",
-      threadID: "parent-thread",
-      runID: nil,
-      parentLeaseID: nil,
-      branch: nil,
-      mode: .exclusive,
-      ttlSeconds: 900,
-      liveRuntimeStatus: .object(["runtimes": .array([])])
-    )
-
-    let plan = try CodexManagedWorktreeManager.planProvision(
-      database: database,
-      sourceWorkspaceID: sourceWorkspaceID,
-      sourceWorkspaceURL: repository,
-      profileID: "local-admin",
-      caller: "local-mcp",
-      agentID: "child-agent",
-      threadID: "child-thread",
-      runID: nil,
-      parentLeaseID: parent.id,
-      branch: "codex/managed-child",
-      startPoint: "HEAD",
-      ttlSeconds: 900,
-      managedRoot: managedRoot
-    )
-    #expect(plan.state == .planned)
-    #expect(!FileManager.default.fileExists(atPath: plan.path))
-
-    let active = try await CodexManagedWorktreeManager.performProvision(
-      database: database,
-      sourceWorkspaceID: sourceWorkspaceID,
-      planID: plan.id,
-      expectedRevision: plan.revision,
-      confirmProvision: true,
-      workspaceHost: workspaceHost,
-      managedRoot: managedRoot
-    )
-    #expect(active.state == .active)
-    #expect(FileManager.default.fileExists(atPath: active.path))
-    #expect(await workspaceHost.record(id: active.workspaceID)?.path == active.path)
-    let childLeaseID = try #require(active.leaseID)
-    var childLease = try #require(try database.codexWorktreeLease(id: childLeaseID))
-    #expect(childLease.mode == .isolatedWorktree)
-    #expect(childLease.parentLeaseID == parent.id)
-    #expect(childLease.workspaceID == active.workspaceID)
-
-    let dirtyFile = URL(fileURLWithPath: active.path).appendingPathComponent("dirty.txt")
-    try Data("not accepted\n".utf8).write(to: dirtyFile)
-    #expect(throws: CodexManagedWorktreeError.self) {
-      try CodexManagedWorktreeManager.planRemoval(
-        database: database,
-        sourceWorkspaceID: sourceWorkspaceID,
-        managedWorktreeID: active.id,
-        liveRuntimeStatus: .object(["runtimes": .array([])]),
-        managedRoot: managedRoot
-      )
-    }
-    try FileManager.default.removeItem(at: dirtyFile)
-    childLease = try CodexWorktreeLeaseManager.release(
-      database: database,
-      workspaceID: childLease.workspaceID,
-      leaseID: childLease.id,
-      expectedRevision: childLease.revision,
-      reason: "Child evidence reconciled."
-    )
-    #expect(childLease.state == .released)
-
-    var removalPlan = try CodexManagedWorktreeManager.planRemoval(
-      database: database,
-      sourceWorkspaceID: sourceWorkspaceID,
-      managedWorktreeID: active.id,
-      liveRuntimeStatus: .object(["runtimes": .array([])]),
-      managedRoot: managedRoot
-    )
-    if retryHostFailure {
-      await workspaceHost.setUnregisterAllowed(false)
-      await #expect(throws: (any Error).self) {
-        try await CodexManagedWorktreeManager.performRemoval(
-          database: database,
-          sourceWorkspaceID: sourceWorkspaceID, managedWorktreeID: active.id,
-          expectedRevision: removalPlan.revision, confirmRemoval: true,
-          workspaceHost: workspaceHost,
-          liveRuntimeStatus: .object(["runtimes": .array([])]), managedRoot: managedRoot)
-      }
-      let unfinished = try #require(try database.codexManagedWorktree(id: active.id))
-      #expect(unfinished.state == .removing)
-      #expect(!FileManager.default.fileExists(atPath: active.path))
-      #expect(await workspaceHost.record(id: active.workspaceID) != nil)
-      // A replacement path must never be treated as the already-removed worktree.
-      try FileManager.default.createDirectory(
-        atPath: active.path, withIntermediateDirectories: false)
-      #expect(throws: (any Error).self) {
-        try CodexManagedWorktreeManager.planRemoval(
-          database: database, sourceWorkspaceID: sourceWorkspaceID,
-          managedWorktreeID: active.id, liveRuntimeStatus: .object(["runtimes": .array([])]),
-          managedRoot: managedRoot)
-      }
-      try FileManager.default.removeItem(atPath: active.path)
-      await workspaceHost.setUnregisterAllowed(true)
-      removalPlan = try CodexManagedWorktreeManager.planRemoval(
-        database: database,
-        sourceWorkspaceID: sourceWorkspaceID, managedWorktreeID: active.id,
-        liveRuntimeStatus: .object(["runtimes": .array([])]), managedRoot: managedRoot)
-    }
-    let removed = try await CodexManagedWorktreeManager.performRemoval(
-      database: database,
-      sourceWorkspaceID: sourceWorkspaceID,
-      managedWorktreeID: active.id,
-      expectedRevision: removalPlan.revision,
-      confirmRemoval: true,
-      workspaceHost: workspaceHost,
-      liveRuntimeStatus: .object(["runtimes": .array([])]),
-      managedRoot: managedRoot
-    )
-    #expect(removed.state == .removed)
-    #expect(!FileManager.default.fileExists(atPath: active.path))
-    #expect(await workspaceHost.record(id: active.workspaceID) == nil)
-    let preservedBranch = try gitResult(
-      ["show-ref", "--verify", "--quiet", "refs/heads/codex/managed-child"],
-      in: repository
-    )
-    #expect(preservedBranch.exitCode == 0)
-  }
-
-  @Test
-  func failedHostRollbackPreservesTheOwnedGitWorktreeAndBranch() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    let repository = directory.appendingPathComponent("repository", isDirectory: true)
-    let managedRoot = directory.appendingPathComponent("managed", isDirectory: true)
-    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try runGit(["init", "-q"], in: repository)
-    try runGit(["config", "user.name", "Computer MCP Test"], in: repository)
-    try runGit(["config", "user.email", "computer-mcp@example.invalid"], in: repository)
-    try Data("baseline\n".utf8).write(to: repository.appendingPathComponent("README.md"))
-    try runGit(["add", "README.md"], in: repository)
-    try runGit(["commit", "-q", "-m", "test: baseline"], in: repository)
-
-    let database = try CodexDatabase(inMemory: ())
-    let sourceWorkspaceID = "source-workspace"
-    let workspaceHost = RecordingManagedWorkspaceHost()
-    let parent = try CodexWorktreeLeaseManager.acquire(
-      database: database,
-      workspaceID: sourceWorkspaceID,
-      workspaceURL: repository,
-      agentID: "parent-agent",
-      threadID: "parent-thread",
-      runID: nil,
-      parentLeaseID: nil,
-      branch: nil,
-      mode: .exclusive,
-      ttlSeconds: 900,
-      liveRuntimeStatus: .object(["runtimes": .array([])])
-    )
-
-    let plan = try CodexManagedWorktreeManager.planProvision(
-      database: database,
-      sourceWorkspaceID: sourceWorkspaceID,
-      sourceWorkspaceURL: repository,
-      profileID: "local-admin",
-      caller: "local-mcp",
-      agentID: "child-agent",
-      threadID: "child-thread",
-      runID: nil,
-      parentLeaseID: parent.id,
-      branch: "codex/managed-child",
-      startPoint: "HEAD",
-      ttlSeconds: 900,
-      managedRoot: managedRoot
-    )
-    #expect(plan.state == .planned)
-    #expect(!FileManager.default.fileExists(atPath: plan.path))
-
-    await workspaceHost.setRegisterFailureAfterSaving(true)
-    await workspaceHost.setUnregisterAllowed(false)
-    await #expect(throws: (any Error).self) {
-      try await CodexManagedWorktreeManager.performProvision(
-        database: database,
-        sourceWorkspaceID: sourceWorkspaceID, planID: plan.id, expectedRevision: plan.revision,
-        confirmProvision: true, workspaceHost: workspaceHost, managedRoot: managedRoot)
-    }
-    let failed = try #require(try database.codexManagedWorktree(id: plan.id))
-    #expect(failed.state == .failed)
-    #expect(failed.lastError?.contains("Recovery incomplete") == true)
-    #expect(FileManager.default.fileExists(atPath: plan.path))
-    #expect(await workspaceHost.record(id: plan.workspaceID) != nil)
-    let branch = try gitResult(
-      ["show-ref", "--verify", "refs/heads/" + plan.branch], in: repository)
-    #expect(branch.exitCode == 0)
-  }
-
-  @Test
-  func testRemovalNeverTargetsAnUnownedUserWorktree() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let database = try CodexDatabase(inMemory: ())
-
-    #expect(throws: CodexManagedWorktreeError.self) {
-      try CodexManagedWorktreeManager.planRemoval(
-        database: database,
-        sourceWorkspaceID: "source-workspace",
-        managedWorktreeID: "user-owned-worktree",
-        liveRuntimeStatus: .object(["runtimes": .array([])]),
-        managedRoot: directory.appendingPathComponent("managed", isDirectory: true)
-      )
-    }
-    #expect(FileManager.default.fileExists(atPath: directory.path))
-  }
-
-  @Test
-  func testRemovalRejectsAReceiptedPathReplacedBySymbolicLink() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    let repository = directory.appendingPathComponent("repository", isDirectory: true)
-    let managedRoot = directory.appendingPathComponent("managed", isDirectory: true)
-    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try runGit(["init", "-q"], in: repository)
-    try runGit(["config", "user.name", "Computer MCP Test"], in: repository)
-    try runGit(["config", "user.email", "computer-mcp@example.invalid"], in: repository)
-    try Data("baseline\n".utf8).write(to: repository.appendingPathComponent("README.md"))
-    try runGit(["add", "README.md"], in: repository)
-    try runGit(["commit", "-q", "-m", "test: baseline"], in: repository)
-
-    let database = try CodexDatabase(inMemory: ())
-    let sourceWorkspaceID = "source-workspace"
-    let workspaceHost = RecordingManagedWorkspaceHost()
-    let parent = try CodexWorktreeLeaseManager.acquire(
-      database: database,
-      workspaceID: sourceWorkspaceID,
-      workspaceURL: repository,
-      agentID: "parent-agent",
-      threadID: "parent-thread",
-      runID: nil,
-      parentLeaseID: nil,
-      branch: nil,
-      mode: .exclusive,
-      ttlSeconds: 900,
-      liveRuntimeStatus: .object(["runtimes": .array([])])
-    )
-    let plan = try CodexManagedWorktreeManager.planProvision(
-      database: database,
-      sourceWorkspaceID: sourceWorkspaceID,
-      sourceWorkspaceURL: repository,
-      profileID: "local-admin",
-      caller: "local-mcp",
-      agentID: "child-agent",
-      threadID: "child-thread",
-      runID: nil,
-      parentLeaseID: parent.id,
-      branch: "codex/symlink-boundary",
-      startPoint: "HEAD",
-      ttlSeconds: 900,
-      managedRoot: managedRoot
-    )
-    let active = try await CodexManagedWorktreeManager.performProvision(
-      database: database,
-      sourceWorkspaceID: sourceWorkspaceID,
-      planID: plan.id,
-      expectedRevision: plan.revision,
-      confirmProvision: true,
-      workspaceHost: workspaceHost,
-      managedRoot: managedRoot
-    )
-    let childLeaseID = try #require(active.leaseID)
-    var childLease = try #require(try database.codexWorktreeLease(id: childLeaseID))
-    childLease = try CodexWorktreeLeaseManager.release(
-      database: database,
-      workspaceID: childLease.workspaceID,
-      leaseID: childLease.id,
-      expectedRevision: childLease.revision,
-      reason: "Ready for removal validation."
-    )
-    #expect(childLease.state == .released)
-
-    let original = URL(fileURLWithPath: active.path, isDirectory: true)
-    let moved = directory.appendingPathComponent("moved-worktree", isDirectory: true)
-    try FileManager.default.moveItem(at: original, to: moved)
-    try FileManager.default.createSymbolicLink(at: original, withDestinationURL: moved)
-
-    #expect(throws: CodexManagedWorktreeError.self) {
-      try CodexManagedWorktreeManager.planRemoval(
-        database: database,
-        sourceWorkspaceID: sourceWorkspaceID,
-        managedWorktreeID: active.id,
-        liveRuntimeStatus: .object(["runtimes": .array([])]),
-        managedRoot: managedRoot
-      )
-    }
-    #expect(FileManager.default.fileExists(atPath: moved.path))
-  }
-
-  @Test
-  func testProvisionRollbackDoesNotDeleteBranchCreatedByAnotherWriter() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    let repository = directory.appendingPathComponent("repository", isDirectory: true)
-    let managedRoot = directory.appendingPathComponent("managed", isDirectory: true)
-    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try runGit(["init", "-q"], in: repository)
-    try runGit(["config", "user.name", "Computer MCP Test"], in: repository)
-    try runGit(["config", "user.email", "computer-mcp@example.invalid"], in: repository)
-    try Data("baseline\n".utf8).write(to: repository.appendingPathComponent("README.md"))
-    try runGit(["add", "README.md"], in: repository)
-    try runGit(["commit", "-q", "-m", "test: baseline"], in: repository)
-
-    let database = try CodexDatabase(inMemory: ())
-    let sourceWorkspaceID = "source-workspace"
-    let workspaceHost = RecordingManagedWorkspaceHost()
-    let parent = try CodexWorktreeLeaseManager.acquire(
-      database: database,
-      workspaceID: sourceWorkspaceID,
-      workspaceURL: repository,
-      agentID: "parent-agent",
-      threadID: "parent-thread",
-      runID: nil,
-      parentLeaseID: nil,
-      branch: nil,
-      mode: .exclusive,
-      ttlSeconds: 900,
-      liveRuntimeStatus: .object(["runtimes": .array([])])
-    )
-    let branch = "codex/concurrent-owner"
-    let plan = try CodexManagedWorktreeManager.planProvision(
-      database: database,
-      sourceWorkspaceID: sourceWorkspaceID,
-      sourceWorkspaceURL: repository,
-      profileID: "local-admin",
-      caller: "local-mcp",
-      agentID: "child-agent",
-      threadID: "child-thread",
-      runID: nil,
-      parentLeaseID: parent.id,
-      branch: branch,
-      startPoint: "HEAD",
-      ttlSeconds: 900,
-      commandRunner: BranchRaceCommandRunner(branch: branch),
-      managedRoot: managedRoot
-    )
-
+    let fixture = try WorktreeFixture()
+    let (id, request) = try fixture.plan()
+    await fixture.host.failCreation(as: state)
+    let outcome = try await fixture.performProvision(id, request: request)
+    #expect(outcome["state"] == .string(state == .failed ? "failed" : "provisioning"))
+    #expect(outcome["host_state"] == .string(state.rawValue))
+    let raw = try #require(outcome["host_response"]?.objectValue)
+    #expect(raw["isError"] == .bool(true))
+    #expect(raw["content"]?.arrayValue?.count == 1)
+    let envelope = raw["structuredContent"]?.objectValue?["result"]?.objectValue
+    #expect(envelope?["extension"] == .integer(9))
+    #expect(envelope?["error"]?.objectValue?["code"] == .string("permission.required"))
+    let pending = try #require(try fixture.source.hostWorktree(id: id, in: fixture.sourceScope))
+    #expect(pending.1?.response?.raw == .object(raw))
+    let revision = pending.0.revision
     await #expect(throws: CodexManagedWorktreeError.self) {
-      try await CodexManagedWorktreeManager.performProvision(
-        database: database,
-        sourceWorkspaceID: sourceWorkspaceID,
-        planID: plan.id,
-        expectedRevision: plan.revision,
-        confirmProvision: true,
-        workspaceHost: workspaceHost,
-        commandRunner: BranchRaceCommandRunner(branch: branch),
-        managedRoot: managedRoot
-      )
+      try await fixture.manager.perform(
+        id: id, action: .provision, revision: revision, arguments: request,
+        invocation: metadata(newIDs()))
     }
-    let branchResult = try gitResult(
-      ["show-ref", "--verify", "--quiet", "refs/heads/\(branch)"],
-      in: repository
-    )
-    #expect(branchResult.exitCode == 0)
+    #expect(await fixture.host.callbacks == ["inspect-invocation", "add"])
   }
 
-  private func runGit(_ arguments: [String], in directory: URL) throws {
-    let result = try gitResult(arguments, in: directory)
-    guard result.exitCode == 0 else {
-      throw CodexManagedWorktreeError.command(result.stderr)
+  @Test
+  func sqlSettlementFailureRecoversSameCreationWithoutRepeatingHostEffect() async throws {
+    let fixture = try WorktreeFixture()
+    let (id, request) = try fixture.plan()
+    let queue = try DatabaseQueue(path: fixture.sharedPath)
+    try await queue.write { database in
+      try database.execute(
+        sql: """
+          CREATE TRIGGER reject_child_settlement BEFORE UPDATE ON codexHostWorktrees
+          WHEN NEW.childProjectID IS NOT NULL
+          BEGIN SELECT RAISE(ABORT, 'fixture settlement failure'); END
+          """)
     }
+    let uncertain = try await fixture.performProvision(id, request: request)
+    #expect(uncertain["state"] == .string("provisioning"))
+    #expect(uncertain["host_state"] == .string("reserved"))
+    #expect(uncertain["uncertain_host_response"] != nil)
+    let pending = try #require(try fixture.source.hostWorktree(id: id, in: fixture.sourceScope))
+    let operation = try #require(pending.1)
+    #expect(operation.observedState == .reserved)
+    #expect(try fixture.child.hostWorktree(id: id, in: fixture.childScope) == nil)
+    try await queue.write { try $0.execute(sql: "DROP TRIGGER reject_child_settlement") }
+    let reopened = try CodexDatabase(
+      path: fixture.sourcePath, worktreeLeasePath: fixture.sharedPath)
+    let source = CodexHostWorktreeManager(
+      database: reopened, scope: fixture.sourceScope, services: fixture.host)
+    let resolved = try result(await source.read(pending.0, operation: operation))
+    #expect(resolved["state"] == .string("active"))
+    #expect(resolved["operation_id"] == .string(operation.ids.operationID.uuidString))
+    #expect(await fixture.host.callbacks == ["inspect-invocation", "add", "inspect-operation"])
   }
 
-  private func gitResult(_ arguments: [String], in directory: URL) throws -> CommandResult {
-    try ProcessCommandRunner().run(
-      executable: "/usr/bin/git",
-      arguments: arguments,
-      workingDirectory: directory,
-      environment: ["GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"],
-      timeoutMilliseconds: 10_000,
-      maxOutputBytes: 1_048_576
-    )
-  }
-}
-
-private final class BranchRaceCommandRunner: CommandRunning, @unchecked Sendable {
-  private let branch: String
-  private let runner = ProcessCommandRunner()
-  private let lock = NSLock()
-  private var injected = false
-
-  init(branch: String) {
-    self.branch = branch
-  }
-
-  func run(
-    executable: String,
-    arguments: [String],
-    workingDirectory: URL?,
-    environment: [String: String],
-    timeoutMilliseconds: Int,
-    maxOutputBytes: Int
-  ) throws -> CommandResult {
-    lock.lock()
-    let shouldInject =
-      !injected && executable == "/usr/bin/git" && arguments.starts(with: ["worktree", "add"])
-    if shouldInject {
-      injected = true
+  @Test
+  func lostChildRemovalReplyIsRecoverableFromTheSource() async throws {
+    let fixture = try WorktreeFixture()
+    let (id, request) = try fixture.plan()
+    let created = try await fixture.performProvision(id, request: request)
+    let leaseID = try #require(created["lease"]?.objectValue?["lease_id"]?.stringValue)
+    let lease = try #require(try fixture.child.codexWorktreeLease(id: leaseID))
+    try fixture.release(lease, in: fixture.child)
+    #expect(throws: CodexManagedWorktreeError.self) {
+      try fixture.manager.planRemoval(id: id, force: true)
     }
-    lock.unlock()
-
-    if shouldInject, let workingDirectory {
-      let create = try runner.run(
-        executable: executable,
-        arguments: ["branch", branch, "HEAD"],
-        workingDirectory: workingDirectory,
-        environment: environment,
-        timeoutMilliseconds: timeoutMilliseconds,
-        maxOutputBytes: maxOutputBytes
-      )
-      guard create.exitCode == 0 else { return create }
-      return CommandResult(
-        executable: executable,
-        arguments: arguments,
-        exitCode: 128,
-        timedOut: false,
-        stdout: "",
-        stderr: "fatal: a concurrent writer created the branch",
-        stdoutTruncated: false,
-        stderrTruncated: false
-      )
+    let plan = try fixture.childManager.planRemoval(id: id, force: true)
+    let arguments = try #require(plan.objectValue?["perform_arguments"]?.objectValue)
+    let revision = try #require(arguments["expected_revision"]?.intValue)
+    let ids = newIDs()
+    var changed = arguments
+    changed["force"] = .bool(false)
+    await #expect(throws: CodexManagedWorktreeError.self) {
+      try await fixture.childManager.perform(
+        id: id, action: .remove, revision: revision, arguments: changed, invocation: metadata(ids))
     }
-    return try runner.run(
-      executable: executable,
-      arguments: arguments,
-      workingDirectory: workingDirectory,
-      environment: environment,
-      timeoutMilliseconds: timeoutMilliseconds,
-      maxOutputBytes: maxOutputBytes
-    )
+    #expect(throws: CodexWorktreeLeaseError.self) {
+      try fixture.acquire(
+        in: fixture.child, scope: fixture.childScope, agent: "racer", parent: fixture.parent.id)
+    }
+    let digest = try CodexHostInvocation.digest(arguments)
+    await fixture.host.capture(digest, action: .remove)
+    await fixture.host.loseNextRemovalReply()
+    let removal = try await fixture.childManager.perform(
+      id: id, action: .remove, revision: revision, arguments: arguments, invocation: metadata(ids))
+    #expect(removal.isError == true)
+    #expect(try result(removal)["state"] == .string("removing"))
+    let recovered = try #require(try fixture.source.hostWorktree(id: id, in: fixture.sourceScope))
+    #expect(recovered.1?.ids == ids)
+    let settled = try result(await fixture.manager.read(recovered.0, operation: recovered.1))
+    #expect(settled["state"] == .string("removed"))
+    #expect(settled["operation_id"] == .string(ids.operationID.uuidString))
+    #expect(
+      await fixture.host.callbacks.suffix(3) == [
+        "inspect-invocation", "remove", "inspect-operation",
+      ])
   }
 
-  func runData(
-    executable: String,
-    arguments: [String],
-    workingDirectory: URL?,
-    environment: [String: String],
-    timeoutMilliseconds: Int,
-    maxOutputBytes: Int
-  ) throws -> CommandDataResult {
-    try runner.runData(
-      executable: executable,
-      arguments: arguments,
-      workingDirectory: workingDirectory,
-      environment: environment,
-      timeoutMilliseconds: timeoutMilliseconds,
-      maxOutputBytes: maxOutputBytes
-    )
+  @Test
+  func foreignInventoryDoesNotCreateLineage() async throws {
+    let fixture = try WorktreeFixture()
+    let listed = try await fixture.manager.list(
+      history: [], limit: 10, invocation: metadata(newIDs(), list: true))
+    let payload = try result(listed)
+    let inventory = payload["host_response"]?.objectValue?["structuredContent"]?
+      .objectValue?["result"]?.objectValue?["worktrees"]?.arrayValue
+    #expect(inventory?.count == 1)
+    #expect(payload["worktrees"] == .array([]))
+    #expect(throws: CodexWorktreeLeaseError.self) {
+      try fixture.acquire(
+        in: fixture.child, scope: fixture.childScope, agent: "child", parent: fixture.parent.id)
+    }
   }
 }
 
-private actor RecordingManagedWorkspaceHost: CodexManagedWorkspaceHost {
-  private var records: [String: CodexManagedWorktree] = [:]
-  private var removalAllowed = true
-  private var unregisterAllowed = true
-  private var registerFailureAfterSaving = false
-  func setRegisterFailureAfterSaving(_ value: Bool) { registerFailureAfterSaving = value }
-  func setUnregisterAllowed(_ value: Bool) { unregisterAllowed = value }
+private final class WorktreeFixture: Sendable {
+  let root: URL
+  let sourcePath: String
+  let sharedPath: String
+  let source: CodexDatabase
+  let child: CodexDatabase
+  let sourceScope: CodexProjectScope
+  let childScope: CodexProjectScope
+  let host: FixtureProjectServices
+  let parent: CodexWorktreeLease
+  let childPath: String
 
-  func setRemovalAllowed(_ allowed: Bool) { removalAllowed = allowed }
+  init() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    self.root = root
+    sourcePath = root.appendingPathComponent("source.sqlite").path
+    sharedPath = root.appendingPathComponent("leases.sqlite").path
+    source = try CodexDatabase(path: sourcePath, worktreeLeasePath: sharedPath)
+    child = try CodexDatabase(
+      path: root.appendingPathComponent("child.sqlite").path, worktreeLeasePath: sharedPath)
+    sourceScope = try #require(CodexProjectScope(worktreeOwner(project: "source")))
+    childScope = try #require(CodexProjectScope(worktreeOwner(project: "child")))
+    childPath = root.appendingPathComponent("checkout").path
+    host = FixtureProjectServices(db: source, source: sourceScope, childPath: childPath)
+    parent = try CodexWorktreeLeaseManager.acquire(
+      database: source, workspaceID: sourceScope.projectID, workspaceURL: root,
+      agentID: "source-agent", threadID: nil, runID: nil, parentLeaseID: nil, branch: nil,
+      mode: .exclusive, ttlSeconds: 900, liveRuntimeStatus: .object([:]), scope: sourceScope)
+  }
 
-  func authorizeRemoval(_ worktree: CodexManagedWorktree) throws {
-    guard removalAllowed else {
-      throw CodexManagedWorktreeError.state("Fixture host denied removal.")
-    }
-    guard records[worktree.workspaceID]?.id == worktree.id else {
-      throw CodexManagedWorktreeError.state("Fixture removal ownership mismatch.")
+  deinit { try? FileManager.default.removeItem(at: root) }
+
+  var manager: CodexHostWorktreeManager {
+    .init(database: source, scope: sourceScope, services: host)
+  }
+  var childManager: CodexHostWorktreeManager {
+    .init(database: child, scope: childScope, services: host)
+  }
+
+  func owner(project: String, principal: String = "principal") -> CodexRuntimeOwner {
+    worktreeOwner(project: project, principal: principal)
+  }
+
+  func provider() -> CodexAppServerProvider {
+    .init(
+      appServer: FakeAppServerRuntime(), owner: owner(project: "source"), database: source,
+      workspaceURL: root, recentThreadReader: nil, localControlAllowed: true, projectServices: host)
+  }
+
+  func plan() throws -> (String, [String: JSONValue]) {
+    let plan = try manager.planProvision(
+      selection: .init(["name": .string("example"), "base": .null]),
+      agentID: "child-agent", threadID: nil, runID: nil, parentLeaseID: parent.id, ttlSeconds: 900)
+    return (
+      try #require(plan.objectValue?["id"]?.stringValue),
+      try #require(plan.objectValue?["perform_arguments"]?.objectValue)
+    )
+  }
+
+  func performProvision(_ id: String, request: [String: JSONValue]) async throws
+    -> [String: JSONValue]
+  {
+    let digest = try CodexHostInvocation.digest(request)
+    await host.capture(digest, action: .provision)
+    return try result(
+      await manager.perform(
+        id: id, action: .provision, revision: 1, arguments: request, invocation: metadata(newIDs()))
+    )
+  }
+
+  func acquire(
+    in database: CodexDatabase, scope: CodexProjectScope, agent: String, parent: String? = nil
+  )
+    throws -> CodexWorktreeLease
+  {
+    try CodexWorktreeLeaseManager.acquire(
+      database: database, workspaceID: scope.projectID,
+      workspaceURL: URL(fileURLWithPath: childPath),
+      agentID: agent, threadID: nil, runID: nil, parentLeaseID: parent, branch: nil,
+      mode: parent == nil ? .exclusive : .isolatedWorktree,
+      ttlSeconds: 900, liveRuntimeStatus: .object([:]), scope: scope)
+  }
+
+  func release(_ lease: CodexWorktreeLease, in database: CodexDatabase) throws {
+    _ = try CodexWorktreeLeaseManager.release(
+      database: database, workspaceID: lease.workspaceID, leaseID: lease.id,
+      expectedRevision: lease.revision, reason: "reviewed")
+  }
+}
+
+private actor FixtureProjectServices: CodexProjectServices {
+  private let db: CodexDatabase
+  private let source: CodexProjectScope
+  private let childPath: String
+  nonisolated let worktreeID = UUID()
+  private var digest = ""
+  private var action: CodexWorktreeAction = .provision
+  private var lostRemovalReply = false
+  private var creationFailure: CodexHostWorktreeState?
+  private var outcomes: [UUID: JSONValue] = [:]
+  private(set) var callbacks: [String] = []
+  private(set) var selection: CodexWorktreeSelection?
+
+  init(db: CodexDatabase, source: CodexProjectScope, childPath: String) {
+    self.db = db
+    self.source = source
+    self.childPath = childPath
+  }
+
+  func capture(_ digest: String, action: CodexWorktreeAction) {
+    self.digest = digest
+    self.action = action
+  }
+
+  func loseNextRemovalReply() { lostRemovalReply = true }
+  func failCreation(as state: CodexHostWorktreeState) { creationFailure = state }
+
+  func validateContract() {}
+
+  func describe(_ inspection: CodexProjectInspection) throws -> CodexHostToolResponse {
+    switch inspection {
+    case .invocation(let id):
+      callbacks.append("inspect-invocation")
+      let pending = try db.hostWorktrees(in: source, limit: 20).first {
+        $0.state == action.pendingState
+      }
+      let worktree = try #require(pending)
+      let operation = try #require(try db.hostWorktree(id: worktree.id, in: source)?.1)
+      #expect(operation.ids.invocationID == id)
+      return reply(
+        .object([
+          "format_version": .integer(1), "invocation_id": .string(id.uuidString),
+          "principal_id": .string(source.principalID), "profile_id": .string(source.profileID),
+          "project_id": .string(operation.selectedProjectID),
+          "tool": .string(action.tool), "host_action": .string(action.rawValue),
+          "arguments_digest": .string(digest),
+          "operation": envelope(operation.ids, result: .null, state: "reserved"),
+        ]))
+    case .operation(let id):
+      callbacks.append("inspect-operation")
+      return reply(try #require(outcomes[id]))
     }
   }
 
-  func registerDerivedWorkspace(_ worktree: CodexManagedWorktree, now: Date) throws {
-    guard worktree.sourceWorkspaceID == "source-workspace",
-      worktree.profileID == "local-admin", worktree.caller == "local-mcp"
-    else {
-      throw CodexManagedWorktreeError.state("Fixture source binding mismatch.")
+  func add(_ selection: CodexWorktreeSelection, ids: CodexHostOperationIDs)
+    -> CodexHostToolResponse
+  {
+    callbacks.append("add")
+    self.selection = selection
+    if let creationFailure {
+      let error: JSONValue = .object([
+        "code": .string("permission.required"), "message": .string("fixture host refused"),
+      ])
+      let failed = envelope(ids, result: .null, state: creationFailure.rawValue, error: error)
+      outcomes[ids.operationID] = failed
+      return .init(
+        raw: .object([
+          "content": .array([
+            .object(["type": .string("text"), "text": .string("fixture refusal")])
+          ]),
+          "structuredContent": .object(["result": failed]), "isError": .bool(true),
+        ]))
     }
-    records[worktree.workspaceID] = worktree
-    if registerFailureAfterSaving {
-      throw CodexManagedWorktreeError.state("Fixture registration acknowledgement failed.")
-    }
+    return complete(
+      ids,
+      [
+        "worktree_id": .string(worktreeID.uuidString), "project_id": .string("child"),
+        "path": .string(childPath), "branch": .string(selection.expectedBranch),
+        "base": .string(selection.explicitBase ?? "captured-main"), "warnings": .array([]),
+      ])
   }
 
-  func unregisterDerivedWorkspace(_ worktree: CodexManagedWorktree, now: Date) throws {
-    guard unregisterAllowed else {
-      throw CodexManagedWorktreeError.state("Fixture unregister failed after Git removal.")
+  func remove(force: Bool, ids: CodexHostOperationIDs) throws -> CodexHostToolResponse {
+    callbacks.append("remove")
+    #expect(force)
+    let result = complete(
+      ids,
+      [
+        "worktree_id": .string(worktreeID.uuidString), "project_id": .string("child"),
+        "branch": .string("worktree/example"), "oid": .string(String(repeating: "a", count: 40)),
+        "termination_warnings": .array([]),
+      ])
+    if lostRemovalReply {
+      lostRemovalReply = false
+      throw MCPError.connectionClosed
     }
-    guard let registered = records[worktree.workspaceID] else { return }
-    guard registered.id == worktree.id, registered.path == worktree.path,
-      registered.sourceWorkspaceID == worktree.sourceWorkspaceID
-    else {
-      throw CodexManagedWorktreeError.state("Fixture registration ownership mismatch.")
-    }
-    records.removeValue(forKey: worktree.workspaceID)
+    return result
   }
 
-  func record(id: String) -> CodexManagedWorktree? { records[id] }
+  func list(invocationID: UUID) -> CodexHostToolResponse {
+    reply(.object(["worktrees": .array([.object(["owner": .string("foreign")])])]))
+  }
+
+  private func complete(_ ids: CodexHostOperationIDs, _ fields: [String: JSONValue])
+    -> CodexHostToolResponse
+  {
+    let completed = envelope(ids, result: .object(fields), state: "completed")
+    outcomes[ids.operationID] = completed
+    return reply(completed)
+  }
+
+  private func envelope(
+    _ ids: CodexHostOperationIDs, result: JSONValue, state: String, error: JSONValue = .null
+  ) -> JSONValue {
+    .object(
+      ids.arguments.merging([
+        "action": .string(action.rawValue), "source_project_id": .string(source.projectID),
+        "project_id": .string(action == .provision ? source.projectID : "child"),
+        "state": .string(state), "result": result, "error": error, "extension": .integer(9),
+      ]) { current, _ in current })
+  }
+
+  private func reply(_ fields: JSONValue) -> CodexHostToolResponse {
+    .init(
+      raw: .object([
+        "content": .array([]), "isError": .bool(false),
+        "structuredContent": .object(["result": fields]),
+      ]))
+  }
+}
+
+private func worktreeOwner(project: String, principal: String = "principal") -> CodexRuntimeOwner {
+  .init(
+    workspaceID: project, profileID: "profile", caller: "local-mcp", transport: nil,
+    socketConnectionID: nil, tunnelInstanceID: nil, tunnelProfileID: nil, principalID: principal)
+}
+
+private func newIDs() -> CodexHostOperationIDs { .init(invocationID: UUID(), operationID: UUID()) }
+
+private func metadata(_ ids: CodexHostOperationIDs, list: Bool = false) throws
+  -> CodexHostInvocation
+{
+  var fields: [String: MCP.Value] = [
+    CodexHostInvocation.invocationKey: .string(ids.invocationID.uuidString)
+  ]
+  if !list { fields[CodexHostInvocation.operationKey] = .string(ids.operationID.uuidString) }
+  return try CodexHostInvocation(.init(additionalFields: fields))
+}
+
+private func call(
+  _ client: MCP.Client, _ tool: String, _ args: [String: JSONValue],
+  ids: CodexHostOperationIDs? = nil
+) async throws -> MCP.CallTool.Result {
+  let args = try JSONDecoder().decode([String: MCP.Value].self, from: JSONEncoder().encode(args))
+  let meta = ids.map {
+    MCP.Metadata(additionalFields: [
+      CodexHostInvocation.invocationKey: .string($0.invocationID.uuidString),
+      CodexHostInvocation.operationKey: .string($0.operationID.uuidString),
+    ])
+  }
+  let request: RequestContext<MCP.CallTool.Result> = try await client.callTool(
+    name: tool, arguments: args, meta: meta)
+  return try await request.value
+}
+
+private func result(_ reply: MCP.CallTool.Result) throws -> [String: JSONValue] {
+  let value = try JSONDecoder().decode(
+    JSONValue.self, from: JSONEncoder().encode(reply.structuredContent))
+  return try #require(value.objectValue?["result"]?.objectValue)
 }
 
 private func withMCPClient(
-  provider: CodexAppServerProvider,
-  body: (MCP.Client) async throws -> Void
+  _ provider: CodexAppServerProvider, body: (MCP.Client) async throws -> Void
 ) async throws {
   let pair = await InMemoryTransport.createConnectedPair()
   try await pair.server.connect()
@@ -788,18 +549,4 @@ private func withMCPClient(
     _ = try? await serving.value
     throw error
   }
-}
-
-private func invoke(
-  _ client: MCP.Client, _ name: String, _ arguments: [String: MCP.Value] = [:]
-) async throws -> MCP.Value {
-  let pending = try await client.send(MCP.CallTool.request(.init(name: name, arguments: arguments)))
-  let response = try await pending.value
-  try #require(response.isError == false, "\(name): \(response.content)")
-  let result = try #require(response.structuredContent?.objectValue?["result"])
-  guard case .text(let text, _, _) = response.content.first else {
-    throw CodexToolError.executionFailed("Missing MCP text result.")
-  }
-  #expect(try JSONDecoder().decode(MCP.Value.self, from: Data(text.utf8)) == result)
-  return result
 }

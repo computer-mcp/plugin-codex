@@ -6,29 +6,41 @@ struct CodexLaunchContext: Sendable {
   let workspaceURL: URL
   let owner: CodexRuntimeOwner
   let localControlAllowed: Bool
-  let managedWorktreeRoot: URL?
+  let managedProjectRoot: URL?
+  let hostServiceContract: String?
 
   init(environment: [String: String], currentDirectory: URL) throws {
     if let text = environment["COMPUTER_MCP_HOST_CONTEXT"] {
       guard text.utf8.count <= 16_384,
-        let host = try? JSONDecoder().decode(Host.self, from: Data(text.utf8)),
-        host.formatVersion == 1,
-        !host.workspace.id.isEmpty, !host.profileID.isEmpty, !host.caller.isEmpty,
-        Self.isAbsolutePath(host.workspace.rootPath), !host.workspace.rootPath.contains("\0")
+        let fields = try? JSONDecoder().decode([String: JSONValue].self, from: Data(text.utf8)),
+        fields["formatVersion"] == .integer(1)
       else {
         throw ConfigurationError.invalid("Invalid Computer MCP launch context.")
       }
-      workspaceURL = URL(fileURLWithPath: host.workspace.rootPath).standardizedFileURL
-      if let root = host.managedWorkspaceRoot {
+      let marker = fields["hostServiceContract"]?.stringValue
+      guard marker == CodexProjectContract.identifier else {
+        throw CodexProjectContract.Unsupported(observed: marker)
+      }
+      guard
+        let host = try? JSONDecoder().decode(Host.self, from: Data(text.utf8)),
+        host.formatVersion == 1,
+        !host.project.id.isEmpty, !host.profileID.isEmpty, !host.caller.isEmpty,
+        Self.isAbsolutePath(host.project.rootPath), !host.project.rootPath.contains("\0")
+      else {
+        throw ConfigurationError.invalid("Invalid Computer MCP launch context.")
+      }
+      hostServiceContract = marker
+      workspaceURL = URL(fileURLWithPath: host.project.rootPath).standardizedFileURL
+      if let root = host.managedProjectRoot {
         guard Self.isAbsolutePath(root), root.utf8.count <= 16_384, !root.contains("\0") else {
-          throw ConfigurationError.invalid("Invalid host-owned managed workspace root.")
+          throw ConfigurationError.invalid("Invalid host-owned managed project root.")
         }
-        managedWorktreeRoot = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
+        managedProjectRoot = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
       } else {
-        managedWorktreeRoot = nil
+        managedProjectRoot = nil
       }
       owner = CodexRuntimeOwner(
-        workspaceID: host.workspace.id, profileID: host.profileID, caller: host.caller,
+        workspaceID: host.project.id, profileID: host.profileID, caller: host.caller,
         transport: host.transportTrace?.transport,
         socketConnectionID: host.transportTrace?.socketConnectionID,
         tunnelInstanceID: host.transportTrace?.tunnelInstanceID,
@@ -36,7 +48,8 @@ struct CodexLaunchContext: Sendable {
       localControlAllowed = ["local-app", "local-cli", "local-mcp"].contains(host.caller)
     } else {
       workspaceURL = currentDirectory.standardizedFileURL
-      managedWorktreeRoot = nil
+      managedProjectRoot = nil
+      hostServiceContract = nil
       let identity = SHA256.hash(data: Data(workspaceURL.path.utf8))
         .map { String(format: "%02x", $0) }.joined()
       owner = CodexRuntimeOwner(
@@ -112,7 +125,7 @@ struct CodexLaunchContext: Sendable {
       owner: owner, database: database, workspaceURL: workspaceURL,
       recentThreadReader: .live(),
       localControlAllowed: localControlAllowed,
-      workspaceHost: hostServices, managedWorktreeRoot: managedWorktreeRoot,
+      projectServices: hostServices,
       configuredSandbox: configuration.sandbox, hostDiagnostics: hostServices,
       unboundStateAvailable: unboundStateAvailable, threadOwnerIndex: threadOwnerIndex)
   }
@@ -143,7 +156,7 @@ struct CodexLaunchContext: Sendable {
   }
 
   private struct Host: Decodable {
-    struct Workspace: Decodable {
+    struct Project: Decodable {
       let id: String
       let rootPath: String
     }
@@ -152,8 +165,8 @@ struct CodexLaunchContext: Sendable {
     let caller: String
     let profileID: String
     let principalID: String?
-    let workspace: Workspace
-    let managedWorkspaceRoot: String?
+    let project: Project
+    let managedProjectRoot: String?
     let transportTrace: TransportTrace?
     struct TransportTrace: Decodable {
       let transport: String
