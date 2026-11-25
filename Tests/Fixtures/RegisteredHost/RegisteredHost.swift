@@ -5,8 +5,10 @@ import ComputerMCPMacOS
 import ComputerMCPPermissions
 import ComputerMCPPlatform
 import ComputerMCPPlugins
+import ComputerMCPTransport
 import Darwin
 import Foundation
+import MCP
 
 @main
 struct RegisteredHost {
@@ -22,20 +24,32 @@ struct RegisteredHost {
     case "app-server":
       try runPeer()
     case "register", "serve":
-      guard arguments.count == 2 else { throw FixtureError.invalidArguments }
+      guard arguments.count == 2 || (arguments.count == 4 && arguments[0] == "serve")
+      else { throw FixtureError.invalidArguments }
       let root = URL(fileURLWithPath: arguments[1], isDirectory: true).resolvingSymlinksInPath()
-      try await run(root: root, register: arguments[0] == "register")
+      let observer: StdioTransport?
+      if arguments.count == 4 {
+        guard let input = Int32(arguments[2]), let output = Int32(arguments[3]),
+          input > STDERR_FILENO, output > STDERR_FILENO, input != output,
+          fcntl(input, F_SETFD, FD_CLOEXEC) == 0, fcntl(output, F_SETFD, FD_CLOEXEC) == 0
+        else { throw FixtureError.invalidArguments }
+        observer = StdioTransport(input: .init(rawValue: input), output: .init(rawValue: output))
+      } else {
+        observer = nil
+      }
+      try await run(root: root, register: arguments[0] == "register", observer: observer)
     default:
       throw FixtureError.invalidArguments
     }
   }
 
-  private static func run(root: URL, register: Bool) async throws {
+  private static func run(root: URL, register: Bool, observer: StdioTransport?) async throws {
     let database = try GatewayDatabase(path: root.appendingPathComponent("host.sqlite").path)
     _ = database.permissionStore(
       counter: FixtureEpochCounter(file: root.appendingPathComponent("fixture-epoch.json")))
-    var platform = MacOSPlatform.services
-    platform.permissionPolicyReader = FixturePolicySources()
+    var services = MacOSPlatform.services
+    services.permissionPolicyReader = FixturePolicySources()
+    let platform = services
     let store = PluginStore(database: database, platform: platform)
     let configuration = try GatewayConfiguration.load(
       path: root.appendingPathComponent("host.toml").path,
@@ -51,15 +65,122 @@ struct RegisteredHost {
         configuration: configuration)
       return
     }
+    let primary = try await makeGateway(
+      database: database, platform: platform, configuration: configuration)
+    if let observer {
+      let secondaryGateway = try await makeGateway(
+        database: database, platform: platform, configuration: configuration, role: "observer")
+      async let secondary: Void = serve(
+        secondaryGateway, root: root, configuration: configuration,
+        permissionRuntime: permissionRuntime, role: "observer", transport: observer)
+      try await serve(
+        primary, root: root, configuration: configuration,
+        permissionRuntime: permissionRuntime, role: "acceptance")
+      try await secondary
+    } else {
+      try await serve(
+        primary, root: root, configuration: configuration, permissionRuntime: permissionRuntime)
+    }
+  }
+
+  private static func makeGateway(
+    database: GatewayDatabase, platform: PlatformServices, configuration: GatewayConfiguration,
+    role: String? = nil
+  ) async throws -> GatewayRuntime {
+    let profile = role.flatMap { GatewayProfileID(rawValue: $0) } ?? configuration.runtime.profileID
     let context = ExecutionContext(
-      caller: configuration.runtime.caller, profileID: configuration.runtime.profileID,
+      caller: configuration.runtime.caller, profileID: profile,
       projectID: configuration.runtime.defaultProjectID,
       transportTrace: .init(transport: "stdio", socketConnectionID: UUID().uuidString),
-      trustedPrincipalID: "registered-codex-fixture")
-    let gateway = try await GatewayRuntime.make(
+      trustedPrincipalID: role == "observer"
+        ? "registered-codex-observer" : "registered-codex-fixture")
+    return try await GatewayRuntime.make(
       configuration: configuration, context: context, database: database, platform: platform,
       bundledPlugins: .init(packages: [], issues: []))
-    try await MCPRuntimeAdapter.runStdioGateway(configuration: configuration, registry: gateway)
+  }
+
+  private static func serve(
+    _ gateway: GatewayRuntime, root: URL, configuration: GatewayConfiguration,
+    permissionRuntime: GatewayPermissionRuntime, role: String? = nil,
+    transport: StdioTransport? = nil
+  ) async throws {
+    let control = role.map { role in
+      Task {
+        do {
+          guard let profile = GatewayProfileID(rawValue: role)
+          else { throw FixtureError.invalidArguments }
+          try await waitForRevocation(
+            root: root, role: role, profile: profile, permissionRuntime: permissionRuntime)
+        } catch is CancellationError {
+        } catch {
+          let receipt = root.appendingPathComponent("revoke-\(role).json")
+          let details = try JSONSerialization.data(withJSONObject: [
+            "error": String(describing: error)
+          ])
+          try details.write(to: receipt, options: .atomic)
+        }
+      }
+    }
+    defer { control?.cancel() }
+    if let transport {
+      let server = await MCPRuntimeAdapter.makeGatewayServer(
+        configuration: configuration, registry: gateway)
+      do {
+        try await server.start(transport: MCPInitializeNormalizationTransport(wrapping: transport))
+        await server.waitUntilCompleted()
+      } catch {
+        await gateway.shutdown()
+        throw error
+      }
+      await gateway.shutdown()
+    } else {
+      try await MCPRuntimeAdapter.runStdioGateway(configuration: configuration, registry: gateway)
+    }
+  }
+
+  private static func owner() throws -> GatewayPermissionOwner {
+    try GatewayPermissionOwner(
+      context: .init(
+        caller: .localApp, profileID: .localAdmin, trustedPrincipalID: "fixture-owner"),
+      validate: {})
+  }
+
+  private static func waitForRevocation(
+    root: URL, role: String, profile: GatewayProfileID, permissionRuntime: GatewayPermissionRuntime
+  ) async throws {
+    let trigger = root.appendingPathComponent("revoke-\(role)")
+    while !FileManager.default.fileExists(atPath: trigger.path) {
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    try Task.checkCancellation()
+    let owner = try owner()
+    let service = permissionRuntime.service
+    let before = try service.view(owner: owner)
+    let revoked: RevocationResult
+    if role == "acceptance" {
+      revoked = try service.revokePermission(
+        .plugin("codex"), profileID: profile, owner: owner, expectedRevision: before.revision)
+    } else {
+      let identity = PluginIdentity.package("codex")
+      guard let approval = before.providers.first(where: { $0.identity == identity })
+      else { throw FixtureError.invalidRegistration }
+      revoked = try service.revokeProvider(
+        identity, owner: owner, expectedProviderRevision: approval.revision,
+        expectedRevision: before.revision)
+    }
+    try await permissionRuntime.coordinator.reconcile()
+    let after = try service.view(owner: owner)
+    let disabled =
+      role == "acceptance"
+      ? after.profiles.first(where: { $0.id == profile })?.permissions.entries[.plugin("codex")]
+        == .denied
+      : after.providers.first(where: { $0.identity == .package("codex") })?.enabled == false
+    guard disabled else { throw FixtureError.invalidRegistration }
+    try JSONSerialization.data(withJSONObject: [
+      "epoch": after.epoch?.uuidString ?? "", "before_revision": before.revision,
+      "after_revision": after.revision,
+      "executions": revoked.executionsToTerminate.map(\.uuidString).sorted(),
+    ]).write(to: trigger.appendingPathExtension("json"), options: .atomic)
   }
 
   private static func registerPlugin(
@@ -85,10 +206,7 @@ struct RegisteredHost {
     settings.mcp["app-server"]?.args = ["--config", configFile.path]
     _ = try await store.setSettings(settings, for: "codex", expectedRevision: registered.revision)
 
-    let owner = try GatewayPermissionOwner(
-      context: .init(
-        caller: .localApp, profileID: .localAdmin, trustedPrincipalID: "fixture-owner"),
-      validate: {})
+    let owner = try owner()
     let view = try permissionRuntime.service.view(owner: owner)
     guard let epoch = view.epoch else { throw FixtureError.missingEpoch }
     let review = try GatewayProviderReview(
@@ -112,6 +230,7 @@ struct RegisteredHost {
     let receipt = [
       "home": container.home.value, "cache": container.cache.value, "state": container.state.value,
       "config": configFile.path, "manifest_digest": review.sourceDigest,
+      "provider_revision": String(approval.revision), "authorization_epoch": epoch.uuidString,
     ]
     print(String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self))
   }
@@ -167,6 +286,13 @@ struct RegisteredHost {
           ],
         ])
       case "thread/loaded/list":
+        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let edit = directory.appendingPathComponent("fixture-edit-request")
+        if FileManager.default.fileExists(atPath: edit.path) {
+          try "edited by the registered peer\n".write(
+            to: directory.appendingPathComponent("fixture-edit.txt"), atomically: true,
+            encoding: .utf8)
+        }
         let queued = home.appendingPathComponent("queued.json")
         if FileManager.default.fileExists(atPath: queued.path),
           let callback = try JSONSerialization.jsonObject(with: Data(contentsOf: queued))

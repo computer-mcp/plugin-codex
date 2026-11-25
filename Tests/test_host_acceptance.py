@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -38,14 +39,67 @@ class HostAcceptanceTests(unittest.TestCase):
         self.assertEqual(parsed.mode, "fixture")
         self.assertFalse(parsed.output_directory.exists())
 
-    def test_container_mode_requires_only_the_registered_fixture_and_adapter(self):
-        arguments = self.arguments[:-4] + self.arguments[-2:] + ["--mode", "container"]
+    def container_arguments(self, revision):
+        return ["--mode", "container", "--host-source", str(self.root),
+                "--plugin-revision", revision, "--archive", str(self.executable),
+                "--receipt", str(self.executable), "--output-directory", str(self.root / "output")]
+
+    def test_container_mode_requires_pinned_source_and_release_archive(self):
+        arguments = self.container_arguments("a" * 40)
         options = acceptance.parse_arguments(arguments)
+        self.assertEqual(options.host_source, self.root)
+        self.assertIsNone(options.host)
+        self.assertIsNone(options.adapter)
         self.assertIsNone(options.codex)
         self.assertFalse(options.output_directory.exists())
         self.invalid(self.arguments + ["--mode", "container"])
         self.invalid(arguments + ["--model", "unused"])
-        self.invalid(arguments[:-2] + ["--mode", "fixture"])
+        self.invalid(arguments + ["--host", str(self.executable)])
+        self.invalid(arguments[0:2] + arguments[4:])
+        self.invalid(self.container_arguments("main"))
+        self.invalid(self.container_arguments("a" * 39))
+        self.invalid(self.container_arguments("0" * 40))
+
+    def test_pin_rejects_missing_malformed_or_mismatched_source_before_build(self):
+        with patch.object(acceptance, "HOST_PIN", self.root / "host.sha"), \
+                patch.object(acceptance, "checked_revision") as checkout:
+            options = acceptance.parse_arguments(self.container_arguments("a" * 40))
+            with self.assertRaises(FileNotFoundError):
+                acceptance.prepare_pinned_host(options)
+            acceptance.HOST_PIN.write_text("master\n")
+            with self.assertRaisesRegex(ValueError, "full 40-character"):
+                acceptance.prepare_pinned_host(options)
+            checkout.assert_not_called()
+            acceptance.HOST_PIN.write_text("b" * 40 + "\n")
+            checkout.side_effect = AssertionError("mismatched Host")
+            with self.assertRaisesRegex(AssertionError, "mismatched Host"):
+                acceptance.prepare_pinned_host(options)
+            checkout.assert_called_once_with(self.root, "b" * 40, "Host")
+            self.assertFalse(options.output_directory.exists())
+
+    def test_host_revision_checks_actual_clean_checkout(self):
+        checkout = self.root / "host"
+        checkout.mkdir()
+
+        def git(*arguments):
+            return subprocess.check_output(["/usr/bin/git", "-C", str(checkout), *arguments], text=True).strip()
+
+        git("init", "-q")
+        manifest = checkout / "Package.swift"
+        manifest.write_text("Host source")
+        git("add", ".")
+        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture")
+        revision = git("rev-parse", "HEAD")
+        self.assertEqual(acceptance.checked_revision(checkout, revision, "Host"), revision)
+        with self.assertRaisesRegex(AssertionError, "differs from required"):
+            acceptance.checked_revision(checkout, "f" * 40, "Host")
+        for dirty_file in (checkout / "untracked", manifest):
+            dirty_file.write_text("Changed source")
+            with self.assertRaisesRegex(AssertionError, "checkout must be clean"):
+                acceptance.checked_revision(checkout, revision, "Host")
+            if dirty_file != manifest:
+                dirty_file.unlink()
 
     def test_full_requires_explicit_authentication_and_model(self):
         self.invalid(self.arguments)
@@ -93,6 +147,26 @@ class HostAcceptanceTests(unittest.TestCase):
                         {"structuredContent": {"result": {"isError": True}}}):
             with self.assertRaises(RuntimeError):
                 acceptance.unwrap(failure, indirect="structuredContent" in failure)
+
+    def test_removal_observations_wait_on_the_same_bound_pending_operation(self):
+        pending = {"id": "fixture", "project_id": "child", "source_project_id": "primary",
+                   "operation_id": "91807494-d50c-4d89-9e0a-d17b608ecf66",
+                   "state": "removing", "host_state": "reserved", "observation_error": "Temporarily unavailable"}
+
+        def reply(payload, error=False):
+            return {"isError": error, "structuredContent": {"result": payload}}
+
+        operation, completed = acceptance.observe_worktree_removal(reply(pending, True), "fixture", "child", None)
+        self.assertIsNone(completed)
+        removed = dict(pending, state="removed", host_state="completed", observation_error=None)
+        self.assertEqual(acceptance.observe_worktree_removal(reply(removed), "fixture", "child", operation),
+                         (operation, removed))
+        for change in ({"project_id": "sibling"}, {"host_state": "recovery_required"},
+                       {"operation_id": "0447fad0-a4cb-4c82-9bcd-357be8f3d37b"}):
+            with self.assertRaises(AssertionError):
+                acceptance.observe_worktree_removal(reply(dict(pending, **change), True), "fixture", "child", operation)
+        with self.assertRaises(RuntimeError):
+            acceptance.observe_worktree_removal(reply(removed, True), "fixture", "child", operation)
 
     def test_archive_requires_success_or_exact_missing_rollout_identity(self):
         success = {"structuredContent": {"result": {}}}

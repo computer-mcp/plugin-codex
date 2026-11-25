@@ -97,37 +97,49 @@ and catalog notification are separate jobs.
 
 ### Runtime acceptance
 
-Use macOS, Python 3.11 or newer, Git and the verified release archive. Record
-both source revisions and the executable digests. Run the ordinary checks in
-[Contributing](../../CONTRIBUTING.md) first.
+Use macOS, Swift, Python 3.12 or newer and Git. CI builds the release archive
+and runs registered Host acceptance before it uploads the candidate. To run
+the same check locally, use a clean Computer MCP checkout at the full commit
+in [the Host pin](../../.github/computer-mcp-host.sha), a clean plugin checkout,
+and the ZIP and receipt from that plugin candidate:
 
 ```sh
-python3 scripts/check-package.py --archive <archive.zip> --receipt <receipt.json> \
-  --destination .build/accepted-package
-python3 scripts/check-workflow.py \
-  --adapter "$PWD/.build/accepted-package/bin/codex-mcp-adapter" \
-  --codex /absolute/path/to/codex
 python3 scripts/check-host.py \
-  --host /absolute/path/to/CodexRegisteredHost \
-  --adapter "$PWD/.build/accepted-package/bin/codex-mcp-adapter" \
-  --output-directory "$PWD/.build/host-container-acceptance" \
-  --mode container
+  --mode container \
+  --host-source /absolute/path/to/computer-mcp \
+  --plugin-revision "$(git rev-parse HEAD)" \
+  --archive "$PWD/dist/codex-plugin-macos-arm64.zip" \
+  --receipt "$PWD/dist/receipt.json" \
+  --output-directory "$PWD/.build/host-acceptance"
 ```
 
-`check-workflow.py` exercises the relocated adapter through standard MCP with
-an isolated home and fixed loopback model, covering native approvals, turns,
-cancellation, reconnection and owned-process cleanup. It does not establish
-real model authentication.
+The driver checks both Git checkouts, exports Host source into the new output
+directory, and builds the registered fixture and execution bootstrap against
+the committed Host dependency lock. It verifies and relocates the ZIP before
+registering it in the disposable Host database. The report in
+`runtime/report.json` identifies both source commits, the archive, the
+executables and the authorization revisions. The driver uses a deterministic vendor peer with network access
+disabled. Through standard MCP it verifies project and caller binding, Host
+worktree creation and removal, persisted state across restart, and caller and
+provider revocation. The restart check confirms that a dead runtime receipt
+grants no live authority and uses the adapter's stale-record cleanup when
+needed. Rerun the gate after changing either source revision.
 
-`check-host.py` registers the package in a disposable host database and approves
-the selected provider and caller permissions before serving standard MCP over
-stdio. Use a new output directory. Container mode verifies injected storage
-across two host and adapter launches, an allowed project file callback, refusal
-to redirect a callback to a sibling project, and peer descriptor isolation.
-It uses a deterministic vendor peer and omits authentication and model calls.
+`check-workflow.py` can separately exercise native approvals, turns,
+cancellation, reconnection and owned-process cleanup through standard MCP
+using an isolated home and a fixed loopback response:
 
-Full mode additionally takes `--codex`, `--auth-file` and `--model`. It needs a
-vendor file-store login authorized for the selected model.
+```sh
+python3 scripts/check-workflow.py \
+  --adapter "$PWD/.build/host-acceptance/relocated/bin/codex-mcp-adapter" \
+  --codex /absolute/path/to/codex
+```
+
+Native modes take the relocated adapter via `--adapter`, the fixture executable
+produced by container mode via `--host`, and installed Codex via `--codex`.
+Keep the adjacent execution bootstrap and SwiftPM build output available until
+the fixture finishes. Full mode additionally takes `--auth-file` and `--model`.
+It needs a vendor file-store login authorized for the selected model.
 The supplied `auth.json` is copied with mode `0600` into the private vendor home
 and deleted on exit; the original is never changed. Keychain-only credentials
 are not imported. The real-model checks make bounded text-only App Server and
@@ -161,42 +173,6 @@ Pure driver logic and argument validation run without a host or vendor:
 ```sh
 python3 -m unittest discover -s Tests -p 'test_host_acceptance.py' -v
 ```
-
-#### Build the registered host fixture
-
-Build this fixture with the selected Computer MCP source revision on macOS.
-The fixture uses the host's plugin store, provider review, permission service,
-sandbox launcher and standard MCP gateway. Its authorization watermark and
-managed policy source are confined to the fixture. It also serves the
-deterministic App Server peer used by `check-host.py --mode container`.
-
-From the plugin checkout, set `host_source` to the selected host checkout,
-`host_revision` to its full commit SHA, and `stage` to a new absolute path in
-ignored build output. Record the host and plugin commit SHAs with the report.
-
-```sh
-test "$(git -C "$host_source" rev-parse HEAD)" = "$host_revision"
-mkdir -p "$stage/registered-host"
-git -C "$host_source" archive "$host_revision" | tar -xf - -C "$stage/registered-host"
-mkdir "$stage/registered-host/Tests/CodexRegisteredHost"
-cp Tests/Fixtures/RegisteredHost/RegisteredHost.swift "$stage/registered-host/Tests/CodexRegisteredHost/"
-cat >>"$stage/registered-host/Package.swift" <<'SWIFT'
-
-package.targets.append(.executableTarget(
-  name: "CodexRegisteredHost",
-  dependencies: [
-    "ComputerMCPConfiguration", "ComputerMCPCore", "ComputerMCPGateway", "ComputerMCPMacOS",
-    "ComputerMCPPermissions", "ComputerMCPPlatform", "ComputerMCPPlugins",
-  ],
-  path: "Tests/CodexRegisteredHost"
-))
-SWIFT
-swift build --package-path "$stage/registered-host" --product CodexRegisteredHost
-swift build --package-path "$stage/registered-host" --product computer-mcp-execution-bootstrap
-```
-
-Pass the resulting `CodexRegisteredHost` executable to `check-host.py --host`.
-Keep the SwiftPM build output alongside it until the fixture has finished.
 
 ### Publish
 
