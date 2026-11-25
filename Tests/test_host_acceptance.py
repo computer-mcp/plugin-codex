@@ -154,7 +154,8 @@ class HostAcceptanceTests(unittest.TestCase):
                    "state": "removing", "host_state": "reserved", "observation_error": "Temporarily unavailable"}
 
         def reply(payload, error=False):
-            return {"isError": error, "structuredContent": {"result": payload}}
+            plugin = {"isError": error, "structuredContent": {"result": payload}}
+            return {"isError": False, "structuredContent": {"result": plugin}}
 
         operation, completed = acceptance.observe_worktree_removal(reply(pending, True), "fixture", "child", None)
         self.assertIsNone(completed)
@@ -167,6 +168,44 @@ class HostAcceptanceTests(unittest.TestCase):
                 acceptance.observe_worktree_removal(reply(dict(pending, **change), True), "fixture", "child", operation)
         with self.assertRaises(RuntimeError):
             acceptance.observe_worktree_removal(reply(removed, True), "fixture", "child", operation)
+
+    def test_removal_observation_retries_only_source_gateway_configuration_change(self):
+        operation = acceptance.uuid.UUID("91807494-d50c-4d89-9e0a-d17b608ecf66")
+
+        def reply(code="configuration.changed", project="primary", capability="mcp.tools.call"):
+            return {"isError": True, "structuredContent": {
+                "error": {"code": code, "message": "The gateway configuration changed during preparation."},
+                "gateway_execution": {"project_id": project, "capability_id": capability},
+            }}
+
+        host = object.__new__(acceptance.Host)
+        tool = "codex.worktree.managed.read"
+        selector = {"managed_worktree_id": "fixture"}
+        host.indirect, host.workspace = True, "primary"
+        host.catalog = {tool: {"inputSchema": {"properties": {"managed_worktree_id": {"type": "string"}}}}}
+        host.client = Mock()
+        host.client.send.return_value = reply()
+        observation = host.raw(tool, selector, gateway_envelope=True)
+        host.client.send.assert_called_once_with("tools/call", {
+            "name": "mcp.tools.call", "arguments": {
+                "server": "codex", "tool": tool, "project_id": "primary", "arguments": selector,
+            },
+        }, timeout=None)
+        self.assertEqual(acceptance.observe_worktree_removal(observation, "fixture", "child", operation),
+                         (operation, None))
+        self.assertEqual(acceptance.observe_worktree_removal(observation, "fixture", "child", None),
+                         (None, None))
+        with self.assertRaises(RuntimeError):
+            host.raw(tool, selector)
+
+        for rejected in (reply(code="permission.denied"), reply(code="gateway.execution_failed"),
+                         reply(project="sibling"), reply(capability="mcp.tools.list"),
+                         {"isError": True, "structuredContent": {"error": {"code": "configuration.changed"}}}):
+            with self.subTest(response=rejected), self.assertRaises(RuntimeError):
+                acceptance.observe_worktree_removal(rejected, "fixture", "child", operation)
+        nested = {"structuredContent": {"result": reply()}}
+        with self.assertRaises(AssertionError):
+            acceptance.observe_worktree_removal(nested, "fixture", "child", operation)
 
     def test_archive_requires_success_or_exact_missing_rollout_identity(self):
         success = {"structuredContent": {"result": {}}}

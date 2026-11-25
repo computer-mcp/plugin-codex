@@ -197,6 +197,17 @@ def unwrap(result, indirect=False):
 
 
 def observe_worktree_removal(result, worktree_id, project, operation_id):
+    if isinstance(result, dict) and result.get("isError") is True:
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            error = structured.get("error")
+            execution = structured.get("gateway_execution")
+            # The removal can invalidate the Host's project snapshot during read admission.
+            if (isinstance(error, dict) and error.get("code") == "configuration.changed"
+                    and isinstance(execution, dict) and execution.get("capability_id") == "mcp.tools.call"
+                    and execution.get("project_id") == "primary" and "result" not in structured):
+                return operation_id, None
+    result = unwrap(result)
     current = result.get("structuredContent", {}).get("result")
     require(isinstance(current, dict) and current["id"] == worktree_id
             and current["project_id"] == project and current["source_project_id"] == "primary", result)
@@ -425,12 +436,12 @@ class Host:
         self.workspace = project
         self.catalog = self.project_catalog()
 
-    def raw(self, name, arguments=None, timeout=None):
+    def raw(self, name, arguments=None, timeout=None, *, gateway_envelope=False):
         name = name if name.startswith("codex.") else "codex.app." + name
         arguments = arguments or {}
         require(set(arguments) <= self.catalog[name]["inputSchema"]["properties"].keys(), {"tool": name, "undeclared_inputs": sorted(set(arguments) - self.catalog[name]["inputSchema"]["properties"].keys())})
         result = self.dispatch(name, arguments, timeout)
-        return unwrap(result) if self.indirect else result
+        return unwrap(result) if self.indirect and not gateway_envelope else result
 
     def dispatch(self, name, arguments=None, timeout=None):
         arguments = arguments or {}
@@ -1025,7 +1036,7 @@ path = {q(str(self.root / name))}
 
             def observe_removal():
                 nonlocal removal_id
-                observation = host.raw("codex.worktree.managed.read", selector)
+                observation = host.raw("codex.worktree.managed.read", selector, gateway_envelope=True)
                 removal_id, completed = observe_worktree_removal(observation, worktree_id, project, removal_id)
                 return completed
 
