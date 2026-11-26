@@ -35,14 +35,15 @@ final class CodexProcessEnvironmentTests {
 
   @Test
   func managedVendorHomeMatchesReaderAndChildEnvironment() {
+    let fixtureHome = "/tmp/container/home"
     var base = [
       "COMPUTER_MCP_HOST_CONTEXT": "fixture",
-      "HOME": "/tmp/container/home",
+      "HOME": fixtureHome,
       "XDG_STATE_HOME": "/tmp/container/state",
     ]
     for explicit in [nil, "/tmp/configured-codex-home"] as [String?] {
       base["CODEX_HOME"] = explicit
-      let expected = explicit ?? "/tmp/container/home/.codex"
+      let expected = explicit ?? "\(fixtureHome)/.codex"
       let child = CodexProcessEnvironment.resolved(base: base, systemProxy: .init())
       #expect(child["CODEX_HOME"] == expected)
       #expect(CodexProcessEnvironment.vendorHome(in: base).path == expected)
