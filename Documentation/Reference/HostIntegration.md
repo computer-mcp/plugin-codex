@@ -66,6 +66,21 @@ Native approval responses bind to the original SDK server request and can be
 consumed once. The host applies its own authorization and confirmation to
 callbacks.
 
+### Codex network access
+
+The package requests outbound access to `api.openai.com` and `chatgpt.com` for
+the default Codex model endpoints and `auth.openai.com` for OpenAI sign-in.
+The custom list uses exact hostnames and excludes the Host's trusted-host list.
+Host Full access is off by default.
+
+The list is the maximum the package requests for sandboxed execution. At
+enablement the owner reviews the declaration and can select less access within
+the Host's policy limits. An update that adds network access requires fresh
+owner approval before the added access applies. For an enterprise deployment
+with a different provider or issuer, verify its endpoints against that
+deployment's configuration and review any declaration change through the same
+Host flow.
+
 ## Host worktrees
 
 Codex stores reviewed selections and writer leases. Computer MCP owns creation,

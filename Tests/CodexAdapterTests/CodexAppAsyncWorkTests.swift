@@ -4,13 +4,13 @@ import Testing
 @testable import CodexAdapter
 
 struct CodexAppAsyncWorkTests {
-  @Test
-  func nativeLoginAcknowledgementEnrichesTheSameOwnedLifetime() throws {
+  @Test(arguments: ["chatgpt", "chatgptDeviceCode"])
+  func nativeLoginAcknowledgementEnrichesTheSameOwnedLifetime(type: String) throws {
     var work = CodexAppAsyncWork()
     let creator = UUID()
     let ticket = try CodexWorkInvocation.$current.withValue(creator) {
       try work.prepare(
-        method: "account/login/start", params: .object(["type": .string("chatgpt")]),
+        method: "account/login/start", params: .object(["type": .string(type)]),
         generation: 1)
     }
     let pending = try #require(work.workResources().first)

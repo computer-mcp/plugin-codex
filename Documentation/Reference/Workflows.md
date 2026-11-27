@@ -15,6 +15,33 @@ by the runtime; do not substitute upstream thread IDs for local handles.
 | Operational diagnostics | `codex.diagnostics.snapshot`, with optional bounded `limit` |
 | Exec | `codex.exec.start` / `resume`; inspect `list` / `events` / `result`; `cancel` while running; `release` after cleanup |
 
+## Sign in to registered Codex
+
+Use the same registered App Server runtime for the account calls and events.
+Prepend the registration's configured prefix to each tool name when present.
+
+1. Call `codex.app.native.account.read` to check the current account.
+2. To sign in, call `codex.app.native.account.login.start` with
+   `{"params":{"type":"chatgpt"}}` for browser sign-in or
+   `{"params":{"type":"chatgptDeviceCode"}}` for device-code sign-in. Keep the
+   returned `loginId`.
+3. The account owner completes the vendor confirmation. Open `authUrl` for
+   browser sign-in, or open `verificationUrl` and enter the returned `userCode`
+   for device-code sign-in.
+4. Read `codex.app.events.read` for `account/login/completed` with the matching
+   `loginId`. Check `success` and any `error`, then call
+   `codex.app.native.account.read` again to verify the account.
+
+Codex stores the sign-in state in the registered provider's private vendor
+home. Browser sign-in needs Codex to bind a local callback listener, which can
+fail in the registered sandbox even with approved outbound access. Device-code
+sign-in uses outbound requests and depends on the vendor making it available
+for the account. If App Server rejects the start request, the adapter surfaces
+the native error as `codex.app.request_failed`. After an accepted start, a
+failed completion is reported in the matching notification. Use the vendor
+error and the runtime's [reviewed network access](HostIntegration.md#codex-network-access)
+to diagnose the failure on that installation.
+
 ## Native coding configuration
 
 Exec start accepts `prompt` and optional `model` and `options`; resume accepts
