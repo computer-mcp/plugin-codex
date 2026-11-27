@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/check-host.py"
 spec = importlib.util.spec_from_file_location("host_acceptance", SCRIPT)
@@ -147,6 +147,43 @@ class HostAcceptanceTests(unittest.TestCase):
                         {"structuredContent": {"result": {"isError": True}}}):
             with self.assertRaises(RuntimeError):
                 acceptance.unwrap(failure, indirect="structuredContent" in failure)
+
+    def test_directory_errors_with_expected_cwd_stop_before_apps(self):
+        fixture = acceptance.Fixture(acceptance.parse_arguments(self.arguments + ["--mode", "fixture"]))
+        cwd = str(fixture.root / "primary")
+        error = {"path": cwd + "/skills", "message": "Failed to synchronize managed preferences"}
+        with patch.object(acceptance, "Host") as host:
+            host.return_value.method.return_value = {"data": [{"cwd": cwd, "skills": [], "errors": [error]}]}
+            with self.assertRaisesRegex(
+                AssertionError, "skills/list.*Failed to synchronize managed preferences",
+            ) as failure:
+                fixture.directories()
+        self.assertIn(error["path"], str(failure.exception))
+        host.return_value.method.assert_called_once_with(
+            "skills/list", {"cwds": [cwd], "forceReload": False}, timeout=35,
+        )
+        self.assertEqual(fixture.steps, [])
+
+    def test_directory_results_without_errors_continue_to_apps(self):
+        fixture = acceptance.Fixture(acceptance.parse_arguments(self.arguments + ["--mode", "fixture"]))
+        cwd = str(fixture.root / "primary")
+        skill = {"name": "fixture", "description": "Acceptance skill", "enabled": True,
+                 "path": cwd + "/skills/fixture/SKILL.md", "scope": "user"}
+        for skills in ([], [skill]):
+            with self.subTest(skills=skills), patch.object(acceptance, "Host") as host, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                host.return_value.method.side_effect = [
+                    {"data": [{"cwd": cwd, "skills": skills, "errors": []}]},
+                    {"data": []},
+                ]
+                fixture.directories()
+                self.assertEqual(host.return_value.method.call_args_list, [
+                    call("skills/list", {"cwds": [cwd], "forceReload": False}, timeout=35),
+                    call("app/list", {"limit": 1, "forceRefetch": False}, timeout=125),
+                ])
+                host.return_value.processes.assert_called_once_with()
+                host.return_value.close.assert_called_once_with()
+        self.assertEqual(fixture.steps, ["skills-explicit-directory-and-app-list-deadlines"] * 2)
 
     def test_removal_observations_wait_on_the_same_bound_pending_operation(self):
         pending = {"id": "fixture", "project_id": "child", "source_project_id": "primary",

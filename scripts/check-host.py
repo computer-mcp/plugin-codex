@@ -753,10 +753,16 @@ path = {q(str(self.root / name))}
 
     def directories(self):
         host = Host(self)
+        cwd = str(self.root / "primary")
         started = time.monotonic()
-        skills = host.method("skills/list", {"cwds": [str(self.root / "primary")], "forceReload": False}, timeout=35)
+        skills = host.method("skills/list", {"cwds": [cwd], "forceReload": False}, timeout=35)
         require(time.monotonic() - started < 30, "skills/list exceeded normal deadline")
-        require(len(skills["data"]) == 1 and skills["data"][0]["cwd"] == str(self.root / "primary"), skills)
+        require(len(skills["data"]) == 1 and skills["data"][0]["cwd"] == cwd, skills)
+        errors = skills["data"][0].get("errors")
+        require(
+            errors == [],
+            f"skills/list expected no directory errors for {cwd}, got {json.dumps(errors, ensure_ascii=False)}",
+        )
         started = time.monotonic()
         apps = host.method("app/list", {"limit": 1, "forceRefetch": False}, timeout=125)
         require(time.monotonic() - started < 120 and len(apps["data"]) <= 1, apps)
