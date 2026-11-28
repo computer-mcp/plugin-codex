@@ -427,6 +427,7 @@ class Host:
                 "Generic dispatch lacks project selection")
 
     def project_catalog(self):
+        self.fixture.last_tool_call = {"tool": "mcp.tools.list", "project_id": self.workspace}
         tools = unwrap(self.client.send("tools/call", {
             "name": "mcp.tools.list", "arguments": {"server": "codex", "project_id": self.workspace},
         }))
@@ -450,6 +451,7 @@ class Host:
                       "project_id": self.workspace, "arguments": arguments}}
         else:
             params = {"name": name, "arguments": dict(arguments, project_id=self.workspace)}
+        self.fixture.last_tool_call = {"tool": name, "project_id": self.workspace}
         return self.client.send("tools/call", params, timeout=timeout)
 
     def call(self, name, arguments=None, timeout=None):
@@ -540,6 +542,7 @@ class Fixture:
         self.options, self.root = options, options.output_directory.resolve()
         self.root.mkdir(mode=0o700, parents=True)
         self.hosts, self.pids, self.threads, self.steps = [], set(), set(), []
+        self.last_tool_call = None
         self.generation = 0
         self.model = None
         self.model_log = None
@@ -1366,6 +1369,7 @@ def run(options, provenance=None):
     except Exception as error:
         report["failure"] = str(error)
     finally:
+        last_tool_call = fixture.last_tool_call
         report["cleanup_errors"] = []
         try:
             (fixture.home / "auth.json").unlink(missing_ok=True)
@@ -1387,6 +1391,8 @@ def run(options, provenance=None):
             report["binary_digests_unchanged"] = False
             report["cleanup_errors"].append(f"Binary digest verification: {error}")
         report["passed"] = report["passed"] and not report["cleanup_errors"] and report["binary_digests_unchanged"]
+        if options.mode == "container" and not report["passed"] and last_tool_call is not None:
+            report["last_tool_call"] = last_tool_call
         (fixture.root / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"passed": report["passed"], "mode": options.mode,
                       "authenticated_model_verified": report["authenticated_model_verified"],

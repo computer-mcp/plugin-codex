@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, call, patch
 
@@ -148,6 +149,51 @@ class HostAcceptanceTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 acceptance.unwrap(failure, indirect="structuredContent" in failure)
 
+    def test_registered_report_keeps_last_tool_call_before_cleanup_on_failure(self):
+        project = "derived-fixture-project"
+        steps = ["host-created-associated-worktree", "restarted-without-live-runtime-authority-or-reported-work"]
+        failure = {"isError": True, "structuredContent": {
+            "error": {"code": "gateway.execution_failed", "message": "Client disconnected"},
+        }}
+        cases = (
+            ("codex.app.thread.loaded.list", failure, 1),
+            ("mcp.tools.list", failure, 1),
+            ("mcp.tools.list", {"structuredContent": {"result": []}}, 0),
+        )
+        for index, (tool, response, status) in enumerate(cases):
+            with self.subTest(tool=tool, status=status):
+                arguments = self.container_arguments("a" * 40)
+                arguments[-1] = str(self.root / f"output-{index}")
+                options = acceptance.parse_arguments(arguments)
+                fixture = acceptance.Fixture(options)
+                fixture.steps.extend(steps)
+                host = object.__new__(acceptance.Host)
+                host.fixture, host.indirect, host.workspace = fixture, True, project
+                host.catalog = {tool: {"inputSchema": {"properties": {}}}}
+                host.client = Mock(send=Mock(side_effect=[response, {}]))
+                operation = host.project_catalog if tool == "mcp.tools.list" else lambda: host.call("thread.loaded.list")
+
+                def cleanup():
+                    host.dispatch("codex.diagnostics.snapshot")
+                    return []
+
+                with patch.object(acceptance, "Fixture", return_value=fixture), \
+                        patch.object(fixture, "setup"), \
+                        patch.object(fixture, "registered_container", side_effect=operation), \
+                        patch.object(fixture, "cleanup", side_effect=cleanup), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(acceptance.run(options), status)
+
+                report = json.loads((fixture.root / "report.json").read_text())
+                self.assertEqual(fixture.last_tool_call["tool"], "codex.diagnostics.snapshot")
+                self.assertEqual(report["passed"], status == 0)
+                self.assertEqual(report["steps"], steps)
+                if status:
+                    self.assertEqual(report["failure"], json.dumps(failure, ensure_ascii=False))
+                    self.assertEqual(report["last_tool_call"], {"tool": tool, "project_id": project})
+                else:
+                    self.assertNotIn("last_tool_call", report)
+
     def test_directory_errors_with_expected_cwd_stop_before_apps(self):
         fixture = acceptance.Fixture(acceptance.parse_arguments(self.arguments + ["--mode", "fixture"]))
         cwd = str(fixture.root / "primary")
@@ -216,6 +262,7 @@ class HostAcceptanceTests(unittest.TestCase):
             }}
 
         host = object.__new__(acceptance.Host)
+        host.fixture = SimpleNamespace()
         tool = "codex.worktree.managed.read"
         selector = {"managed_worktree_id": "fixture"}
         host.indirect, host.workspace = True, "primary"
