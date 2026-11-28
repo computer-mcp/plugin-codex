@@ -57,7 +57,7 @@ struct CodexAppServerMethod: Equatable, Sendable {
         "type": .string("object"), "properties": .object(["result": .object([:])]),
         "required": .array([.string("result")]), "additionalProperties": .bool(false),
       ]),
-      _meta: .init(additionalFields: ["io.github.computer-mcp/risk": .string(risk.rawValue)]))
+      _meta: .init(additionalFields: ["io.github.computer-mcp/risk": .string(risk.hostValue)]))
   }
 }
 

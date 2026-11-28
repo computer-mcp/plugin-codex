@@ -5,9 +5,11 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/check-host.py"
 spec = importlib.util.spec_from_file_location("host_acceptance", SCRIPT)
@@ -37,6 +39,68 @@ class HostAcceptanceTests(unittest.TestCase):
         self.assertEqual(parsed.host, self.executable)
         self.assertEqual(parsed.mode, "fixture")
         self.assertFalse(parsed.output_directory.exists())
+
+    def container_arguments(self, revision):
+        return ["--mode", "container", "--host-source", str(self.root),
+                "--plugin-revision", revision, "--archive", str(self.executable),
+                "--receipt", str(self.executable), "--output-directory", str(self.root / "output")]
+
+    def test_container_mode_requires_pinned_source_and_release_archive(self):
+        arguments = self.container_arguments("a" * 40)
+        options = acceptance.parse_arguments(arguments)
+        self.assertEqual(options.host_source, self.root)
+        self.assertIsNone(options.host)
+        self.assertIsNone(options.adapter)
+        self.assertIsNone(options.codex)
+        self.assertFalse(options.output_directory.exists())
+        self.invalid(self.arguments + ["--mode", "container"])
+        self.invalid(arguments + ["--model", "unused"])
+        self.invalid(arguments + ["--host", str(self.executable)])
+        self.invalid(arguments[0:2] + arguments[4:])
+        self.invalid(self.container_arguments("main"))
+        self.invalid(self.container_arguments("a" * 39))
+        self.invalid(self.container_arguments("0" * 40))
+
+    def test_pin_rejects_missing_malformed_or_mismatched_source_before_build(self):
+        with patch.object(acceptance, "HOST_PIN", self.root / "host.sha"), \
+                patch.object(acceptance, "checked_revision") as checkout:
+            options = acceptance.parse_arguments(self.container_arguments("a" * 40))
+            with self.assertRaises(FileNotFoundError):
+                acceptance.prepare_pinned_host(options)
+            acceptance.HOST_PIN.write_text("master\n")
+            with self.assertRaisesRegex(ValueError, "full 40-character"):
+                acceptance.prepare_pinned_host(options)
+            checkout.assert_not_called()
+            acceptance.HOST_PIN.write_text("b" * 40 + "\n")
+            checkout.side_effect = AssertionError("mismatched Host")
+            with self.assertRaisesRegex(AssertionError, "mismatched Host"):
+                acceptance.prepare_pinned_host(options)
+            checkout.assert_called_once_with(self.root, "b" * 40, "Host")
+            self.assertFalse(options.output_directory.exists())
+
+    def test_host_revision_checks_actual_clean_checkout(self):
+        checkout = self.root / "host"
+        checkout.mkdir()
+
+        def git(*arguments):
+            return subprocess.check_output(["/usr/bin/git", "-C", str(checkout), *arguments], text=True).strip()
+
+        git("init", "-q")
+        manifest = checkout / "Package.swift"
+        manifest.write_text("Host source")
+        git("add", ".")
+        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture")
+        revision = git("rev-parse", "HEAD")
+        self.assertEqual(acceptance.checked_revision(checkout, revision, "Host"), revision)
+        with self.assertRaisesRegex(AssertionError, "differs from required"):
+            acceptance.checked_revision(checkout, "f" * 40, "Host")
+        for dirty_file in (checkout / "untracked", manifest):
+            dirty_file.write_text("Changed source")
+            with self.assertRaisesRegex(AssertionError, "checkout must be clean"):
+                acceptance.checked_revision(checkout, revision, "Host")
+            if dirty_file != manifest:
+                dirty_file.unlink()
 
     def test_full_requires_explicit_authentication_and_model(self):
         self.invalid(self.arguments)
@@ -84,6 +148,148 @@ class HostAcceptanceTests(unittest.TestCase):
                         {"structuredContent": {"result": {"isError": True}}}):
             with self.assertRaises(RuntimeError):
                 acceptance.unwrap(failure, indirect="structuredContent" in failure)
+
+    def test_registered_report_keeps_last_tool_call_before_cleanup_on_failure(self):
+        project = "derived-fixture-project"
+        steps = ["host-created-associated-worktree", "restarted-without-live-runtime-authority-or-reported-work"]
+        failure = {"isError": True, "structuredContent": {
+            "error": {"code": "gateway.execution_failed", "message": "Client disconnected"},
+        }}
+        cases = (
+            ("codex.app.thread.loaded.list", failure, 1),
+            ("mcp.tools.list", failure, 1),
+            ("mcp.tools.list", {"structuredContent": {"result": []}}, 0),
+        )
+        for index, (tool, response, status) in enumerate(cases):
+            with self.subTest(tool=tool, status=status):
+                arguments = self.container_arguments("a" * 40)
+                arguments[-1] = str(self.root / f"output-{index}")
+                options = acceptance.parse_arguments(arguments)
+                fixture = acceptance.Fixture(options)
+                fixture.steps.extend(steps)
+                host = object.__new__(acceptance.Host)
+                host.fixture, host.indirect, host.workspace = fixture, True, project
+                host.catalog = {tool: {"inputSchema": {"properties": {}}}}
+                host.client = Mock(send=Mock(side_effect=[response, {}]))
+                operation = host.project_catalog if tool == "mcp.tools.list" else lambda: host.call("thread.loaded.list")
+
+                def cleanup():
+                    host.dispatch("codex.diagnostics.snapshot")
+                    return []
+
+                with patch.object(acceptance, "Fixture", return_value=fixture), \
+                        patch.object(fixture, "setup"), \
+                        patch.object(fixture, "registered_container", side_effect=operation), \
+                        patch.object(fixture, "cleanup", side_effect=cleanup), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(acceptance.run(options), status)
+
+                report = json.loads((fixture.root / "report.json").read_text())
+                self.assertEqual(fixture.last_tool_call["tool"], "codex.diagnostics.snapshot")
+                self.assertEqual(report["passed"], status == 0)
+                self.assertEqual(report["steps"], steps)
+                if status:
+                    self.assertEqual(report["failure"], json.dumps(failure, ensure_ascii=False))
+                    self.assertEqual(report["last_tool_call"], {"tool": tool, "project_id": project})
+                else:
+                    self.assertNotIn("last_tool_call", report)
+
+    def test_directory_errors_with_expected_cwd_stop_before_apps(self):
+        fixture = acceptance.Fixture(acceptance.parse_arguments(self.arguments + ["--mode", "fixture"]))
+        cwd = str(fixture.root / "primary")
+        error = {"path": cwd + "/skills", "message": "Failed to synchronize managed preferences"}
+        with patch.object(acceptance, "Host") as host:
+            host.return_value.method.return_value = {"data": [{"cwd": cwd, "skills": [], "errors": [error]}]}
+            with self.assertRaisesRegex(
+                AssertionError, "skills/list.*Failed to synchronize managed preferences",
+            ) as failure:
+                fixture.directories()
+        self.assertIn(error["path"], str(failure.exception))
+        host.return_value.method.assert_called_once_with(
+            "skills/list", {"cwds": [cwd], "forceReload": False}, timeout=35,
+        )
+        self.assertEqual(fixture.steps, [])
+
+    def test_directory_results_without_errors_continue_to_apps(self):
+        fixture = acceptance.Fixture(acceptance.parse_arguments(self.arguments + ["--mode", "fixture"]))
+        cwd = str(fixture.root / "primary")
+        skill = {"name": "fixture", "description": "Acceptance skill", "enabled": True,
+                 "path": cwd + "/skills/fixture/SKILL.md", "scope": "user"}
+        for skills in ([], [skill]):
+            with self.subTest(skills=skills), patch.object(acceptance, "Host") as host, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                host.return_value.method.side_effect = [
+                    {"data": [{"cwd": cwd, "skills": skills, "errors": []}]},
+                    {"data": []},
+                ]
+                fixture.directories()
+                self.assertEqual(host.return_value.method.call_args_list, [
+                    call("skills/list", {"cwds": [cwd], "forceReload": False}, timeout=35),
+                    call("app/list", {"limit": 1, "forceRefetch": False}, timeout=125),
+                ])
+                host.return_value.processes.assert_called_once_with()
+                host.return_value.close.assert_called_once_with()
+        self.assertEqual(fixture.steps, ["skills-explicit-directory-and-app-list-deadlines"] * 2)
+
+    def test_removal_observations_wait_on_the_same_bound_pending_operation(self):
+        pending = {"id": "fixture", "project_id": "child", "source_project_id": "primary",
+                   "operation_id": "91807494-d50c-4d89-9e0a-d17b608ecf66",
+                   "state": "removing", "host_state": "reserved", "observation_error": "Temporarily unavailable"}
+
+        def reply(payload, error=False):
+            plugin = {"isError": error, "structuredContent": {"result": payload}}
+            return {"isError": False, "structuredContent": {"result": plugin}}
+
+        operation, completed = acceptance.observe_worktree_removal(reply(pending, True), "fixture", "child", None)
+        self.assertIsNone(completed)
+        removed = dict(pending, state="removed", host_state="completed", observation_error=None)
+        self.assertEqual(acceptance.observe_worktree_removal(reply(removed), "fixture", "child", operation),
+                         (operation, removed))
+        for change in ({"project_id": "sibling"}, {"host_state": "recovery_required"},
+                       {"operation_id": "0447fad0-a4cb-4c82-9bcd-357be8f3d37b"}):
+            with self.assertRaises(AssertionError):
+                acceptance.observe_worktree_removal(reply(dict(pending, **change), True), "fixture", "child", operation)
+        with self.assertRaises(RuntimeError):
+            acceptance.observe_worktree_removal(reply(removed, True), "fixture", "child", operation)
+
+    def test_removal_observation_retries_only_source_gateway_configuration_change(self):
+        operation = acceptance.uuid.UUID("91807494-d50c-4d89-9e0a-d17b608ecf66")
+
+        def reply(code="configuration.changed", project="primary", capability="mcp.tools.call"):
+            return {"isError": True, "structuredContent": {
+                "error": {"code": code, "message": "The gateway configuration changed during preparation."},
+                "gateway_execution": {"project_id": project, "capability_id": capability},
+            }}
+
+        host = object.__new__(acceptance.Host)
+        host.fixture = SimpleNamespace()
+        tool = "codex.worktree.managed.read"
+        selector = {"managed_worktree_id": "fixture"}
+        host.indirect, host.workspace = True, "primary"
+        host.catalog = {tool: {"inputSchema": {"properties": {"managed_worktree_id": {"type": "string"}}}}}
+        host.client = Mock()
+        host.client.send.return_value = reply()
+        observation = host.raw(tool, selector, gateway_envelope=True)
+        host.client.send.assert_called_once_with("tools/call", {
+            "name": "mcp.tools.call", "arguments": {
+                "server": "codex", "tool": tool, "project_id": "primary", "arguments": selector,
+            },
+        }, timeout=None)
+        self.assertEqual(acceptance.observe_worktree_removal(observation, "fixture", "child", operation),
+                         (operation, None))
+        self.assertEqual(acceptance.observe_worktree_removal(observation, "fixture", "child", None),
+                         (None, None))
+        with self.assertRaises(RuntimeError):
+            host.raw(tool, selector)
+
+        for rejected in (reply(code="permission.denied"), reply(code="gateway.execution_failed"),
+                         reply(project="sibling"), reply(capability="mcp.tools.list"),
+                         {"isError": True, "structuredContent": {"error": {"code": "configuration.changed"}}}):
+            with self.subTest(response=rejected), self.assertRaises(RuntimeError):
+                acceptance.observe_worktree_removal(rejected, "fixture", "child", operation)
+        nested = {"structuredContent": {"result": reply()}}
+        with self.assertRaises(AssertionError):
+            acceptance.observe_worktree_removal(nested, "fixture", "child", operation)
 
     def test_archive_requires_success_or_exact_missing_rollout_identity(self):
         success = {"structuredContent": {"result": {}}}
@@ -145,7 +351,7 @@ class HostAcceptanceTests(unittest.TestCase):
             launch = stack.enter_context(patch.object(acceptance.subprocess, "Popen",
                                                       side_effect=AssertionError("Unexpected process launch")))
             for phase in ("setup", "catalog_and_diagnostics", "directories", "native_permissions", "handoff",
-                          "sibling_workspace", "recovery", "app_lifecycle", "exec_lifecycle", "host_callbacks"):
+                          "sibling_workspace", "recovery", "app_lifecycle", "exec_lifecycle"):
                 stack.enter_context(patch.object(fixture, phase))
             configure = stack.enter_context(patch.object(fixture, "configure", side_effect=fail_configuration))
             stack.enter_context(contextlib.redirect_stdout(output))

@@ -100,6 +100,9 @@ internal enum CodexProcessEnvironment {
     systemProxy: SystemNetworkProxySettings = .current()
   ) -> [String: String] {
     var environment = base
+    if base["CODEX_HOME"] == nil, let home = managedVendorHome(in: base) {
+      environment["CODEX_HOME"] = home.path
+    }
     for key in base.keys where parentSessionKeys.contains(key) {
       environment.removeValue(forKey: key)
     }
@@ -130,6 +133,32 @@ internal enum CodexProcessEnvironment {
       }
     }
     return environment
+  }
+
+  static func hostStateRoot(in environment: [String: String]) -> URL? {
+    guard environment["COMPUTER_MCP_HOST_CONTEXT"] != nil,
+      let state = environment["XDG_STATE_HOME"], state.hasPrefix("/"), !state.contains("\0")
+    else { return nil }
+    return URL(fileURLWithPath: state, isDirectory: true).standardizedFileURL
+  }
+
+  static func vendorHome(
+    in environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> URL {
+    if let explicit = environment["CODEX_HOME"] {
+      return URL(fileURLWithPath: explicit, isDirectory: true)
+    }
+    return managedVendorHome(in: environment)
+      ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+        ".codex", isDirectory: true)
+  }
+
+  private static func managedVendorHome(in environment: [String: String]) -> URL? {
+    guard hostStateRoot(in: environment) != nil,
+      let home = environment["HOME"], home.hasPrefix("/"), !home.contains("\0")
+    else { return nil }
+    return URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent(
+      ".codex", isDirectory: true)
   }
 
   private static func mirrorExistingValue(

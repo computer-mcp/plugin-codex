@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Accept a packaged adapter through an installed Computer MCP CLI's public MCP surface.
+"""Accept a packaged adapter through a source-built registered Computer MCP gateway.
 
-Fixture mode uses real native Codex with a private loopback Responses server.
+Container mode uses a deterministic protocol peer. Fixture mode uses native
+Codex with a private loopback Responses server.
 Full mode additionally requires authenticated model execution. All host instances,
 workspaces, runtime homes and failure injection targets are private to this run.
 """
@@ -13,14 +14,22 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import threading
 import time
+from types import SimpleNamespace
 import uuid
 
-MODEL_SOURCE = Path(__file__).resolve().parents[1] / "Tests/Fixtures/NativeCodex/ModelServer.py"
+REPOSITORY = Path(__file__).resolve().parents[1]
+MODEL_SOURCE = REPOSITORY / "Tests/Fixtures/NativeCodex/ModelServer.py"
+REGISTERED_HOST_SOURCE = REPOSITORY / "Tests/Fixtures/RegisteredHost/RegisteredHost.swift"
+HOST_PIN = REPOSITORY / ".github/computer-mcp-host.sha"
+MANIFEST = REPOSITORY / "computer-mcp-plugin.toml"
+ADAPTER_PATH = Path("bin/codex-mcp-adapter")
 MAX_MESSAGE = 8_388_608
 
 
@@ -43,6 +52,19 @@ def absolute_file(value):
     return path.resolve()
 
 
+def checkout_directory(value):
+    path = Path(value)
+    if not path.is_absolute() or not path.is_dir():
+        raise argparse.ArgumentTypeError("Expected an existing absolute Git checkout directory")
+    return path.resolve()
+
+
+def full_revision(value):
+    if not re.fullmatch(r"[0-9a-f]{40}", value) or value == "0" * 40:
+        raise ValueError("A full 40-character Git commit SHA is required")
+    return value
+
+
 def timeout_seconds(value):
     try:
         number = int(value)
@@ -55,11 +77,15 @@ def timeout_seconds(value):
 
 def parse_arguments(arguments=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", required=True, type=executable, help="Installed computer-mcp CLI")
-    parser.add_argument("--adapter", required=True, type=executable, help="Adapter from the verified, relocated archive")
-    parser.add_argument("--codex", required=True, type=executable, help="User-installed vendor Codex")
+    parser.add_argument("--host-source", type=checkout_directory, help="Container mode: clean checkout at the committed Host pin")
+    parser.add_argument("--plugin-revision", help="Container mode: full plugin checkout SHA")
+    parser.add_argument("--archive", type=absolute_file, help="Container mode: plugin release ZIP")
+    parser.add_argument("--receipt", type=absolute_file, help="Container mode: release ZIP receipt")
+    parser.add_argument("--host", type=executable, help="Native modes: source-built CodexRegisteredHost fixture")
+    parser.add_argument("--adapter", type=executable, help="Native modes: adapter from the verified, relocated archive")
+    parser.add_argument("--codex", type=executable, help="Native modes: user-installed vendor Codex")
     parser.add_argument("--output-directory", required=True, type=Path, help="New private directory in ignored build output")
-    parser.add_argument("--mode", choices=("fixture", "full"), default="full")
+    parser.add_argument("--mode", choices=("container", "fixture", "full"), default="full")
     parser.add_argument("--auth-file", type=absolute_file, help="Full mode: existing vendor auth.json; copied privately and deleted on exit")
     parser.add_argument("--model", help="Full mode: authenticated model ID")
     parser.add_argument("--timeout-seconds", type=timeout_seconds, default=180)
@@ -67,13 +93,98 @@ def parse_arguments(arguments=None):
     root = options.output_directory
     if not root.is_absolute() or root.exists() or root.is_symlink():
         parser.error("--output-directory must be a new absolute path")
+    source_inputs = (options.host_source, options.plugin_revision, options.archive, options.receipt)
+    if options.mode == "container":
+        if not all(source_inputs) or any((options.host, options.adapter, options.codex)):
+            parser.error("Container mode requires --host-source, --plugin-revision, --archive and --receipt")
+        try:
+            full_revision(options.plugin_revision)
+        except ValueError as error:
+            parser.error(str(error))
+    elif any(source_inputs) or not all((options.host, options.adapter, options.codex)):
+        parser.error("Native modes require --host, --adapter and --codex")
     if options.mode == "full" and (not options.auth_file or not options.model or not options.model.strip()):
         parser.error("Full mode requires --auth-file and --model")
-    if options.mode == "fixture" and (options.auth_file or options.model):
+    if options.mode != "full" and (options.auth_file or options.model):
         parser.error("Authentication inputs require full mode")
     if options.model and any(c in options.model for c in "\0\r\n"):
         parser.error("Model ID must be a single nonempty line")
     return options
+
+
+def git_at(directory, *arguments):
+    return ["/usr/bin/git", "--no-optional-locks", "--no-replace-objects", "-C", str(directory), *arguments]
+
+
+def checked_revision(directory, expected, label):
+    def read(*arguments):
+        return subprocess.run(git_at(directory, *arguments), text=True, check=True,
+                              stdout=subprocess.PIPE, timeout=30).stdout.strip()
+
+    expected = full_revision(expected)
+    require(Path(read("rev-parse", "--show-toplevel")).resolve() == directory,
+            f"{label} must be a separate Git checkout root: {directory}")
+    actual = read("rev-parse", "--verify", "HEAD^{commit}")
+    require(actual == expected, f"{label} HEAD {actual} differs from required {expected}")
+    require(not read("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"),
+            f"{label} checkout must be clean: {directory}")
+    return actual
+
+
+def prepare_pinned_host(options):
+    pin = full_revision(HOST_PIN.read_text(encoding="ascii").strip())
+    require(options.host_source != REPOSITORY, "Host and plugin require separate checkouts")
+    host_revision = checked_revision(options.host_source, pin, "Host")
+    plugin_revision = checked_revision(REPOSITORY, options.plugin_revision, "Plugin")
+    receipt = json.loads(options.receipt.read_text())
+    require(isinstance(receipt, dict) and receipt.get("configuration") == "release",
+            "Pinned Host acceptance requires a release archive")
+    stage = options.output_directory.resolve()
+    require(not stage.is_relative_to(options.host_source), "Build output must be outside the Host checkout")
+    stage.mkdir(mode=0o700, parents=True)
+    source = stage / "host-source"
+    source.mkdir()
+    with subprocess.Popen(git_at(options.host_source, "archive", host_revision),
+                          stdout=subprocess.PIPE) as archive:
+        with archive.stdout, tarfile.open(fileobj=archive.stdout, mode="r|") as tar:
+            tar.extractall(source, filter="data")
+        require(archive.wait(timeout=30) == 0, "Failed to export pinned Host source")
+    target = source / "Tests/CodexRegisteredHost"
+    target.mkdir()
+    shutil.copy2(REGISTERED_HOST_SOURCE, target / REGISTERED_HOST_SOURCE.name)
+    with (source / "Package.swift").open("a") as manifest:
+        manifest.write("""
+package.targets.append(.executableTarget(
+  name: "CodexRegisteredHost",
+  dependencies: [
+    "ComputerMCPConfiguration", "ComputerMCPCore", "ComputerMCPGateway", "ComputerMCPMacOS",
+    "ComputerMCPPermissions", "ComputerMCPPlatform", "ComputerMCPPlugins", "ComputerMCPTransport",
+    .product(name: "MCP", package: "swift-sdk"),
+  ],
+  path: "Tests/CodexRegisteredHost"
+))
+""")
+    options.package = stage / "relocated"
+    verified = subprocess.run([
+        sys.executable, str(REPOSITORY / "scripts/check-package.py"),
+        "--archive", str(options.archive), "--receipt", str(options.receipt),
+        "--destination", str(options.package),
+    ], text=True, check=True, stdout=subprocess.PIPE, timeout=120)
+    archive = json.loads(verified.stdout)
+    options.adapter = executable(str(options.package / ADAPTER_PATH))
+    build = ["/usr/bin/swift", "build", "--package-path", str(source),
+             "--build-system", "native", "--disable-swift-testing", "--disable-automatic-resolution"]
+    products = ("CodexRegisteredHost", "computer-mcp-execution-bootstrap")
+    lock = (source / "Package.resolved").read_bytes()
+    for product in products:
+        subprocess.run([*build, "--product", product], check=True)
+    require((source / "Package.resolved").read_bytes() == lock, "Host dependency lock changed")
+    binary_directory = Path(subprocess.check_output([*build, "--show-bin-path"], text=True).strip())
+    options.host = executable(str(binary_directory / products[0]))
+    bootstrap = executable(str(binary_directory / products[1]))
+    options.output_directory = stage / "runtime"
+    return {"host_revision": host_revision, "plugin_revision": plugin_revision,
+            "archive": archive, "execution_bootstrap_sha256": digest(bootstrap)}
 
 
 def unwrap(result, indirect=False):
@@ -83,6 +194,29 @@ def unwrap(result, indirect=False):
             raise RuntimeError(json.dumps(result, ensure_ascii=False))
         result = result["structuredContent"]["result"]
     return result
+
+
+def observe_worktree_removal(result, worktree_id, project, operation_id):
+    if isinstance(result, dict) and result.get("isError") is True:
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            error = structured.get("error")
+            execution = structured.get("gateway_execution")
+            # The removal can invalidate the Host's project snapshot during read admission.
+            if (isinstance(error, dict) and error.get("code") == "configuration.changed"
+                    and isinstance(execution, dict) and execution.get("capability_id") == "mcp.tools.call"
+                    and execution.get("project_id") == "primary" and "result" not in structured):
+                return operation_id, None
+    result = unwrap(result)
+    current = result.get("structuredContent", {}).get("result")
+    require(isinstance(current, dict) and current["id"] == worktree_id
+            and current["project_id"] == project and current["source_project_id"] == "primary", result)
+    observed_id = uuid.UUID(current["operation_id"])
+    require(operation_id is None or operation_id == observed_id, current)
+    if current["state"] == "removed":
+        return observed_id, unwrap(result)
+    require(current["state"] == "removing" and current["host_state"] in {"reserved", "running"}, current)
+    return observed_id, None
 
 
 def archive_disposition(result, thread_id):
@@ -232,35 +366,93 @@ RISKS = {**{"codex.app." + name: "read-only" for name in APP_READ},
          "codex.worktree.leases.acquire": "workspace-write", "codex.worktree.leases.release": "workspace-write"}
 
 
+CONTAINER_RISKS = {
+    "codex.app.status": "read-only",
+    "codex.app.thread.loaded.list": "read-only",
+    "codex.app.runtimes.cleanup.preview": "read-only",
+    "codex.app.runtimes.cleanup.perform": "workspace-write",
+    "codex.diagnostics.snapshot": "read-only",
+    "codex.worktree.managed.list": "read-only",
+    "codex.worktree.managed.read": "read-only",
+    "codex.worktree.leases.list": "read-only",
+    "codex.worktree.leases.acquire": "workspace-write",
+    "codex.worktree.leases.release": "workspace-write",
+    "codex.worktree.provision.plan": "workspace-write",
+    "codex.worktree.provision.perform": "workspace-write",
+    "codex.worktree.remove.plan": "workspace-write",
+    "codex.worktree.remove.perform": "destructive",
+}
+
+
 class Host:
-    def __init__(self, fixture, indirect=True):
+    def __init__(self, fixture, indirect=True, *, with_observer=False, streams=None):
         self.fixture, self.indirect = fixture, indirect
         self.workspace = "primary"
         fixture.generation += 1
         self.log = (fixture.root / f"host-{fixture.generation}.log").open("w")
         self.evidence = (fixture.root / f"protocol-{fixture.generation}.jsonl").open("w")
-        self.process = subprocess.Popen([str(fixture.options.host), "serve", "stdio", "--config",
-                                         str(fixture.root / "host.toml"), "--database", str(fixture.root / "host.sqlite")],
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
-                                        text=True, bufsize=1, env=fixture.environment, cwd=fixture.root)
+        self.process = self.observer_streams = None
+        if streams is None:
+            command = [str(fixture.options.host), "serve", str(fixture.root)]
+            child_fds = ()
+            if with_observer:
+                input_fd, writer = os.pipe()
+                reader, output_fd = os.pipe()
+                child_fds = (input_fd, output_fd)
+                command.extend(str(fd) for fd in child_fds)
+                self.observer_streams = SimpleNamespace(
+                    stdin=os.fdopen(writer, "w"), stdout=os.fdopen(reader))
+            try:
+                self.process = subprocess.Popen(
+                    command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
+                    text=True, bufsize=1, env=fixture.environment, cwd=fixture.root, pass_fds=child_fds)
+            except OSError:
+                if self.observer_streams:
+                    self.observer_streams.stdin.close()
+                    self.observer_streams.stdout.close()
+                self.log.close()
+                self.evidence.close()
+                raise
+            finally:
+                for fd in child_fds:
+                    os.close(fd)
+            streams = self.process
         fixture.hosts.append(self)
-        self.client = MCPClient(self.process, self.evidence, fixture.options.timeout_seconds)
-        self.catalog = self.client.initialize()
-        require(set(RISKS) <= self.catalog.keys(), {"missing_tools": sorted(set(RISKS) - self.catalog.keys())})
-        require(self.catalog["mcp.tools.call"]["inputSchema"]["properties"]["workspace_id"]["type"] == "string",
-                "Generic dispatch lacks workspace selection")
+        self.client = MCPClient(streams, self.evidence, fixture.options.timeout_seconds)
+        gateway_catalog = self.client.initialize()
+        downstream_catalog = self.project_catalog()
+        self.catalog = downstream_catalog if indirect else gateway_catalog
+        require(set(fixture.risks) <= self.catalog.keys(), {"missing_tools": sorted(set(fixture.risks) - self.catalog.keys())})
+        require(gateway_catalog["mcp.tools.call"]["inputSchema"]["properties"]["project_id"]["type"] == "string",
+                "Generic dispatch lacks project selection")
 
-    def raw(self, name, arguments=None, timeout=None):
+    def project_catalog(self):
+        self.fixture.last_tool_call = {"tool": "mcp.tools.list", "project_id": self.workspace}
+        tools = unwrap(self.client.send("tools/call", {
+            "name": "mcp.tools.list", "arguments": {"server": "codex", "project_id": self.workspace},
+        }))
+        return {tool["name"]: tool for tool in tools}
+
+    def select_project(self, project):
+        self.workspace = project
+        self.catalog = self.project_catalog()
+
+    def raw(self, name, arguments=None, timeout=None, *, gateway_envelope=False):
         name = name if name.startswith("codex.") else "codex.app." + name
         arguments = arguments or {}
         require(set(arguments) <= self.catalog[name]["inputSchema"]["properties"].keys(), {"tool": name, "undeclared_inputs": sorted(set(arguments) - self.catalog[name]["inputSchema"]["properties"].keys())})
+        result = self.dispatch(name, arguments, timeout)
+        return unwrap(result) if self.indirect and not gateway_envelope else result
+
+    def dispatch(self, name, arguments=None, timeout=None):
+        arguments = arguments or {}
         if self.indirect:
             params = {"name": "mcp.tools.call", "arguments": {"server": "codex", "tool": name,
-                      "workspace_id": self.workspace, "arguments": arguments}}
+                      "project_id": self.workspace, "arguments": arguments}}
         else:
-            params = {"name": name, "arguments": dict(arguments, workspace_id=self.workspace)}
-        result = self.client.send("tools/call", params, timeout=timeout)
-        return unwrap(result) if self.indirect else result
+            params = {"name": name, "arguments": dict(arguments, project_id=self.workspace)}
+        self.fixture.last_tool_call = {"tool": name, "project_id": self.workspace}
+        return self.client.send("tools/call", params, timeout=timeout)
 
     def call(self, name, arguments=None, timeout=None):
         return unwrap(self.raw(name, arguments, timeout))
@@ -269,6 +461,13 @@ class Host:
         return self.call("methods.call", {"method": name, "params": params or {}}, timeout)
 
     def close(self):
+        if self.process is None:
+            self.client.process.stdin.close()
+            self.log.close()
+            self.evidence.close()
+            return
+        if self.observer_streams:
+            self.observer_streams.stdin.close()
         if self.process.poll() is None:
             self.process.stdin.close()
             try:
@@ -282,13 +481,15 @@ class Host:
                     self.process.wait(timeout=5)
                 raise RuntimeError("Host did not exit after MCP EOF")
         self.client.reader.join(timeout=2)
+        if self.observer_streams:
+            self.observer_streams.stdout.close()
         self.log.close()
         self.evidence.close()
         require(self.process.returncode == 0, {"host_exit": self.process.returncode})
 
     def processes(self):
         status = self.call("status")
-        require(Path(status["workspace"]).resolve() == (self.fixture.root / self.workspace).resolve(), status)
+        require(Path(status["workspace"]).resolve() == self.fixture.projects[self.workspace], status)
         pids = [status["process"][key] for key in ("process_id", "supervisor_process_id", "parent_process_id")]
         require(all(isinstance(pid, int) and pid > 1 for pid in pids), status)
         self.fixture.pids.update(pids)
@@ -341,31 +542,46 @@ class Fixture:
         self.options, self.root = options, options.output_directory.resolve()
         self.root.mkdir(mode=0o700, parents=True)
         self.hosts, self.pids, self.threads, self.steps = [], set(), set(), []
+        self.last_tool_call = None
         self.generation = 0
         self.model = None
         self.model_log = None
+        self.container = None
+        self.authorization = {}
+        self.adapter_config = self.root / "adapter.json"
+        self.launches = self.root / "launches.jsonl"
+        self.risks = CONTAINER_RISKS if options.mode == "container" else RISKS
+        self.projects = {name: self.root / name for name in ("primary", "other")}
         self.home = self.root / "codex-home"
         self.home.mkdir(mode=0o700)
         # Private HOME also isolates Git, native skills, hooks and host configuration.
-        self.environment = {"HOME": str(self.root), "PATH": str(options.codex.parent) + ":/usr/bin:/bin",
+        self.environment = {"HOME": str(self.root), "PATH": "/usr/bin:/bin",
                             "TMPDIR": str(self.root / "tmp"), "GIT_CONFIG_GLOBAL": os.devnull,
                             "GIT_CONFIG_NOSYSTEM": "1"}
         (self.root / "tmp").mkdir(mode=0o700)
 
     def setup(self):
-        for name in ("primary", "other"):
-            (self.root / name).mkdir()
-            self.git(["init", "--quiet"], name)
+        for name, path in self.projects.items():
+            path.mkdir()
+            self.git(["init", "--quiet", "--initial-branch=main"], name)
             for key, value in (("user.name", "Acceptance"), ("user.email", "acceptance@example.invalid"),
                                ("commit.gpgsign", "false"), ("core.hooksPath", str(self.root / name / ".git/hooks"))):
                 self.git(["config", key, value], name)
-        wrapper = self.root / "configured-codex"
+        if self.options.mode == "container":
+            (self.projects["primary"] / "product.txt").write_text("caller project fixture\n")
+            self.git(["add", "product.txt"])
+            self.git(["commit", "--quiet", "-m", "Fixture base"])
+        self.register()
+        if self.options.mode == "container":
+            self.configure_adapter(self.peer, exec_enabled=False)
+            return
+        wrapper = self.package / "bin/configured-codex"
         wrapper.write_text(f'''#!{sys.executable}
 import json, os, sys
 keys = ("COMPUTER_MCP_HOST_CONTEXT", "COMPUTER_MCP_HOST_FD", "CODEX_THREAD_ID")
 assert not any(key in os.environ for key in keys), "Parent authority leaked"
-assert os.environ.get("COMPUTER_MCP_FIXTURE_VALUE") == "preserved", "Ordinary environment lost"
-with open({str(self.root / 'launches.jsonl')!r}, "a") as receipt:
+assert os.environ.get("CODEX_HOME") == {str(self.home)!r}, "Wrong vendor container"
+with open({str(self.launches)!r}, "a") as receipt:
     receipt.write(json.dumps({{"mode": sys.argv[1], "cwd": os.getcwd(), "argv": sys.argv[1:], "pid": os.getpid()}}) + "\\n")
 os.execv({str(self.options.codex)!r}, [{str(self.options.codex)!r}] + sys.argv[1:])
 ''')
@@ -402,53 +618,101 @@ stream_max_retries = 0
 '''
         config += '[analytics]\nenabled = false\n[otel]\nmetrics_exporter = "none"\n'
         (self.home / "config.toml").write_text(config)
-        (self.root / "adapter.json").write_text(json.dumps({
-            "enabled": True, "executable": "configured-codex", "app_server_enabled": True,
-            "exec_enabled": True, "app_server_request_timeout_seconds": 30,
+        self.configure_adapter(self.package / "bin/configured-codex", exec_enabled=True)
+
+    def configure_adapter(self, vendor, exec_enabled):
+        self.adapter_config.write_text(json.dumps({
+            "enabled": True, "executable": str(vendor), "app_server_enabled": True,
+            "exec_enabled": exec_enabled, "app_server_request_timeout_seconds": 30,
             "app_server_app_list_timeout_seconds": 120,
         }))
-        policies = ", ".join(q(name) + " = " + q(risk) for name, risk in RISKS.items())
-        config = f'''schema_version = 1
+
+    def register(self):
+        q = json.dumps
+        self.package = self.root / "plugin"
+        bin_directory = self.package / "bin"
+        if self.options.mode == "container":
+            shutil.copytree(self.options.package, self.package)
+        else:
+            bin_directory.mkdir(parents=True)
+            shutil.copy2(MANIFEST, self.package / MANIFEST.name)
+            shutil.copy2(self.options.adapter, bin_directory / "codex-mcp-adapter")
+            resources = self.options.adapter.with_name("codex-plugin_CodexAdapter.bundle")
+            shutil.copytree(resources, bin_directory / resources.name)
+
+        config = '''schema_version = 1
 [runtime]
 caller = "local-mcp"
 profile = "acceptance"
+project_id = "primary"
+
 [[profiles]]
 id = "acceptance"
-mode = "local-full-access"
-confirmation_policy = "never"
-full_shell_enabled = true
-capabilities = ["mcp.tools.call", "workspace.list"]
-workspaces = ["primary", "other"]
 allowed_callers = ["local-mcp"]
+full_access = false
+
+[profiles.projects]
+primary = { access = "write", network = "none" }
+other = { access = "write", network = "none" }
+
+[profiles.plugins]
+codex = "use"
+'''
+        if self.options.mode == "container":
+            config += '''
+[[profiles]]
+id = "observer"
+allowed_callers = ["local-mcp"]
+full_access = false
+
+[profiles.projects]
+primary = { access = "write", network = "none" }
+other = { access = "write", network = "none" }
+
+[profiles.plugins]
+codex = "use"
+'''
+        config += '''
+[builtin]
+enabled = ["file.read"]
 '''
         for name in ("primary", "other"):
-            config += f'''[[workspaces]]
+            config += f'''[[projects]]
 id = {q(name)}
 display_name = {q(name)}
 path = {q(str(self.root / name))}
 '''
-        config += f'''[[mcp.servers]]
-id = "codex"
-transport = "stdio"
-command = {q(str(self.options.adapter))}
-args = ["--config", {q(str(self.root / 'adapter.json'))}, "--state-directory", {q(str(self.root / 'adapter-state'))}]
-exposure = "reexport"
-prefix = ""
-allowed_tools = {q(list(RISKS))}
-host_services = true
-tool_risks = {{ {policies} }}
-startup_timeout_ms = 10000
-request_timeout_ms = {max(130, self.options.timeout_seconds) * 1000}
-[mcp.servers.env]
-CODEX_HOME = {q(str(self.home))}
-PATH = {q(str(self.root) + os.pathsep + self.environment['PATH'])}
-CODEX_THREAD_ID = "acceptance-parent-session"
-COMPUTER_MCP_FIXTURE_VALUE = "preserved"
-'''
         (self.root / "host.toml").write_text(config)
+        (self.root / "contribution.json").write_text(json.dumps({
+            "registrationID": "codex", "exposure": "gateway" if self.options.mode == "container" else "reexport",
+            "prefix": "",
+            "hostServices": True, "allowedTools": list(self.risks),
+            "toolRisks": {name: "project-write" if risk == "workspace-write" else risk
+                          for name, risk in self.risks.items()},
+        }))
+        result = subprocess.run([str(self.options.host), "register", str(self.root)],
+                                env=self.environment, cwd=self.root, capture_output=True, text=True,
+                                timeout=self.options.timeout_seconds)
+        (self.root / "registration.log").write_text(result.stderr)
+        require(result.returncode == 0, {"registration_exit": result.returncode, "stderr": result.stderr})
+        self.container = json.loads(result.stdout)
+        for key in ("home", "cache", "state", "config"):
+            require(Path(self.container[key]).is_relative_to(self.root / "host.sqlite.providers"),
+                    {"invalid_container_path": key})
+        (self.root / "registration.json").write_text(json.dumps(self.container, indent=2) + "\n")
+        self.home = Path(self.container["home"]) / ".codex"
+        self.home.mkdir(mode=0o700)
+        if self.options.mode == "container":
+            self.authorization["registration"] = {
+                key: self.container[key] for key in ("manifest_digest", "provider_revision", "authorization_epoch")
+            }
+            self.peer = Path(self.container["home"]) / "fixture-vendor"
+            shutil.copy2(self.options.host, self.peer)
+        self.adapter_config = Path(self.container["config"])
+        self.launches = self.home / "launches.jsonl"
 
     def git(self, args, workspace="primary"):
-        return subprocess.run(["/usr/bin/git", *args], cwd=self.root / workspace, env=self.environment,
+        return subprocess.run(["/usr/bin/git", *args], cwd=self.projects[workspace], env=self.environment,
                               text=True, capture_output=True, timeout=10, check=True).stdout
 
     def response(self, phase, command=None, hold=False):
@@ -475,27 +739,33 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
 
     def catalog_and_diagnostics(self):
         host = Host(self)
-        require(not (self.root / "launches.jsonl").exists(), "Discovery started the vendor")
+        require(not self.launches.exists(), "Discovery started the vendor")
         diagnostic = host.call("codex.diagnostics.snapshot", {"limit": 10})
         require(diagnostic["persistence_available"] and diagnostic["host_diagnostics_available"], diagnostic)
         require(diagnostic["state_storage"]["scope"] == "authorization_subject", diagnostic)
-        require(not (self.root / "launches.jsonl").exists(), "Diagnostics started the vendor")
+        require(not self.launches.exists(), "Diagnostics started the vendor")
         host.call("codex.run.list")
         host.call("codex.worktree.managed.list")
         host.call("codex.worktree.leases.list")
         lease = host.call("codex.worktree.leases.acquire", {"agent_id": "acceptance"})
         host.call("codex.worktree.leases.release", {"lease_id": lease["id"],
                   "expected_revision": lease["revision"], "reason": "Acceptance complete"})
-        require(not (self.root / "launches.jsonl").exists(), "Domain lease operations started the vendor")
+        require(not self.launches.exists(), "Domain lease operations started the vendor")
         host.close()
         self.record("catalog-diagnostics-domain-leases-lazy-start")
 
     def directories(self):
         host = Host(self)
+        cwd = str(self.root / "primary")
         started = time.monotonic()
-        skills = host.method("skills/list", {"cwds": [str(self.root / "primary")], "forceReload": False}, timeout=35)
+        skills = host.method("skills/list", {"cwds": [cwd], "forceReload": False}, timeout=35)
         require(time.monotonic() - started < 30, "skills/list exceeded normal deadline")
-        require(len(skills["data"]) == 1 and skills["data"][0]["cwd"] == str(self.root / "primary"), skills)
+        require(len(skills["data"]) == 1 and skills["data"][0]["cwd"] == cwd, skills)
+        errors = skills["data"][0].get("errors")
+        require(
+            errors == [],
+            f"skills/list expected no directory errors for {cwd}, got {json.dumps(errors, ensure_ascii=False)}",
+        )
         started = time.monotonic()
         apps = host.method("app/list", {"limit": 1, "forceRefetch": False}, timeout=125)
         require(time.monotonic() - started < 120 and len(apps["data"]) <= 1, apps)
@@ -630,7 +900,7 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
 
     def app_lifecycle(self):
         self.configure(sandbox="workspace-write", approval="on-request")
-        config = self.root / "adapter.json"
+        config = self.adapter_config
         settings = json.loads(config.read_text())
         settings.update(sandbox="workspace-write", approval_policy="untrusted")
         config.write_text(json.dumps(settings))
@@ -682,7 +952,7 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
             page = host.call("codex.exec.events", {"session_id": session, "after_cursor": 0, "max_results": 1000})
             require(page["missed_events"] == 0 and page["events"], page)
             host.call("codex.exec.release", {"session_id": session})
-        launches = [json.loads(line) for line in (self.root / "launches.jsonl").read_text().splitlines()]
+        launches = [json.loads(line) for line in self.launches.read_text().splitlines()]
         exec_launches = [entry for entry in launches if entry["mode"] == "exec"]
         require(len(exec_launches) == 2, exec_launches)
         inherited, explicit = (entry["argv"] for entry in exec_launches)
@@ -708,102 +978,245 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
         self.response("cleanup")
         self.record("exec-defaults-overrides-events-result-resume-cancel-release")
 
-    def host_callbacks(self):
-        source = MODEL_SOURCE.with_name("HostToolVendor.py")
-        vendor = self.root / "host-tool-vendor"
-        vendor.write_text("#!" + sys.executable + "\n" + source.read_text().split("\n", 1)[1])
-        vendor.chmod(0o700)
-        sequence = 900
+    def provision_worktree(self, host):
+        parent = host.call("codex.worktree.leases.acquire", {"agent_id": "acceptance-parent"})
+        plan = host.call("codex.worktree.provision.plan", {
+            "name": "fixture", "agent_id": "acceptance-child", "parent_lease_id": parent["id"],
+        })
+        require(plan["state"] == "planned" and plan["source_project_id"] == "primary", plan)
+        worktree = host.call("codex.worktree.provision.perform", plan["perform_arguments"])
+        require(worktree["id"] == plan["id"] and worktree["state"] == "active"
+                and worktree["host_state"] == "completed" and worktree["lease"]["state"] == "acquired", worktree)
+        operation = worktree["host_response"]["structuredContent"]["result"]
+        require(operation["source_project_id"] == "primary" and operation["project_id"] == "primary"
+                and uuid.UUID(operation["operation_id"]) == uuid.UUID(worktree["operation_id"]), operation)
+        child = worktree["project_id"]
+        path = Path(worktree["resolved"]["path"]).resolve(strict=True)
+        require(path.is_relative_to(self.root / "worktrees") and child not in self.projects, worktree)
+        self.projects[child] = path
+        require(self.git(["rev-parse", "HEAD"], child) == self.git(["rev-parse", "HEAD"]), worktree)
+        inventory = host.call("codex.worktree.managed.list")
+        require(worktree["resolved"]["worktree_id"] in json.dumps(inventory), inventory)
+        self.record("host-created-associated-worktree")
+        return worktree, parent
 
-        def callback(name, arguments, success=True, request_error=None):
-            nonlocal sequence
-            sequence += 1
-            request = {"id": sequence, "method": "item/tool/call", "params": {
-                "namespace": "computer-mcp", "tool": name, "arguments": arguments,
-                "callId": f"callback-{sequence}", "threadId": "callback-thread", "turnId": "callback-turn"}}
-            temporary = self.home / "queued.tmp"
-            temporary.write_text(json.dumps(request))
-            temporary.replace(self.home / f"queued-{sequence}.json")
-            response = self.home / f"callback-{sequence}.json"
-            wait_until(response.exists, 15, "Native host callback")
-            value = json.loads(response.read_text())
-            if request_error:
-                require(value.get("error") == request_error, value)
-                return value
-            require(value.get("result", {}).get("success") is success, value)
-            if not success:
-                return value
-            text = value["result"]["contentItems"][0]["text"]
-            return unwrap(json.loads(text))
+    def remove_worktree(self, host, worktree, parent):
+        worktree_id, project = worktree["id"], worktree["project_id"]
+        selector = {"managed_worktree_id": worktree_id}
+        observed = host.call("codex.worktree.managed.read", selector)
+        require(observed["state"] == "active" and observed["operation_id"] == worktree["operation_id"], observed)
+        host.select_project("other")
+        refused = host.raw("codex.worktree.managed.read", selector)
+        require(refused.get("isError") is True and "Unknown Computer MCP-managed worktree" in json.dumps(refused),
+                refused)
+        host.select_project(project)
+        require(host.call("codex.worktree.managed.read", selector)["project_id"] == project,
+                "Caller did not resolve its derived project")
+        path = self.projects[project]
+        trigger = path / "fixture-edit-request"
+        trigger.touch()
+        require(host.call("thread.loaded.list")["data"] == [], "Unexpected fixture threads")
+        peer = self.vendor_receipt()
+        child_pids = host.processes()
+        require((path / "fixture-edit.txt").read_text() == "edited by the registered peer\n"
+                and not (self.projects["primary"] / "fixture-edit.txt").exists(), path)
+        trigger.unlink()
+        self.git(["add", "fixture-edit.txt"], project)
+        self.git(["-c", "user.name=Acceptance", "-c", "user.email=acceptance@example.invalid",
+                  "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Fixture edit"], project)
+        tip = self.git(["rev-parse", "HEAD"], project).strip()
+        lease = next(row for row in host.call("codex.worktree.leases.list")["leases"]
+                     if row["id"] == worktree["lease"]["lease_id"])
+        host.call("codex.worktree.leases.release", {"lease_id": lease["id"],
+                  "expected_revision": lease["revision"], "reason": "Fixture edit committed"})
+        plan = host.call("codex.worktree.remove.plan", selector)
+        require(plan["state"] == "removal_planned", plan)
+        response = host.dispatch("codex.worktree.remove.perform", plan["perform_arguments"])
+        error = response.get("structuredContent", {}).get("error", {})
+        message = error.get("message", "")
+        reply_lost = (response.get("isError") and error.get("code") == "gateway.execution_failed"
+                      and (message.startswith("[mcp.request_cancelled]")
+                           or message == "MCP server 'codex' request timed out."))
+        if not reply_lost:
+            removed = unwrap(response, indirect=True)
+        host.select_project("primary")
+        if reply_lost:
+            removal_id = None
 
-        for confirmation in ("never", "all-writes"):
-            self.configure()
-            config = self.root / "adapter.json"
-            settings = json.loads(config.read_text())
-            settings["executable"] = str(vendor)
-            config.write_text(json.dumps(settings))
-            host_config = self.root / "host.toml"
-            text = host_config.read_text().replace('confirmation_policy = "never"',
-                                                   'confirmation_policy = "' + confirmation + '"')
-            text = text.replace('capabilities = ["mcp.tools.call", "workspace.list"]',
-                                'capabilities = ["mcp.tools.call", "workspace.list", "policy.probe", '
-                                '"operations.prepare", "operations.commit", "file.read", "file.write", "git.add", "git.commit"]')
-            text += '\n[[cli.commands]]\nid = "git"\nexecutable = "/usr/bin/git"\n'
-            text += '\n[builtin]\nenabled = ["file.read", "file.write", "git.add", "git.commit"]\n'
-            host_config.write_text(text)
+            def observe_removal():
+                nonlocal removal_id
+                observation = host.raw("codex.worktree.managed.read", selector, gateway_envelope=True)
+                removal_id, completed = observe_worktree_removal(observation, worktree_id, project, removal_id)
+                return completed
+
+            removed = wait_until(observe_removal, self.options.timeout_seconds, "Host removal observation")
+            self.record("interrupted-removal-reply-recovered-without-replaying")
+        require(removed["state"] == "removed" and removed["host_state"] == "completed"
+                and removed["operation_id"] != worktree["operation_id"], removed)
+        operation = removed["host_response"]["structuredContent"]["result"]
+        require(operation["project_id"] == project and operation["result"]["oid"] == tip
+                and operation["result"]["worktree_id"] == worktree["resolved"]["worktree_id"], operation)
+        require(not path.exists(), f"Host still has the removed checkout: {path}")
+        wait_until(lambda: all(exited(pid) for pid in [peer["pid"], *child_pids[:2]]), 15,
+                   "Removed worktree still has its vendor or supervisor")
+        source = host.call("codex.worktree.managed.read", selector)
+        require(source["state"] == "removed" and source["operation_id"] == removed["operation_id"], source)
+        recovery = self.root / "worktree-recovery"
+        repositories = [entry.parent for entry in recovery.rglob("HEAD") if (entry.parent / "objects").is_dir()]
+        require(any(subprocess.run(
+            ["/usr/bin/git", "--git-dir", str(repository), "cat-file", "-e", tip + "^{commit}"],
+            env=self.environment, capture_output=True, timeout=10).returncode == 0
+                    for repository in repositories), "Host recovery storage lacks the removed commit")
+        require(not self.git(["status", "--porcelain"]), "Source checkout changed")
+        host.call("codex.worktree.leases.release", {"lease_id": parent["id"],
+                  "expected_revision": parent["revision"], "reason": "Fixture worktree removed"})
+        self.record("host-restarted-edited-retained-and-removed-worktree")
+
+    def vendor_receipt(self):
+        receipt = json.loads((self.home / "vendor.json").read_text())
+        self.pids.add(receipt["pid"])
+        return receipt
+
+    def clear_stale_runtime(self, host, snapshot, prior_runtime, prior_pids):
+        persisted = next(row for row in snapshot["persisted_runtimes"] if row["id"] == prior_runtime)
+        require(all(exited(pid) for pid in prior_pids), "Previous fixture process still exists")
+        require(not any(snapshot[key] for key in ("active_runs", "pending_approvals", "thread_ownership_receipts"))
+                and all(row["runtime_id"] != prior_runtime and row["process"] is None
+                        and row["connection_id"] is None and row["current_request_count"] == 0
+                        and not row["threads"] for row in snapshot["live_runtimes"]["runtimes"]),
+                "Restart reported a live peer, request, thread, run or approval")
+        preview = host.call("runtimes.cleanup.preview")
+        require(persisted["state"] == "running", persisted)
+        candidates = preview["candidates"]
+        require(preview["signals_sent"] is False and len(candidates) == 1
+                and candidates[0]["runtime"]["id"] == prior_runtime
+                and candidates[0]["classification"] == "stale_record"
+                and candidates[0]["cleanup_ready"] and not candidates[0]["directory_active"]
+                and not candidates[0]["process_active"], preview)
+        cleanup = host.call("runtimes.cleanup.perform", {"confirm_cleanup": True})
+        require(cleanup["signals_sent"] is False and cleanup["watchdog_pending"] == []
+                and [(row["id"], row["state"], row["currentRequestState"]) for row in cleanup["cleaned"]]
+                == [(prior_runtime, "cleaned", "idle")], cleanup)
+        require(host.call("runtimes.cleanup.preview")["candidates"] == [], "Stale runtime remained actionable")
+        self.record("restarted-without-live-runtime-authority-or-reported-work")
+
+    def revoke(self, role):
+        trigger = self.root / f"revoke-{role}"
+        trigger.touch()
+        receipt_path = trigger.with_suffix(".json")
+        wait_until(receipt_path.exists, self.options.timeout_seconds, f"{role} revocation receipt")
+        receipt = json.loads(receipt_path.read_text())
+        require("error" not in receipt, receipt)
+        require(receipt["before_revision"] < receipt["after_revision"] and receipt["executions"]
+                and receipt["epoch"] == self.container["authorization_epoch"], receipt)
+        self.authorization[role] = receipt
+
+    def assert_revoked(self, host, code, message=None):
+        result = host.dispatch("codex.app.thread.loaded.list")
+        error = result.get("structuredContent", {}).get("error", {})
+        require(result.get("isError") is True and error.get("code") == code
+                and (message is None or error.get("message") == message), result)
+
+    def registered_revocation(self, caller, worktree):
+        require(caller.call("thread.loaded.list")["data"] == [], "Unexpected fixture threads")
+        caller_pids = caller.processes()
+        observer = Host(self, streams=caller.observer_streams)
+        scope = observer.call("codex.diagnostics.snapshot")["scope"]
+        require(scope["principal_id"] == "registered-codex-observer"
+                and scope["profile_id"] == "observer" and scope["project_id"] == "primary", scope)
+        refused = observer.raw("codex.worktree.managed.read", {"managed_worktree_id": worktree["id"]})
+        require(refused.get("isError") is True and "Unknown Computer MCP-managed worktree" in json.dumps(refused),
+                refused)
+        require(observer.call("thread.loaded.list")["data"] == [], "Unexpected fixture threads")
+        observer_peer = self.vendor_receipt()
+        observer_pids = observer.processes()
+        require(caller_pids[0] != observer_pids[0] == observer_peer["pid"], observer_peer)
+        self.revoke("acceptance")
+        wait_until(lambda: all(exited(pid) for pid in caller_pids[:2]), 15, "Revoked caller process exit")
+        self.assert_revoked(caller, "permission.denied")
+        require(observer.call("thread.loaded.list")["data"] == [] and not exited(observer_pids[0])
+                and observer.processes() == observer_pids, "Unrelated caller lost its live runtime")
+        self.revoke("observer")
+        wait_until(lambda: all(exited(pid) for pid in observer_pids[:2]), 15, "Revoked provider process exit")
+        self.assert_revoked(observer, "permission.unavailable", "invalidBinding")
+        observer.close()
+        caller.close()
+        require(self.vendor_receipt() == observer_peer, "Revocation relaunched the vendor")
+        self.record("caller-revocation-isolated-and-durable-provider-revocation-terminated-peer")
+
+    def registered_container(self):
+        marker = "caller project fixture\n"
+        sibling = "sibling project fixture\n"
+        (self.root / "other/product.txt").write_text(sibling)
+        vendor_receipt = self.home / "vendor.json"
+        prior_vendor = None
+        for generation in (1, 2):
             host = Host(self)
-            host.call("thread.loaded.list")
-            receipt = json.loads((self.home / "vendor.json").read_text())
-            require(not receipt["inherited_host_env"] and not receipt["inherited_host_socket"], receipt)
-            self.pids.add(receipt["pid"])
-            callback("file.read", {"workspace_id": "other", "path": "product.txt"}, success=False)
-            callback("codex.app.status", {}, request_error={"code": -32001,
-                     "message": "This App Server request is not part of the supported coding contract."})
-            if confirmation == "never":
-                (self.root / "primary/product.txt").write_text("governed-native\n")
-                index = self.root / "primary/.git/index"
-                before = index.read_bytes()
-                staged = self.git(["diff", "--cached", "--name-only"])
-                callback("git.add", {"paths": ["product.txt"], "dry_run": True})
-                require(index.read_bytes() == before and self.git(["diff", "--cached", "--name-only"]) == staged,
-                        "Native dry-run callback changed the index")
-                require(host.call("approvals.list", {"state": "pending"})["approvals"] == [],
-                        "Host dry-run created native approval")
-                (self.root / "primary/product.txt").unlink()
-                # Keep all acceptance artifacts out of this exact Git workflow's status.
-                (self.root / "primary/.git/info/exclude").write_text("*\n!product.txt\n")
-                hook = self.root / "primary/.git/hooks/pre-commit"
-                hook.write_text("#!/bin/sh\n/usr/bin/touch .git/callback-hook-ran\n")
-                hook.chmod(0o700)
-                steps = [("file.write", {"path": "product.txt", "content": "governed-native\n"}),
-                         ("git.add", {"paths": ["product.txt"]}),
-                         ("git.commit", {"message": "Governed native callback acceptance"})]
-                for tool, arguments in steps:
-                    ticket = callback("operations.prepare", {"tool": tool, "arguments": arguments})["ticket_id"]
-                    if tool == "file.write":
-                        require(not (self.root / "primary/product.txt").exists(), "Prepare executed the write")
-                    elif tool == "git.add":
-                        require(not self.git(["diff", "--cached", "--name-only"]), "Prepare staged files")
-                    else:
-                        require(not (self.root / "primary/.git/callback-hook-ran").exists(), "Prepare committed")
-                    commit = {"tool": tool, "arguments": arguments, "ticket_id": ticket}
-                    callback("operations.commit", dict(commit, ticket_id="unrelated-ticket"), success=False)
-                    callback("operations.commit", commit)
-                    callback("operations.commit", commit, success=False)
-                require((self.root / "primary/.git/callback-hook-ran").exists(), "Callback Git hook did not run")
-                require(self.git(["show", "HEAD:product.txt"]) == "governed-native\n", "Callback commit content differs")
-                require(not self.git(["status", "--porcelain"]), "Callback worktree is not clean")
+            initial = host.call("codex.diagnostics.snapshot")
+            require(initial["host_diagnostics_available"] and initial["persistence_available"], initial)
+            require(initial["state_storage"]["scope"] == "authorization_subject", initial)
+            require(initial["scope"]["project_id"] == "primary"
+                    and initial["scope"]["principal_id"] == "registered-codex-fixture", initial)
+            if prior_vendor:
+                self.clear_stale_runtime(host, initial, prior_runtime, prior_pids)
+            require(not vendor_receipt.exists() or json.loads(vendor_receipt.read_text()) == prior_vendor,
+                    "Catalog or diagnostics launched the peer")
+
+            request_id = 900 + generation
+            arguments = {"path": "product.txt"}
+            if generation == 2:
+                arguments["project_id"] = "other"
+            request = {"id": request_id, "method": "item/tool/call", "params": {
+                "namespace": "computer-mcp", "tool": "file.read", "arguments": arguments,
+                "callId": f"fixture-read-{generation}", "threadId": "fixture-thread", "turnId": "fixture-turn"}}
+            (self.home / "queued.json").write_text(json.dumps(request))
+            loaded = host.call("thread.loaded.list")
+            require(loaded["data"] == [], loaded)
+            vendor = self.vendor_receipt()
+            response = json.loads((self.home / f"callback-{request_id}.json").read_text())
+            require(response["id"] == request_id and "error" not in response, response)
+            callback = response["result"]
+            require(callback["success"] is (generation == 1), callback)
+            content = json.loads(callback["contentItems"][0]["text"])
+            if generation == 1:
+                require(unwrap(content)["content"] == marker, content)
+                execution = content["structuredContent"]["gateway_execution"]
+                require(all(execution[key] == initial["scope"][key]
+                            for key in ("project_id", "profile_id", "caller", "socket_connection_id")), execution)
             else:
-                arguments = {"path": "pending.txt", "content": "must require local approval"}
-                prepared = callback("operations.prepare", {"tool": "file.write", "arguments": arguments})
-                require("pending_approval" in json.dumps(prepared), prepared)
-                callback("operations.commit", {"tool": "file.write", "arguments": arguments,
-                                                "ticket_id": prepared["ticket_id"]}, success=False)
-                require(not (self.root / "primary/pending.txt").exists(), "Pending host ticket was consumed")
-            host.processes()
-            host.close()
-        self.configure()
-        self.record("native-host-callback-scope-dry-run-exact-tickets-hooked-git-and-pending-approval")
+                require("bound connection scope" in content["error"] and sibling not in json.dumps(content), content)
+
+            require(vendor["count"] == generation and vendor["codex_home"] == str(self.home), vendor)
+            require(all(vendor[key] == self.container[key] for key in ("home", "cache", "state")), vendor)
+            require(not vendor["inherited_host_env"] and not vendor["inherited_host_socket"], vendor)
+            require(prior_vendor is None or vendor["pid"] != prior_vendor["pid"], vendor)
+            pids = host.processes()
+            snapshot = host.call("codex.diagnostics.snapshot")
+            if generation == 1:
+                reads = [row for row in snapshot["recent_tool_audits"]
+                         if row["capability_id"] == "file.read" and row["request_id"] == execution["request_id"]]
+                require(any(row["decision"] == "allowed"
+                            and row["socket_connection_id"] == execution["socket_connection_id"]
+                            for row in reads), reads)
+            (self.root / f"vendor-{generation}.json").write_text(json.dumps(vendor, indent=2) + "\n")
+            if generation == 1:
+                worktree, parent = self.provision_worktree(host)
+                prior_runtime = host.call("status")["runtime_id"]
+                prior_vendor, prior_pids = vendor, pids
+                adapter_pid = pids[2]
+                require(descendant(adapter_pid, host.process.pid, process_parent)
+                        and descendant(vendor["pid"], adapter_pid, process_parent),
+                        "Crash target is not the fixture's adapter and vendor lineage")
+                os.kill(adapter_pid, signal.SIGKILL)
+                host.close()
+                wait_until(lambda: all(exited(pid) for pid in prior_pids), 15, "Previous fixture process exit")
+            else:
+                self.remove_worktree(host, worktree, parent)
+                host.close()
+        self.registered_revocation(Host(self, with_observer=True), worktree)
+        require(list(Path(self.container["state"]).glob("codex-adapter/subjects/*/codex.sqlite")),
+                "Adapter records are missing in the injected state directory")
+        self.record("registered-container-vendor-and-adapter-persistence-and-caller-scoped-read")
 
     def authenticated(self):
         with self.options.auth_file.open("rb") as source:
@@ -894,13 +1307,15 @@ COMPUTER_MCP_FIXTURE_VALUE = "preserved"
         except Exception as error:
             errors.append(f"Model log cleanup: {error}")
         try:
-            launches = self.root / "launches.jsonl"
+            launches = self.launches
             if launches.exists():
                 entries = [json.loads(line) for line in launches.read_text().splitlines()]
                 self.pids.update(entry["pid"] for entry in entries)
                 roots = {str((self.root / name).resolve()) for name in ("primary", "other")}
                 if not all(str(Path(entry["cwd"]).resolve()) in roots for entry in entries):
                     errors.append("Vendor launched outside selected workspaces")
+            if self.options.mode == "container" and (self.home / "vendor.json").is_file():
+                self.vendor_receipt()
         except Exception as error:
             errors.append(f"Launch receipts: {error}")
         try:
@@ -918,37 +1333,43 @@ def digest(path):
     return value.hexdigest()
 
 
-def run(options):
+def run(options, provenance=None):
     fixture = Fixture(options)
     report = {"schema_version": 1, "mode": options.mode, "passed": False,
               "authenticated_model_verified": False, "steps": fixture.steps,
               "binaries": {key: {"path": str(getattr(options, key)), "sha256": digest(getattr(options, key))}
-                           for key in ("host", "adapter", "codex")},
-              "fixture_sha256": {source.name: digest(source) for source in
-                                  (MODEL_SOURCE, MODEL_SOURCE.with_name("HostToolVendor.py"))}}
+                           for key in ("host", "adapter", "codex") if getattr(options, key)},
+              "fixture_sha256": {source.name: digest(source) for source in (
+                  MODEL_SOURCE, REGISTERED_HOST_SOURCE)}}
+    if provenance:
+        report["source_acceptance"] = provenance
+        report["authorization"] = fixture.authorization
     try:
         fixture.setup()
-        for key in ("host", "adapter", "codex"):
+        for key in report["binaries"]:
             result = subprocess.run([str(getattr(options, key)), "--version"], text=True, capture_output=True,
                                     timeout=10, check=True, env=fixture.environment)
             report["binaries"][key]["version"] = result.stdout.strip()
-        fixture.catalog_and_diagnostics()
-        fixture.directories()
-        fixture.native_permissions()
-        fixture.handoff()
-        fixture.sibling_workspace()
-        fixture.recovery()
-        fixture.app_lifecycle()
-        fixture.exec_lifecycle()
-        fixture.host_callbacks()
-        if options.mode == "full":
-            fixture.authenticated()
-            report["authenticated_model_verified"] = True
-        fixture.archive_threads()
+        if options.mode == "container":
+            fixture.registered_container()
+        else:
+            fixture.catalog_and_diagnostics()
+            fixture.directories()
+            fixture.native_permissions()
+            fixture.handoff()
+            fixture.sibling_workspace()
+            fixture.recovery()
+            fixture.app_lifecycle()
+            fixture.exec_lifecycle()
+            if options.mode == "full":
+                fixture.authenticated()
+                report["authenticated_model_verified"] = True
+            fixture.archive_threads()
         report["passed"] = True
     except Exception as error:
         report["failure"] = str(error)
     finally:
+        last_tool_call = fixture.last_tool_call
         report["cleanup_errors"] = []
         try:
             (fixture.home / "auth.json").unlink(missing_ok=True)
@@ -970,6 +1391,8 @@ def run(options):
             report["binary_digests_unchanged"] = False
             report["cleanup_errors"].append(f"Binary digest verification: {error}")
         report["passed"] = report["passed"] and not report["cleanup_errors"] and report["binary_digests_unchanged"]
+        if options.mode == "container" and not report["passed"] and last_tool_call is not None:
+            report["last_tool_call"] = last_tool_call
         (fixture.root / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"passed": report["passed"], "mode": options.mode,
                       "authenticated_model_verified": report["authenticated_model_verified"],
@@ -978,5 +1401,15 @@ def run(options):
     return 0 if report["passed"] else 1
 
 
+def main():
+    options = parse_arguments()
+    try:
+        provenance = prepare_pinned_host(options) if options.mode == "container" else None
+        return run(options, provenance)
+    except (AssertionError, OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as error:
+        print(f"Host acceptance failed: {error}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    raise SystemExit(run(parse_arguments()))
+    raise SystemExit(main())

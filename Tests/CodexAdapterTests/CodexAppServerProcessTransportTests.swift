@@ -421,8 +421,9 @@ struct CodexAppServerProcessTransportTests {
     defer { try? FileManager.default.removeItem(at: directory) }
     let owner = Process()
     owner.executableURL = URL(fileURLWithPath: "/bin/sleep")
-    owner.arguments = ["0.3"]
+    owner.arguments = ["30"]
     try owner.run()
+    defer { if owner.isRunning { owner.terminate() } }
 
     let descendantPIDFile = directory.appendingPathComponent("descendant.pid")
     let script = directory.appendingPathComponent("app-server.sh")
@@ -457,6 +458,7 @@ struct CodexAppServerProcessTransportTests {
     let supervisorPID = try #require(running.supervisorProcessID)
     let descendantPID = try await waitForPID(at: descendantPIDFile)
 
+    owner.terminate()
     let ownerExited = await waitForProcessExit(owner)
     #expect(ownerExited)
     if !ownerExited {

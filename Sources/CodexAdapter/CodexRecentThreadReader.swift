@@ -95,15 +95,7 @@ struct CodexRecentThreadReader: Sendable {
   }
 
   static func live() -> CodexRecentThreadReader {
-    let environment = ProcessInfo.processInfo.environment
-    let codexHome =
-      environment["CODEX_HOME"].map {
-        URL(fileURLWithPath: $0, isDirectory: true)
-      }
-      ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-        ".codex",
-        isDirectory: true
-      )
+    let codexHome = CodexProcessEnvironment.vendorHome()
     return CodexRecentThreadReader(
       stateDatabaseURL: newestStateDatabase(in: codexHome),
       allowedRolloutRoot: codexHome

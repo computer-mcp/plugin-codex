@@ -141,6 +141,18 @@ class PackageOwnershipTests(unittest.TestCase):
                 package.validate_architectures(manifest, slices, platform)
         self.assertEqual(manifest.read_bytes(), original)
 
+    def test_manifest_requests_only_the_default_codex_network_hosts(self):
+        manifest = Path(__file__).resolve().parents[1] / "computer-mcp-plugin.toml"
+        with manifest.open("rb") as source:
+            sandbox = package.tomllib.load(source)["sandbox"]
+        network = sandbox["network"]
+        self.assertEqual(network["level"], "custom")
+        self.assertCountEqual(network["hosts"], ["api.openai.com", "chatgpt.com", "auth.openai.com"])
+        self.assertNotIn("github.com", network["hosts"])
+        self.assertIs(network["include_trusted"], False)
+        self.assertIs(sandbox.get("full_access", False), False)
+        self.assertFalse(sandbox.get("read_exceptions"))
+
     def test_package_rejects_slice_mismatch_and_manifest_mutation_before_publication(self):
         for failure in ("slice_mismatch", "manifest_mutation", "version_mismatch"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:

@@ -10,10 +10,15 @@ struct CodexAppServerProviderTests {
   func hostServiceConsumersDeclareTheirExactSemanticEffect() {
     let expected = [
       "codex.diagnostics.snapshot": "diagnostics.snapshot",
-      "codex.worktree.provision.perform": "workspaces.provision",
-      "codex.worktree.remove.perform": "workspaces.remove",
+      "codex.worktree.managed.list": "projects.list",
+      "codex.worktree.provision.perform": "projects.provision",
+      "codex.worktree.remove.perform": "projects.remove",
     ]
-    for tool in makeProvider().tools {
+    let consumers = makeProvider().tools.filter {
+      $0._meta?["io.github.computer-mcp/host-action"] != nil
+    }
+    #expect(consumers.map(\.name).sorted() == expected.keys.sorted())
+    for tool in consumers {
       #expect(tool._meta?["io.github.computer-mcp/host-action"]?.stringValue == expected[tool.name])
     }
   }
@@ -33,8 +38,9 @@ struct CodexAppServerProviderTests {
     for tool in tools {
       let raw = try #require(
         tool._meta?["io.github.computer-mcp/risk"]?.stringValue)
-      #expect(CodexOperationRisk(rawValue: raw) != nil)
-      #expect(tool.annotations.readOnlyHint == (raw == "read-only"))
+      let risk = try #require(
+        CodexOperationRisk(hostValue: raw), "Invalid host risk for \(tool.name)")
+      #expect(tool.annotations.readOnlyHint == (risk == .readOnly))
     }
     for name in [
       "codex.app.methods.call", "codex.app.thread.start", "codex.app.thread.reclaim",
@@ -51,7 +57,7 @@ struct CodexAppServerProviderTests {
     }
     let goal = try #require(tools.first { $0.name == "codex.app.goal.clear" })
     #expect(
-      goal._meta?["io.github.computer-mcp/risk"] == .string("workspace-write"))
+      goal._meta?["io.github.computer-mcp/risk"] == .string("project-write"))
   }
 
   @Test

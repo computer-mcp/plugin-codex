@@ -4,7 +4,7 @@ import GRDB
 /// Adapter-owned domain records. Host grants, credentials, workspaces and audit stay with the host.
 final class CodexDatabase: @unchecked Sendable {
   private let writer: any DatabaseWriter
-  private let worktreeLeaseWriter: any DatabaseWriter
+  let worktreeLeaseWriter: any DatabaseWriter
   let sharesWorktreeLeases: Bool
   let fileURL: URL?
 
@@ -19,12 +19,13 @@ final class CodexDatabase: @unchecked Sendable {
     } else {
       worktreeLeaseWriter = writer
     }
-    try Self.validateMigrations(Self.migrator, in: writer)
+    let primaryMigrator = Self.primaryMigrator(includesLocalWorktrees: !sharesWorktreeLeases)
+    try Self.validateMigrations(primaryMigrator, in: writer)
     if sharesWorktreeLeases {
       try Self.validateMigrations(Self.worktreeLeaseMigrator, in: worktreeLeaseWriter)
       try Self.worktreeLeaseMigrator.migrate(worktreeLeaseWriter)
     }
-    try Self.migrator.migrate(writer)
+    try primaryMigrator.migrate(writer)
   }
 
   init(inMemory: Void) throws {
@@ -245,53 +246,114 @@ final class CodexDatabase: @unchecked Sendable {
     branch: String?,
     ttlSeconds: Int,
     now: Date,
-    managedWorktreeID: String? = nil
+    scope: CodexProjectScope?
   ) throws -> CodexWorktreeLease {
     try worktreeLeaseWriter.write { database in
-      let rows =
-        try CodexWorktreeLeaseRow
-        .filter(Column("workspaceID") == workspaceID)
-        .filter(Column("state") == CodexWorktreeLeaseState.active.rawValue)
-        .fetchAll(database)
-      for row in rows {
-        var existing = try row.value()
-        if existing.expiresAt <= now {
-          existing.state = .expired
-          existing.releasedAt = now
-          existing.releaseReason = "lease_ttl_expired"
-          existing.revision += 1
-          try CodexWorktreeLeaseRow(existing).save(database)
-          continue
-        }
-        if existing.agentID == agentID, existing.threadID == threadID,
-          existing.runID == runID
-        {
-          return existing
-        }
-        throw CodexWorktreeLeaseError.conflict(existing)
+      guard scope == nil || scope?.projectID == workspaceID else {
+        throw CodexWorktreeLeaseError.invalid("The lease must use the selected project.")
       }
-      let lease = CodexWorktreeLease(
-        id: UUID().uuidString,
-        workspaceID: workspaceID,
-        workspacePath: workspacePath,
-        mode: mode,
-        agentID: agentID,
-        threadID: threadID,
-        runID: runID,
-        parentLeaseID: parentLeaseID,
-        branch: branch,
-        state: .active,
-        createdAt: now,
-        heartbeatAt: now,
-        expiresAt: now.addingTimeInterval(TimeInterval(ttlSeconds)),
-        releasedAt: nil,
-        releaseReason: nil,
-        revision: 1,
-        managedWorktreeID: managedWorktreeID
-      )
-      try CodexWorktreeLeaseRow(lease).save(database)
-      return lease
+      let association = try scope.flatMap { try Self.boundHostChild(in: database, scope: $0) }
+      let parent = try parentLeaseID.flatMap { try Self.worktreeLease(in: database, id: $0) }
+      if parentLeaseID != nil {
+        guard let parent, parent.state == .active, parent.expiresAt > now else {
+          throw CodexWorktreeLeaseError.invalid("parent_lease_id must identify an active lease")
+        }
+        guard parent.workspaceID != workspaceID || parent.mode == .exclusive else {
+          throw CodexWorktreeLeaseError.invalid(
+            "an isolated child must use a separately registered worktree project")
+        }
+        if sharesWorktreeLeases, parent.workspaceID != workspaceID, association == nil {
+          throw CodexWorktreeLeaseError.invalid(
+            "The parent lease requires a completed host worktree association.")
+        }
+      }
+
+      if let association {
+        guard
+          association.state == .active
+            || (association.state == .removalPlanned
+              && association.planExpiresAt.map({ $0 <= now }) == true)
+        else {
+          throw CodexWorktreeLeaseError.invalid("The host worktree is pending removal or removed.")
+        }
+        guard let host = association.creation, association.creationOperationID != nil,
+          let parent,
+          parent.workspaceID == association.source.projectID, host.path == workspacePath,
+          branch == nil || branch == host.branch
+        else {
+          throw CodexWorktreeLeaseError.invalid(
+            "The lease must use the selected host worktree and its source parent.")
+        }
+      }
+
+      let proposed = CodexWorktreeLease(
+        workspaceID: workspaceID, workspacePath: workspacePath, mode: mode, agentID: agentID,
+        threadID: threadID, runID: runID, parentLeaseID: parentLeaseID,
+        branch: association?.creation?.branch ?? branch, ttlSeconds: ttlSeconds, now: now,
+        association: association)
+      let acquired = try Self.acquireWorktreeLease(in: database, proposed: proposed, now: now)
+      if var association,
+        association.lease != .acquired(acquired.id) || association.state == .removalPlanned
+      {
+        association.lease = .acquired(acquired.id)
+        association.state = .active
+        association.force = nil
+        association.planExpiresAt = nil
+        association.revision += 1
+        association.updatedAt = now
+        try Self.saveHostWorktree(association, in: database)
+      }
+      return acquired
     }
+  }
+
+  static func worktreeLease(in database: Database, id: String) throws -> CodexWorktreeLease? {
+    try CodexWorktreeLeaseRow.fetchOne(database, key: id)?.value()
+  }
+
+  static func activeWorktreeLeases(in database: Database, projectID: String, now: Date) throws
+    -> [CodexWorktreeLease]
+  {
+    let rows =
+      try CodexWorktreeLeaseRow
+      .filter(Column("workspaceID") == projectID)
+      .filter(Column("state") == CodexWorktreeLeaseState.active.rawValue)
+      .fetchAll(database)
+    var active: [CodexWorktreeLease] = []
+    for row in rows {
+      var lease = try row.value()
+      if lease.expiresAt > now {
+        active.append(lease)
+      } else {
+        lease.state = .expired
+        lease.releasedAt = now
+        lease.releaseReason = "lease_ttl_expired"
+        lease.revision += 1
+        try CodexWorktreeLeaseRow(lease).save(database)
+      }
+    }
+    return active
+  }
+
+  static func acquireWorktreeLease(
+    in database: Database, proposed: CodexWorktreeLease, now: Date
+  ) throws -> CodexWorktreeLease {
+    let active = try activeWorktreeLeases(in: database, projectID: proposed.workspaceID, now: now)
+    if let existing = active.first {
+      guard active.count == 1, existing.agentID == proposed.agentID,
+        existing.threadID == proposed.threadID, existing.runID == proposed.runID,
+        proposed.hostWorktreeID == nil
+          || (existing.hostWorktreeID == proposed.hostWorktreeID
+            && existing.creationOperationID == proposed.creationOperationID
+            && existing.managedWorktreeID == proposed.managedWorktreeID
+            && existing.parentLeaseID == proposed.parentLeaseID
+            && existing.workspacePath == proposed.workspacePath
+            && existing.mode == proposed.mode && existing.branch == proposed.branch)
+      else { throw CodexWorktreeLeaseError.conflict(existing) }
+      return existing
+    }
+    try CodexWorktreeLeaseRow(proposed).insert(database)
+    return proposed
   }
 
   func updateCodexWorktreeLease(
@@ -321,63 +383,32 @@ final class CodexDatabase: @unchecked Sendable {
     }
   }
 
-  func saveCodexManagedWorktree(_ worktree: CodexManagedWorktree) throws {
-    try writer.write { database in
-      try CodexManagedWorktreeRow(worktree).save(database)
-    }
-  }
-
-  func codexManagedWorktree(id: String) throws -> CodexManagedWorktree? {
-    try writer.read { database in
-      try CodexManagedWorktreeRow.fetchOne(database, key: id)?.value()
-    }
-  }
-
-  func codexManagedWorktrees(
-    sourceWorkspaceID: String? = nil,
-    limit: Int = 100
-  ) throws -> [CodexManagedWorktree] {
-    try writer.read { database in
-      var request =
-        CodexManagedWorktreeRow
+  func unmanagedWorktrees(owner: CodexRuntimeOwner, limit: Int) throws -> [JSONValue] {
+    guard let project = owner.workspaceID else { return [] }
+    return try writer.read { database in
+      let rows =
+        try CodexManagedWorktreeRow
+        .filter(Column("sourceWorkspaceID") == project)
+        .filter(Column("state") == CodexManagedWorktreeState.unmanaged.rawValue)
         .order(Column("updatedAt").desc, Column("id").desc)
-      if let sourceWorkspaceID {
-        request = request.filter(Column("sourceWorkspaceID") == sourceWorkspaceID)
+        .fetchCursor(database)
+      var history: [JSONValue] = []
+      while history.count < limit, let row = try rows.next() {
+        if let item = try row.history(for: owner) { history.append(item) }
       }
-      return try request.limit(max(1, min(limit, 5_000))).fetchAll(database).map {
-        try $0.value()
-      }
+      return history
     }
   }
 
-  func updateCodexManagedWorktree(
-    id: String,
-    sourceWorkspaceID: String?,
-    expectedRevision: Int,
-    mutate: (inout CodexManagedWorktree) throws -> Void
-  ) throws -> CodexManagedWorktree {
-    try writer.write { database in
-      guard let row = try CodexManagedWorktreeRow.fetchOne(database, key: id) else {
-        throw CodexManagedWorktreeError.unknown(id)
-      }
-      var worktree = try row.value()
-      guard sourceWorkspaceID == nil || worktree.sourceWorkspaceID == sourceWorkspaceID else {
-        throw CodexManagedWorktreeError.unknown(id)
-      }
-      guard worktree.revision == expectedRevision else {
-        throw CodexManagedWorktreeError.revisionConflict(
-          expected: expectedRevision,
-          actual: worktree.revision
-        )
-      }
-      try mutate(&worktree)
-      worktree.revision += 1
-      try CodexManagedWorktreeRow(worktree).save(database)
-      return worktree
+  func unmanagedWorktree(id: String, owner: CodexRuntimeOwner) throws -> JSONValue? {
+    try writer.read { database in
+      try CodexManagedWorktreeRow.fetchOne(database, key: id)?.history(for: owner)
     }
   }
 
-  static var migrator: DatabaseMigrator {
+  static var migrator: DatabaseMigrator { primaryMigrator(includesLocalWorktrees: true) }
+
+  private static func primaryMigrator(includesLocalWorktrees: Bool) -> DatabaseMigrator {
     var migrator = DatabaseMigrator()
     migrator.registerMigration("codex-initial") { database in
       try database.create(table: "codexApprovals") { table in
@@ -481,12 +512,28 @@ final class CodexDatabase: @unchecked Sendable {
         columns: ["sourceWorkspaceID", "state", "updatedAt"]
       )
     }
+    migrator.registerMigration("codex-projects-v1-history") { database in
+      for var row in try CodexManagedWorktreeRow.fetchAll(database) {
+        var payload = try row.payload()
+        payload["previous_state"] = payload["state"] ?? .string(row.state)
+        payload["state"] = .string(CodexManagedWorktreeState.unmanaged.rawValue)
+        row.state = CodexManagedWorktreeState.unmanaged.rawValue
+        row.payloadJSON = String(decoding: try JSONEncoder().encode(payload), as: UTF8.self)
+        try row.update(database)
+      }
+    }
+    if includesLocalWorktrees {
+      migrator.registerMigration(
+        "codex-projects-v1-local-worktrees", migrate: createHostWorktreeTables)
+    }
     return migrator
   }
 
   private static var worktreeLeaseMigrator: DatabaseMigrator {
     var migrator = DatabaseMigrator()
     migrator.registerMigration("codex-worktree-leases-initial", migrate: createWorktreeLeaseTable)
+    migrator.registerMigration(
+      "codex-projects-v1-shared-worktrees", migrate: createHostWorktreeTables)
     return migrator
   }
 
@@ -531,22 +578,19 @@ private struct CodexManagedWorktreeRow: Codable, FetchableRecord, PersistableRec
   var updatedAt: Date
   var payloadJSON: String
 
-  init(_ value: CodexManagedWorktree) throws {
-    id = value.id
-    sourceWorkspaceID = value.sourceWorkspaceID
-    workspaceID = value.workspaceID
-    state = value.state.rawValue
-    updatedAt = value.updatedAt
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    payloadJSON = String(decoding: try encoder.encode(value), as: UTF8.self)
+  func payload() throws -> [String: JSONValue] {
+    try JSONDecoder().decode([String: JSONValue].self, from: Data(payloadJSON.utf8))
   }
 
-  func value() throws -> CodexManagedWorktree {
-    guard let data = payloadJSON.data(using: .utf8) else {
-      throw CodexDatabaseError.invalidStoredValue("Codex managed worktree is not UTF-8.")
-    }
-    return try JSONDecoder().decode(CodexManagedWorktree.self, from: data)
+  func history(for owner: CodexRuntimeOwner) throws -> JSONValue? {
+    guard state == CodexManagedWorktreeState.unmanaged.rawValue,
+      sourceWorkspaceID == owner.workspaceID
+    else { return nil }
+    let fields = try payload()
+    guard fields["principal_id"]?.stringValue == owner.principalID,
+      owner.principalID == nil || fields["profile_id"]?.stringValue == owner.profileID
+    else { return nil }
+    return .object(fields)
   }
 }
 

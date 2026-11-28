@@ -79,8 +79,7 @@ and set startup arguments to individual values:
       "allowAnyTool": true,
       "hostServices": true,
       "args": [
-        "--config", "/absolute/path/to/codex.json",
-        "--state-directory", "/absolute/path/to/adapter-state"
+        "--config", "/absolute/path/to/codex.json"
       ]
     }
   }
@@ -93,8 +92,10 @@ remain separate host decisions. `hostServices` delegates the current connection'
 scope over a private inherited MCP endpoint, not local-admin authority; leave it
 false for an adapter that does not require callbacks. See
 [host integration](HostIntegration.md). The configuration file contains the existing
-Codex settings described in the root manual; `CODEX_HOME` selects vendor state
-through the registered environment. Never put credentials in arguments.
+Codex settings described in the root manual. The host must allow the adapter
+to read the configuration file. The provider container holds adapter records
+under `$XDG_STATE_HOME/codex-adapter` and vendor state under `$HOME/.codex` by
+default. Never put credentials in arguments.
 
 For the CLI, save the settings JSON and use `plugins configure codex
 --settings-file /absolute/path/settings.json --expected-revision REVISION`.

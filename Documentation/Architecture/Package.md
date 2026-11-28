@@ -218,55 +218,43 @@ events, native approvals, user input, connection generations, cancellation,
 shutdown and handoff. Lease-based reconciliation checks the exact receipted
 processes before declaring an uncoordinated owner gone.
 
-`CodexDatabase` stores approvals, runtime leases, thread ownership,
-reconciliation receipts, acceptance runs, worktree leases and managed-worktree receipts using their
-existing row and JSON representations.
-It uses one initial domain schema and GRDB transactions; it does
-not store host profiles, credentials, workspace registrations or audit.
-Unknown migration identifiers fail before either the domain or shared-lease
-store is initialized. Use a fresh adapter state directory for an incompatible
-schema. The separate shared-lease database initializes only its lease table and
-index.
-Host-launched storage is partitioned by verified subject, profile and registered
-workspace, not a transient connection or channel. Reconnection retains this
-identity. Worktree lease facts use one transactional store per subject and
-profile, so a registered child workspace and its source observe the same lease
-revision. Tool access remains workspace-bound; cross-workspace lineage requires
-a managed-worktree receipt created by the source's verified host registration.
-Other domain records remain workspace-partitioned.
-Existing unbound storage is preserved and reported for local review;
-it is never silently assigned to a new subject. A shared, transactional native
-thread-owner index prevents concurrent claims or reads by another subject.
-Read-only history lookup does not claim a thread.
+`CodexDatabase` stores approvals, native runtime and thread ownership,
+reconciliation receipts, acceptance runs and worktree history. The primary
+database is partitioned by verified principal, profile and selected project.
+The native thread-owner index coordinates claims independently.
 
-`CodexHostTools` requires host preflight plus per-execution authorization and
-audit. Native Codex approvals retain official decisions and scopes; host-tool
-approvals remain under the host's own authority.
-`CodexHostMCPClient` uses the explicitly delegated standard MCP connection.
-Its verified subject is fixed, while the host checks current grants for each
-call. Tool arguments cannot select authority or an administrator socket.
+The principal/profile lease database also owns new host-backed worktree
+associations and operations. Source and child projections use the same
+transactional writer, scoped to their host-returned association. Separate
+transactions validate primary run references and persist worktree state.
+Worktree migrations run before the provider is published. Legacy worktree
+rows retain their original identities and lifecycle states as unmanaged
+history in the primary database. Unbound history stays in its original store.
+Unknown migrations fail before either required database is migrated.
 
-`CodexManagedWorktreeManager` owns Git planning, creation, ownership checks and
-removal, preserving the stored revision and source-workspace scope.
-`CodexManagedWorkspaceHost` owns derived-workspace registration and grants,
-registration rollback, and destructive-operation authorization. Removal requires
-that authorization before changing either Git or the lifecycle receipt.
+`CodexHostTools` preflights dynamic callbacks and rechecks authorization at
+execution. Native Codex approvals retain official decisions and scopes.
+`CodexHostMCPClient` uses the inherited MCP connection with its immutable
+verified subject and selected project. Its typed project service methods
+preserve complete host responses. Both peers advertise `projects-v1`.
 
-`CodexOperationalDiagnostics` correlates adapter-owned state with a bounded,
-scope-matched `CodexHostDiagnostics` snapshot. Host audit data stays host-owned;
-missing host data produces explicit unknown values. Audit projection
-retains identifiers and digests, redacts strings, and excludes command bodies.
-The executable's launch factory supplies these interfaces when the host provides
-its inherited MCP descriptor. Without it, managed-worktree mutations remain
-unavailable and host diagnostic fields remain unknown. Vendor subprocesses do
-not receive the host descriptor or reserved context. The host chooses the
-managed root separately from adapter-domain persistence.
+`CodexHostWorktreeManager` records plans and commits the invocation and
+operation IDs before private lifecycle calls. On creation, the shared writer
+settles the host association and the lease disposition in one transaction.
+A competing lease can coexist with a completed creation. Computer MCP
+executes Git operations and controls project registration and removal.
 
-Removal preserves a `removing` receipt when Git succeeded but host cleanup did
-not. A new reviewed operation validates path absence and Git state before
-retrying metadata only. Provision rollback preserves Git content when host
-cleanup is unconfirmed; it never represents that case as a complete rollback.
-See [Host integration](../Reference/HostIntegration.md) for the operator contract.
+Pending operations survive adapter restart. A fresh, authorized managed
+worktree read inspects the retained operation ID and can settle its observed
+state. The source remains available for this read after the child is removed.
+Host recovery owns unresolved effects.
+
+`CodexOperationalDiagnostics` combines adapter records with bounded,
+scope-matched host audit observations. It projects identifiers and digests and
+redacts diagnostic strings. The launch factory supplies host interfaces only
+with the inherited descriptor. Vendor subprocesses receive their own execution
+context. See [Host integration](../Reference/HostIntegration.md) for the
+operator contract.
 
 ## Runtime generations and teardown
 
@@ -317,11 +305,11 @@ Standard-MCP dispatch tests use controlled execution doubles and an isolated
 protocol process with a durable database. These fixtures
 do not prove native model authentication or host-to-adapter integration.
 
-Managed-worktree tests also use private Git repositories and two workspace-bound
-MCP connections. They verify lease scope, active/dirty worktree protection,
-host denial without mutation, durable removal and branch preservation.
-The workspace and diagnostic host implementations in these tests are test
-doubles, not evidence of a connected Computer MCP control plane.
+Worktree tests use typed host doubles, separate source and child database
+connections, and standard MCP dispatch. They exercise reviewed argument
+presence, durable operation binding, lease contention, migration and
+inspection after a lost reply. Paired acceptance uses the actual adapter
+and host with an isolated deterministic vendor peer.
 
 The exposed execution surface includes App Server and Exec.
 Version-specific schemas remain separate inspection tools. The package exports an executable, not a
@@ -345,7 +333,7 @@ acceptance before promoting an artifact to a public release.
 
 ## Inherited host channel
 
-The host binds callbacks to its own immutable caller/workspace scope over an
+The host binds callbacks to its own immutable caller and project scope over an
 inherited connected Unix socket. `COMPUTER_MCP_HOST_FD` selects a canonical
 descriptor from 3 through 9 alongside the host context. The transport requires
 a connected stream socket, sets close-on-exec and nonblocking mode, and bounds

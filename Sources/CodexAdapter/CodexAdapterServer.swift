@@ -83,10 +83,15 @@ package enum CodexAdapterServer {
       do {
         return try await CodexWorkInvocation.$current.withValue(invocation) {
           if let appServer, appServer.tools.contains(where: { $0.name == params.name }) {
-            return try await appServer.call(name: params.name, arguments: arguments)
+            return try await appServer.call(
+              name: params.name, arguments: arguments,
+              hostInvocation: CodexHostInvocation(params._meta))
           }
           return try await execution.call(name: params.name, arguments: arguments)
         }
+      } catch let error as CodexProjectContract.Unsupported {
+        return try .init(
+          structuredContent: JSONValue.object(["error": error.fields]), isError: true)
       } catch CodexToolError.unknownTool {
         throw MCPError.invalidParams("Unknown tool: \(params.name)")
       } catch {
@@ -100,7 +105,7 @@ package enum CodexAdapterServer {
       }
     }
     do {
-      try await server.start(transport: transport)
+      try await server.start(transport: CodexProjectHandshakeTransport(transport))
       await server.waitUntilCompleted()
     } catch {
       await server.stop()

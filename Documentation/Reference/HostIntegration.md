@@ -3,14 +3,14 @@
 Set `hostServices: true` in the Computer MCP host's local settings for this
 plugin's `app-server` MCP contribution. The App exposes the same choice as
 **Allow scoped host services**. It is separate from enabling the plugin,
-selecting its tools and granting a profile access to the workspace. A plugin
+selecting its tools and granting a profile access to the project. A plugin
 manifest cannot turn it on. A direct stdio registration uses `host_services`.
 
 The host starts the adapter with a connected Unix descriptor and immutable
 scope. `CodexHostMCPClient` uses standard MCP to call the host; it does not
 open the control socket, read the host database or start another service.
 Standalone launches without that descriptor retain ordinary configured Codex
-execution but cannot perform host-owned registration operations.
+execution but cannot perform host-owned worktree operations.
 
 `codex.app.ownership.reconcile.perform` is a local-control operation. A
 remote-bound adapter omits it from its MCP tool catalog and rejects attempts
@@ -19,9 +19,8 @@ to invoke it directly. The host-established caller scope determines visibility.
 ## Approval and execution
 
 Dynamic vendor tools are preflighted against the current host scope, then
-executed with a fresh check. Destructive operations retain host-issued
-prepare/commit tickets. A changed classification requires a new approval rather
-than converting an earlier read-only decision into a mutation.
+executed with a fresh check. Host callbacks carry the selected `project_id`.
+A changed classification requires a fresh approval.
 
 Native Codex Full Access follows the user's Codex configuration or explicit
 native request. The host decides whether the caller may invoke Codex; it does
@@ -43,14 +42,18 @@ minimum risk, never to reduce a configured restriction or grant access.
 `codex.app.methods.list` provides the same per-method classification for
 configuration review. MCP annotations remain advisory.
 
-The three private host-service consumers also declare
-`io.github.computer-mcp/host-action`: diagnostics uses `diagnostics.snapshot`,
-provisioning uses `workspaces.provision`, and removal uses `workspaces.remove`.
-The host binds the recognized effect to the admitted invocation and operation
-ticket together with the exact arguments. The declaration grants no authority;
-the host enforces its minimum risk and rejects a changed effect before dispatch.
-Released hosts that recognize the original Codex method names remain compatible.
-Codex's persisted worktree IDs retain their existing identity on either host.
+The package contribution and both MCP initialization responses identify the
+`projects-v1` contract. The adapter also checks the host launch context before
+sending lifecycle requests. A missing or mismatched contract produces
+`host.unsupported_contract`. Update Computer MCP and the Codex plugin together
+and restart the provider.
+
+Tool metadata declares `io.github.computer-mcp/host-action` for diagnostics
+(`diagnostics.snapshot`) and the worktree effects (`projects.provision`,
+`projects.list`, `projects.remove`). The host binds each effect to the admitted
+invocation and supplies the operation ID for a mutation. Narrow project
+mutations declare `project-write`. Native Codex sandbox values keep their vendor
+meaning.
 
 Metadata/history/event inspection declares `read-only`. Narrow filesystem and
 metadata mutations retain their effect classification. Exec cancellation and
@@ -59,50 +62,65 @@ than submit new model input. Native turn interruption differs because Codex can
 run an Interrupt command hook. A host emergency-revocation action is a separate
 host-owned control, not a promise that a vendor cancellation RPC has no hooks.
 
-Native approval responses use official response objects, including session
-scope, amendments, refusal and cancellation. Responses bind to their original
-SDK server request and can be consumed only once. Host destructive operations
-use explicit `operations.prepare`, local confirmation and `operations.commit`;
-the adapter never manufactures approval by automatically consuming a ticket.
+Native approval responses bind to the original SDK server request and can be
+consumed once. The host applies its own authorization and confirmation to
+callbacks.
 
-## Managed workspaces
+### Codex network access
 
-The host supplies the managed root beside its file-backed state. The plugin
-plans and executes Git operations; the host validates exact repository/path
-identity before transactionally adding its registration and profile grant.
-The plugin's database holds the plan, lease and lifecycle receipt, not host
-workspace authority. Each receipt binds the verified principal, profile and
-source workspace; channel names are audit metadata. Unbound historical receipts
-remain inspectable but cannot authorize mutations. A new child connection must resolve the newly registered
-workspace before releasing its child lease. Lease revisions are shared across
-that subject's profile-bound workspace connections and survive adapter restart;
-the source observes the child's release before approving removal. Lease tools
-cannot read or mutate a different workspace's lease, and unrelated workspaces
-cannot claim managed parent lineage.
+The package requests outbound access to `api.openai.com` and `chatgpt.com` for
+the default Codex model endpoints and `auth.openai.com` for OpenAI sign-in.
+The custom list uses exact hostnames and excludes the Host's trusted-host list.
+Host Full access is off by default.
 
-Use the existing `provision.plan` / `provision.perform` and `remove.plan` /
-`remove.perform` workflows. Removal requires a released lease, no live owner,
-a reviewed clean worktree and an executing host ticket. Independent registration
-edits or another profile's grants are not silently deleted. Branches survive
-ordinary removal.
+The list is the maximum the package requests for sandboxed execution. At
+enablement the owner reviews the declaration and can select less access within
+the Host's policy limits. An update that adds network access requires fresh
+owner approval before the added access applies. For an enterprise deployment
+with a different provider or issuer, verify its endpoints against that
+deployment's configuration and review any declaration change through the same
+Host flow.
 
-When Git has already removed the directory but registration cleanup fails,
-`managed.read` reports `removing` with the error. Run `remove.plan` again,
-review the current receipt, and obtain a new host prepare/commit ticket for
-`remove.perform` with its new revision. Both sides verify absence of the path
-and Git registration before metadata-only cleanup. It never repeats the Git
-delete, and it refuses a new path that appeared at the old location.
+## Host worktrees
 
-When a failed provision cannot confirm host rollback, its failed receipt reports
-incomplete recovery and preserves remaining worktree/branch content. Inspect
-both domain and host records before manual reconciliation. An uncertain result,
-plugin uninstall, or failed test does not authorize deleting independently
-changed content.
+Codex stores reviewed selections and writer leases. Computer MCP owns creation,
+repository topology, verified project registration, Git recovery and removal.
+The source and child adapters share only their associated worktree and its
+operations within the verified principal and profile. Other Codex records stay
+in the selected project's state directory.
+
+Plan and provision in the source project. Copy the returned `perform_arguments`,
+including any explicit nulls. Omitted or null `branch` selects
+`worktree/<name>`. Omitted or null `base` selects the source main checkout's
+current branch when the host reserves the perform call. Supply an explicit base
+branch for a detached source. The resolved result includes the child project,
+worktree ID, checkout path, branch, base and warnings. Lease disposition is
+reported separately. If the child has a conflicting writer lease, settle that
+lease before acquiring one explicitly in the child.
+
+Select the returned child project to release its Codex writer lease and plan
+removal. The review binds `force`, which defaults to false. The host drains
+writers, retains recoverable Git roots, publishes the committed result, then
+removes the checkout and unregisters the child. Force authorizes discarding
+uncommitted changes. The branch remains available in the source.
+
+The adapter records the invocation and operation IDs before requesting an
+effect. If a reply is lost, or removal terminates the child adapter, read the
+record with `codex.worktree.managed.read` from the source project. The same
+operation ID is inspected under current host authorization. A pending or
+recovery-required outcome stays attached to that operation until the host
+resolves it. A terminal refusal needs a fresh plan and invocation. A subsequent
+owner permission answer does not resume the original call.
+
+`codex.worktree.managed.list` includes host inventory, Codex records and
+unmanaged history. Foreign inventory is visible without a Codex association.
+Existing plugin-created records remain unmanaged across upgrade and expiry.
+Lease expiry changes metadata only.
 
 ## Diagnostics
 
 `codex.diagnostics.snapshot` combines adapter state with host records only when
-this callback service is available. The host filters records by workspace,
+this callback service is available. The host filters records by project,
 verified subject and profile before limiting the result. Connection and channel
 identifiers remain audit metadata, not new authorization subjects. It exposes
 receipt IDs and digests rather than command bodies or secrets. Native configuration overrides and actual resolved configuration remain
@@ -116,22 +134,21 @@ separate checks from the host callback protocol.
 
 Use the host's generic tool command with the exported name. The examples assume
 an empty MCP registration prefix; prepend the configured prefix when present.
-IDs come from the registered workspace and returned native thread:
+Use the registered project ID and returned native thread ID.
 
 ```sh
 computer-mcp tools call codex.app.handoff.diagnose --arguments-json \
-  '{"workspace_id":"<workspace-id>","thread_id":"<thread-id>","observed_error":"<message from the other client>"}'
+  '{"project_id":"<project-id>","thread_id":"<thread-id>","observed_error":"<message from the other client>"}'
 computer-mcp tools call codex.diagnostics.snapshot --arguments-json \
-  '{"workspace_id":"<workspace-id>","limit":100}'
+  '{"project_id":"<project-id>","limit":100}'
 computer-mcp tools call codex.app.thread.release --arguments-json \
-  '{"workspace_id":"<workspace-id>","thread_id":"<thread-id>"}'
+  '{"project_id":"<project-id>","thread_id":"<thread-id>"}'
 computer-mcp tools call codex.app.thread.recent --arguments-json \
-  '{"workspace_id":"<workspace-id>","thread_id":"<thread-id>"}'
+  '{"project_id":"<project-id>","thread_id":"<thread-id>"}'
 ```
 
-When calling indirectly with `mcp.tools.call`, put `workspace_id` beside
-`server`, `tool` and `arguments`; only native plugin arguments go inside
-`arguments`. Native names and exported host names need not be identical.
+When calling indirectly with `mcp.tools.call`, put `project_id` beside
+`server`, `tool` and `arguments`. Put plugin arguments inside `arguments`. Native names and exported host names need not be identical.
 
 The handoff diagnosis distinguishes these classifications:
 
@@ -166,8 +183,8 @@ Thread and turn responses report applied native permissions. Omitted settings
 inherit Codex configuration; an explicit override can change the sandbox or
 approval policy. A host profile name is not evidence of effective Full Access.
 A host denial prevents invocation; it never silently chooses a narrower native
-mode. Full Access cannot grant host callbacks extra capabilities, workspace
-access, tickets or macOS privacy permissions.
+mode. Full Access cannot grant host callbacks extra capabilities, project
+access or macOS privacy permissions.
 
 The installed vendor must support the requested stable or explicitly enabled
 experimental API. Incompatible methods fail explicitly. App Server failure

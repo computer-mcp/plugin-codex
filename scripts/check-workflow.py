@@ -264,9 +264,11 @@ enabled = false
 metrics_exporter = "none"
 '''
     (state / "config.toml").write_text(config)
-    context = {"formatVersion": 1, "runtimeID": str(uuid.uuid4()), "caller": "local-mcp",
-               "profileID": "local-admin", "principalID": "workflow-fixture",
-               "workspace": {"id": "workflow-fixture", "rootPath": str(workspace)}}
+    context = {
+        "formatVersion": 1, "hostServiceContract": "projects-v1", "runtimeID": str(uuid.uuid4()),
+        "caller": "local-mcp", "profileID": "local-admin", "principalID": "workflow-fixture",
+        "project": {"id": "workflow-fixture", "rootPath": str(workspace)},
+    }
     environment = {"PATH": runtime_path, "CODEX_HOME": str(state),
                    "COMPUTER_MCP_HOST_CONTEXT": json.dumps(context)}
     adapter_config = root / "adapter.json"

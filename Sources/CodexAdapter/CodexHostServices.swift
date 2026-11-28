@@ -13,7 +13,38 @@ struct CodexHostDiagnosticSnapshot: Sendable {
   let recentToolAudits: [JSONValue]
 }
 
-/// The host preflights and authorizes using the connection's immutable caller and workspace.
+/// Private host diagnostics use project vocabulary. Native ownership receipts
+/// retain their persisted workspace representation.
+struct CodexHostDiagnosticOwner: Decodable {
+  let projectID: String?
+  let profileID: String?
+  let caller: String?
+  let transport: String?
+  let socketConnectionID: String?
+  let tunnelInstanceID: String?
+  let tunnelProfileID: String?
+  let principalID: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case projectID = "project_id"
+    case profileID = "profile_id"
+    case caller
+    case transport
+    case socketConnectionID = "socket_connection_id"
+    case tunnelInstanceID = "tunnel_instance_id"
+    case tunnelProfileID = "tunnel_profile_id"
+    case principalID = "principal_id"
+  }
+
+  var runtimeOwner: CodexRuntimeOwner {
+    .init(
+      workspaceID: projectID, profileID: profileID, caller: caller, transport: transport,
+      socketConnectionID: socketConnectionID, tunnelInstanceID: tunnelInstanceID,
+      tunnelProfileID: tunnelProfileID, principalID: principalID)
+  }
+}
+
+/// The host preflights and authorizes using the connection's immutable caller and selected project.
 /// It must recheck current policy and audit each execution; a risk hint alone grants nothing.
 protocol CodexHostTools: Sendable {
   func discard(requestID: String) async

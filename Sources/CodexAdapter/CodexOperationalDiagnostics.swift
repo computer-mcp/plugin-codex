@@ -15,7 +15,7 @@ enum CodexOperationalDiagnostics {
       guard let owner, hostSnapshot.owner == owner,
         hostSnapshot.recentToolAudits.count <= limit,
         hostSnapshot.recentToolAudits.allSatisfy({
-          $0.objectValue?["workspace_id"]?.stringValue == owner.workspaceID
+          $0.objectValue?["project_id"]?.stringValue == owner.workspaceID
         })
       else {
         throw CodexToolError.executionFailed(
@@ -32,11 +32,19 @@ enum CodexOperationalDiagnostics {
     let approvals = try database?.codexApprovals(workspaceID: workspaceID, limit: limit) ?? []
     let runs = try database?.codexOrchestrationRuns(workspaceID: workspaceID, limit: limit) ?? []
     let leases = try database?.codexWorktreeLeases(workspaceID: workspaceID, limit: limit) ?? []
-    let managedWorktrees = Array(
-      try database?.codexManagedWorktrees(limit: max(limit * 4, limit))
-        .filter { $0.sourceWorkspaceID == workspaceID || $0.workspaceID == workspaceID }
-        .prefix(limit) ?? []
-    )
+    let projectScope = CodexProjectScope(owner)
+    let managedWorktrees =
+      try projectScope.flatMap {
+        try database?.hostWorktrees(in: $0, limit: limit)
+      } ?? []
+    let unmanagedHistory =
+      try owner.flatMap {
+        try database?.unmanagedWorktrees(owner: $0, limit: limit)
+      } ?? []
+    let worktreeProjections =
+      projectScope.map { scope in
+        managedWorktrees.map { JSONValue.object($0.projection(in: scope)) }
+      } ?? []
     let audits = hostSnapshot?.recentToolAudits ?? []
     let cleanup = try CodexRuntimeMaintenance.preview(
       database: database,
@@ -67,7 +75,7 @@ enum CodexOperationalDiagnostics {
     return .object([
       "generated_at": .string(timestamp(now)),
       "scope": .object([
-        "workspace_id": diagnosticIdentifier(workspaceID),
+        "project_id": diagnosticIdentifier(workspaceID),
         "principal_id": diagnosticIdentifier(owner?.principalID),
         "profile_id": diagnosticIdentifier(owner?.profileID),
         "caller": diagnosticIdentifier(owner?.caller),
@@ -110,7 +118,8 @@ enum CodexOperationalDiagnostics {
       "active_runs": .array(activeRuns.map(\.json)),
       "active_worktree_leases": .array(activeLeases.map(\.json)),
       "expired_worktree_lease_receipts": .array(expiredLeaseReceipts.map(\.json)),
-      "managed_worktrees": .array(managedWorktrees.map(\.json)),
+      "managed_worktrees": .array(worktreeProjections),
+      "unmanaged_history": .array(unmanagedHistory),
       "recent_tool_audits": hostSnapshot == nil ? .null : .array(audits.map(auditJSON)),
       "safety": .object([
         "secrets_redacted": .bool(true),
@@ -126,7 +135,7 @@ enum CodexOperationalDiagnostics {
     pendingApprovals: [CodexApprovalRecord],
     activeRuns: [CodexOrchestrationRun],
     expiredLeaseReceipts: [CodexWorktreeLease],
-    managedWorktrees: [CodexManagedWorktree],
+    managedWorktrees: [CodexHostWorktree],
     threadOwnership: [CodexThreadOwnershipRecord],
     now: Date
   ) -> [JSONValue] {
@@ -210,7 +219,7 @@ enum CodexOperationalDiagnostics {
           code: "managed_worktree_failed",
           summary: "A Computer MCP-managed worktree lifecycle operation failed.",
           recovery:
-            "Inspect the managed worktree receipt and verify Git ownership before retrying or cleaning up.",
+            "Read the host operation outcome before making a fresh request.",
           subjectID: worktree.id
         )
       )
@@ -224,7 +233,7 @@ enum CodexOperationalDiagnostics {
           severity: "info",
           code: "managed_worktree_plan_expired",
           summary: "A reviewed managed worktree plan expired without execution.",
-          recovery: "Create a fresh plan so Git and ownership state are validated again.",
+          recovery: "Create a fresh worktree plan.",
           subjectID: worktree.id
         )
       )
@@ -274,7 +283,7 @@ enum CodexOperationalDiagnostics {
     for key in [
       "id", "occurred_at", "request_id", "mcp_request_id", "invocation_id",
       "parent_request_id", "ticket_id", "transport", "socket_connection_id",
-      "tunnel_instance_id", "tunnel_profile_id", "profile_id", "workspace_id",
+      "tunnel_instance_id", "tunnel_profile_id", "profile_id", "project_id",
       "capability_id", "decision", "error_code", "input_digest", "output_digest",
     ] {
       result[key] = diagnosticIdentifier(object[key]?.stringValue)

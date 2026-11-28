@@ -4,9 +4,19 @@ version = "0.1.0"
 plugin_api = 1
 description = 'Codex execution and protocol inspection through standard MCP.'
 
+[[permissions]]
+id = "project"
+access = "write"
+purpose = "Create and remove managed worktrees in projects you approve for Codex."
+
+[sandbox]
+network = { level = "custom", hosts = ["api.openai.com", "chatgpt.com", "auth.openai.com"], include_trusted = false }
+purpose = "Connect Codex to OpenAI model endpoints and the ChatGPT sign-in service."
+
 [[mcp]]
 id = 'app-server'
 transport = 'stdio'
+host_service_contract = "projects-v1"
 executable = { platform_paths = { macos = 'bin/codex-mcp-adapter' } }
 capabilities = ['tools']
 

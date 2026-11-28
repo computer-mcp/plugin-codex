@@ -22,7 +22,7 @@ struct CodexWorkContinuationTests {
       }
       let tool = try CodexWorkSnapshot.declaring(method.tool)
       #expect(tool.inputSchema == method.tool.inputSchema)
-      #expect(tool._meta?["io.github.computer-mcp/risk"] == .string(method.risk.rawValue))
+      #expect(tool._meta?["io.github.computer-mcp/risk"] == .string(method.risk.hostValue))
     }
   }
 

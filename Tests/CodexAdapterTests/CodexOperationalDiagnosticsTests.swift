@@ -73,7 +73,7 @@ final class CodexOperationalDiagnosticsTests {
       owner: owner(profileID: mismatch == "owner" ? "profile-2" : "profile-1"),
       recentToolAudits: Array(
         repeating: .object([
-          "workspace_id": .string(mismatch == "workspace" ? "workspace-2" : "workspace-1")
+          "project_id": .string(mismatch == "workspace" ? "workspace-2" : "workspace-1")
         ]),
         count: mismatch == "limit" ? 2 : 1))
     await #expect(throws: CodexToolError.self) {
@@ -218,7 +218,7 @@ final class CodexOperationalDiagnosticsTests {
           "tunnel_instance_id": .string("tunnel-1"),
           "tunnel_profile_id": .string("tunnel-profile-1"),
           "profile_id": .string("profile-1"),
-          "workspace_id": .string("workspace-1"),
+          "project_id": .string("workspace-1"),
           "capability_id": .string("git.commit"),
           "output_byte_count": .integer(9_007_199_254_740_993),
           "decision": .string("allowed"),
@@ -231,7 +231,7 @@ final class CodexOperationalDiagnosticsTests {
           "request_id": .string("token=diagnostic-secret"),
           "mcp_request_id": .string(String(repeating: "m", count: 2_048)),
           "profile_id": .string("profile-1"),
-          "workspace_id": .string("workspace-1"),
+          "project_id": .string("workspace-1"),
           "capability_id": .string("tools.list"),
           "decision": .string("allowed"),
           "input": .string("unprojected command input"),
@@ -258,7 +258,7 @@ final class CodexOperationalDiagnosticsTests {
     #expect(
       object["codex_configuration"]?.objectValue?["sandbox_override"]
         == .string("workspace-write"))
-    #expect(object["scope"]?.objectValue?["workspace_id"] == .string("workspace-1"))
+    #expect(object["scope"]?.objectValue?["project_id"] == .string("workspace-1"))
     #expect(summary["persisted_runtime_count"] == .number(1))
     #expect(summary["thread_ownership_receipt_count"] == .number(1))
     #expect(summary["pending_approval_count"] == .number(1))

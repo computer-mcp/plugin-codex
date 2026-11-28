@@ -101,6 +101,24 @@ struct CodexLaunchContextTests {
     }
   }
 
+  @Test(arguments: [nil, "projects-v0"] as [String?])
+  func launchRejectsUnsupportedContracts(marker: String?) throws {
+    var host = try JSONDecoder().decode([String: JSONValue].self, from: Data(validHost.utf8))
+    host["hostServiceContract"] = marker.map(JSONValue.string)
+    if marker == nil { host["workspace"] = host.removeValue(forKey: "project") }
+    do {
+      _ = try CodexLaunchContext(
+        environment: [
+          "COMPUTER_MCP_HOST_CONTEXT": String(
+            decoding: try JSONEncoder().encode(host), as: UTF8.self)
+        ], currentDirectory: URL(fileURLWithPath: "/tmp"))
+      Issue.record("Expected the obsolete host launch context to be refused.")
+    } catch let error as CodexProjectContract.Unsupported {
+      #expect(error.observed == marker)
+      #expect(error.fields.objectValue?["required_contract"] == .string("projects-v1"))
+    }
+  }
+
   @Test func existingConfigurationDefaultsAndValidationArePreserved() throws {
     let config = try JSONDecoder().decode(CodexConfig.self, from: Data("{}".utf8))
     #expect(config == CodexConfig())
@@ -161,7 +179,38 @@ struct CodexLaunchContextTests {
     await other.shutdown()
   }
 
+  @Test func hostStateDefaultPreservesExplicitAndStandaloneOptions() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let configuration = CodexConfig(enabled: true, executable: "/missing/codex")
+    let host = try CodexLaunchContext(
+      environment: [
+        "COMPUTER_MCP_HOST_CONTEXT": validHost, "XDG_STATE_HOME": root.path,
+      ], currentDirectory: root)
+    let managed = try #require(
+      try host.appServerProvider(configuration: configuration, stateDirectory: nil))
+    #expect(
+      managed.database?.fileURL?.path
+        == root.appendingPathComponent("codex-adapter/codex.sqlite").path)
+    await managed.shutdown()
+
+    let explicit = root.appendingPathComponent("explicit")
+    let standalone = try CodexLaunchContext(
+      environment: ["XDG_STATE_HOME": root.path], currentDirectory: root)
+    #expect(throws: ConfigurationError.self) {
+      try standalone.appServerProvider(configuration: configuration, stateDirectory: nil)
+    }
+    for context in [host, standalone] {
+      let provider = try #require(
+        try context.appServerProvider(configuration: configuration, stateDirectory: explicit))
+      #expect(
+        provider.database?.fileURL?.path == explicit.appendingPathComponent("codex.sqlite").path)
+      await provider.shutdown()
+    }
+  }
+
   private var validHost: String {
-    #"{"formatVersion":1,"runtimeID":"B66E26EE-53AF-4455-A25D-E2BDD219798C","caller":"local-mcp","profileID":"observe","workspace":{"id":"fixture","rootPath":"/tmp/bound-workspace"},"readOnly":true}"#
+    #"{"formatVersion":1,"runtimeID":"B66E26EE-53AF-4455-A25D-E2BDD219798C","caller":"local-mcp","profileID":"observe","hostServiceContract":"projects-v1","project":{"id":"fixture","rootPath":"/tmp/bound-workspace"},"readOnly":true}"#
   }
 }

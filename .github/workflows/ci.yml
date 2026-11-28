@@ -13,7 +13,7 @@ concurrency:
 jobs:
   package:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -63,12 +63,29 @@ jobs:
           wait "$test_pid"
       - name: Validate package ownership and publication
         run: |
+          python3 scripts/check-host.py --help
           python3 -m unittest discover -s Tests -p 'test_*.py' -v
           python3 scripts/check-workflow.py --check-release-workflow
       - name: Build relocatable adapter and receipt
+        run: python3 scripts/package.py --output dist --configuration release
+      - name: Accept the release archive against the pinned Host source
         run: |
-          python3 scripts/package.py --output dist --configuration release
-          python3 scripts/check-package.py --archive dist/codex-plugin-macos-arm64.zip --receipt dist/receipt.json --destination .build/accepted-package
+          host_revision=$(cat .github/computer-mcp-host.sha)
+          [[ "$host_revision" =~ ^[0-9a-f]{40}$ && "$host_revision" != 0000000000000000000000000000000000000000 ]]
+          host_checkout="$PWD/.build/computer-mcp-host"
+          git init "$host_checkout"
+          git -C "$host_checkout" fetch --no-tags --depth=1 https://github.com/computer-mcp/computer-mcp.git "$host_revision"
+          git -C "$host_checkout" checkout --detach FETCH_HEAD
+          python3 scripts/check-host.py --mode container --host-source "$host_checkout" \
+            --plugin-revision "$GITHUB_SHA" --archive "$PWD/dist/codex-plugin-macos-arm64.zip" \
+            --receipt "$PWD/dist/receipt.json" --output-directory "$PWD/.build/host-acceptance"
+      - name: Record registered Host acceptance
+        if: always()
+        run: |
+          report=.build/host-acceptance/runtime/report.json
+          if [[ -f "$report" ]]; then
+            cat "$report"
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: codex-plugin-macos-arm64-${{ github.sha }}
